@@ -18,10 +18,15 @@ export const AUDIO_EXTS = ["wav", "mp3", "m4a", "aac", "flac", "ogg", "aif", "ai
 
 export type OutType = "memo" | "sketch";
 export type OutState = "waiting" | "sending" | "sent" | "failed";
-/** Why an item failed (it stays until the user retries or removes it). */
-export type OutError = "too-big" | "type" | "missing-file" | "size";
-/** Why sending stopped for now (the item stays waiting, retried at the next sync). */
+/** Why an item failed (it stays until the user retries or removes it).
+ * "refused": the computer turned this one item down ("bad request" or
+ * another error after the request opened); the others still go. */
+export type OutError = "too-big" | "type" | "missing-file" | "size" | "refused";
+/** Why sending stopped for now (the item stays waiting, retried at the next
+ * sync). "inbox-full" holds that item and bigger ones; "disk-full" holds all. */
 export type HoldReason = "inbox-full" | "disk-full";
+/** Sent items and filed/dismissed ideas leave the phone after this long. */
+export const KEEP_SENT_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type OutFile = {
   /** A file:// uri in the app's documents (copied there when shared or recorded). */
@@ -35,6 +40,8 @@ export type OutItem = {
   id: string;
   type: OutType;
   title: string;
+  /** What was shared with it (BandLab's words and link), ≤ 2000; absent on older items. */
+  text?: string;
   target: IdeaTarget | null;
   createdAt: number;
   durationMs: number | null;
@@ -148,10 +155,36 @@ const offsetOf = (body: unknown): number | null => {
 const reason = (e: unknown): string => (e instanceof SyncError ? e.message : "");
 
 /**
+ * What an error from the computer means for the item being sent:
+ * - `fail`: this item can't go as it is (refused, wrong type, too big…);
+ *   it shows the reason and the queue goes on with the next one.
+ * - `hold`: the computer is full; the item waits for the next sync.
+ * - `stop`: the computer can't be reached or doesn't take anything right
+ *   now (offline, off, busy, forgotten, clock, demo, outdated): the sync stops.
+ */
+export type Verdict = { fail: OutError } | { hold: HoldReason } | { stop: unknown };
+
+export function verdict(e: unknown): Verdict {
+  const r = reason(e);
+  if (r === "too big") return { fail: "too-big" };
+  if (r === "type") return { fail: "type" };
+  if (r === "size") return { fail: "size" };
+  // Sealed after the request opened: the computer read it and said no to this one.
+  if (r === "bad request") return { fail: "refused" };
+  if (r === "inbox full") return { hold: "inbox-full" };
+  if (r === "disk full") return { hold: "disk-full" };
+  if (e instanceof SyncError) {
+    if (e.code === "too-big") return { fail: "too-big" }; // 413: the body itself
+    if (e.code === "server") return { fail: "refused" }; // any other sealed error
+  }
+  return { stop: e };
+}
+
+/**
  * Sends one item. Returns the item as it ends: "sent", or "failed" with a
  * reason. Throws a SyncError for what stops the whole sync (offline, off,
- * forgotten, demo, outdated) and a HoldError for "inbox full" / "disk full".
- * `onUpdate` sees each step (progress).
+ * forgotten, clock, demo, outdated) and a HoldError for "inbox full" /
+ * "disk full". `onUpdate` sees each step (progress).
  */
 export async function uploadItem(io: UploadIO, start: OutItem, onUpdate: (i: OutItem) => void): Promise<OutItem> {
   let item: OutItem = { ...start, state: "sending", error: null };
@@ -162,6 +195,13 @@ export async function uploadItem(io: UploadIO, start: OutItem, onUpdate: (i: Out
   const fail = (error: OutError) => {
     update({ state: "failed", error });
     return item;
+  };
+  /** An item-level failure ends the item; anything else is thrown. */
+  const settle = (e: unknown): OutItem => {
+    const v = verdict(e);
+    if ("fail" in v) return fail(v.fail);
+    if ("hold" in v) throw new HoldError(v.hold);
+    throw v.stop;
   };
   update({});
   const doneBytes = () => item.files.reduce((n, f) => n + (f.done ? f.size : 0), 0);
@@ -181,6 +221,7 @@ export async function uploadItem(io: UploadIO, start: OutItem, onUpdate: (i: Out
               itemId: item.id,
               itemType: item.type,
               title: item.title,
+              ...(item.text ? { text: item.text } : {}),
               target: item.target,
               createdAt: item.createdAt,
               durationMs: item.durationMs,
@@ -192,11 +233,7 @@ export async function uploadItem(io: UploadIO, start: OutItem, onUpdate: (i: Out
           ),
         ) ?? 0;
       } catch (e) {
-        const r = reason(e);
-        if (r === "too big") return fail("too-big");
-        if (r === "type") return fail("type");
-        if (r === "size") return fail("size");
-        throw hold(e);
+        return settle(e);
       }
       offset = Math.min(offset, file.size);
       let restart = false;
@@ -218,9 +255,7 @@ export async function uploadItem(io: UploadIO, start: OutItem, onUpdate: (i: Out
             restart = true;
             break;
           }
-          if (r === "too big") return fail("too-big");
-          if (r === "size") return fail("size");
-          throw hold(e);
+          return settle(e);
         }
         update({ sentBytes: doneBytes() + offset });
       }
@@ -234,8 +269,7 @@ export async function uploadItem(io: UploadIO, start: OutItem, onUpdate: (i: Out
           restarts++;
           continue;
         }
-        if (r === "size") return fail("size");
-        throw hold(e);
+        return settle(e);
       }
       break;
     }
@@ -246,11 +280,44 @@ export async function uploadItem(io: UploadIO, start: OutItem, onUpdate: (i: Out
   return item;
 }
 
-function hold(e: unknown): unknown {
-  const r = reason(e);
-  if (r === "inbox full") return new HoldError("inbox-full");
-  if (r === "disk full") return new HoldError("disk-full");
-  return e;
+export type QueueHooks = {
+  /** The outbox as it is now (items can be removed while one is sending). */
+  items: () => OutItem[];
+  onStart: (id: string) => void;
+  onUpdate: (i: OutItem) => void;
+  /** An item ended (sent or failed). */
+  onDone: (i: OutItem) => void;
+};
+
+/**
+ * Sends every waiting item, oldest first. One item never blocks the others:
+ * a refused item fails on its own and the loop goes on. "inbox full" holds
+ * that item and every item at least as big (smaller ones may still fit);
+ * "disk full" holds everything. Returns why something is held, or null.
+ * Throws what stops the sync (offline, forgotten…).
+ */
+export async function sendQueue(io: UploadIO, hooks: QueueHooks): Promise<HoldReason | null> {
+  let held: HoldReason | null = null;
+  /** Bytes left of the smallest item the full inbox refused. */
+  let fullAt = Infinity;
+  for (const queued of toSend(hooks.items())) {
+    const cur = hooks.items().find((i) => i.id === queued.id);
+    if (!cur || (cur.state !== "waiting" && cur.state !== "sending")) continue;
+    const left = totalBytes(cur) - cur.sentBytes;
+    if (left >= fullAt) continue;
+    hooks.onStart(cur.id);
+    try {
+      hooks.onDone(await uploadItem(io, cur, hooks.onUpdate));
+    } catch (e) {
+      if (!(e instanceof HoldError)) throw e;
+      const now = hooks.items().find((i) => i.id === cur.id);
+      if (now) hooks.onUpdate({ ...now, state: "waiting" });
+      if (e.reason === "disk-full") return "disk-full";
+      held = "inbox-full";
+      fullAt = Math.min(fullAt, left);
+    }
+  }
+  return held;
 }
 
 /** 429/503 or "busy" (a scan running): wait a little and try again, a few times. */
@@ -295,3 +362,9 @@ export const retry = (i: OutItem): OutItem => ({ ...i, state: "waiting", error: 
 /** A new pairing: everything still on the phone goes again to the new computer. */
 export const resetOut = (items: OutItem[]): OutItem[] =>
   items.filter((i) => i.files.length > 0 && !i.purged).map((i) => ({ ...i, state: "waiting", error: null, sentBytes: 0, status: null, filedTo: null, sentAt: null, files: i.files.map((f) => ({ ...f, done: false })) }));
+
+/** Sent memos and exports older than KEEP_SENT_MS leave the phone (they're on the computer). */
+export function pruneOut(items: OutItem[], now: number): { keep: OutItem[]; removed: string[] } {
+  const old = (i: OutItem) => i.state === "sent" && i.sentAt !== null && now - i.sentAt > KEEP_SENT_MS;
+  return { keep: items.filter((i) => !old(i)), removed: items.filter(old).map((i) => i.id) };
+}

@@ -1,6 +1,7 @@
 // Offline-first note sync (PHONE-SYNC contract, /v1/snapshot and /v1/notes).
 // Pure state transitions: the app persists the state and does the I/O.
 import { fnv1a, utf8 } from "./bytes";
+import { clip } from "./text";
 
 export type Kind = "prod" | "beat" | "song";
 export const KINDS: Kind[] = ["prod", "beat", "song"];
@@ -19,7 +20,9 @@ export type Item = {
 };
 
 export type Change = { kind: Kind; id: string; text: string; baseHash: string };
-export type PendingEdit = Change & { editedAt: number };
+/** `title`: the item's name when the edit was made, so an edit kept across
+ * a re-pairing can still be shown (and copied) before any snapshot. */
+export type PendingEdit = Change & { editedAt: number; title?: string };
 export type PushResult = { kind: Kind; id: string; status: "applied" | "conflict" | "missing"; note: string; noteHash: string };
 
 export type SyncState = {
@@ -34,7 +37,14 @@ export type SyncState = {
    * phone's text so nothing typed is lost. By itemKey. */
   gone: Record<string, Item>;
   helloDone: boolean;
+  /** The pending edits were made against another pairing (unpaired, then
+   * paired again): the next sync pulls a snapshot first and re-bases them. */
+  rebase?: boolean;
 };
+
+/** What's kept across unpairing (the phone's own text), stored apart from
+ * the big library cache. */
+export type Edits = Pick<SyncState, "pending" | "gone">;
 
 export const MAX_NOTE_CHARS = 20_000;
 export const MAX_CHANGES = 500;
@@ -94,8 +104,20 @@ export function parsePushResults(body: unknown): PushResult[] | null {
   return out;
 }
 
+// The items by key, built once per snapshot array (a library of thousands is
+// searched and rendered row by row: no linear scan per row).
+const indexes = new WeakMap<Item[], Map<string, Item>>();
+function indexOf(items: Item[]): Map<string, Item> {
+  let m = indexes.get(items);
+  if (!m) {
+    m = new Map(items.map((i) => [itemKey(i.kind, i.id), i]));
+    indexes.set(items, m);
+  }
+  return m;
+}
+
 export function findItem(state: SyncState, kind: Kind, id: string): Item | undefined {
-  return state.items.find((i) => i.kind === kind && i.id === id);
+  return indexOf(state.items).get(itemKey(kind, id));
 }
 
 /** The note to show: the local edit when there is one, else the desktop's. */
@@ -122,7 +144,7 @@ export function forgetGone(state: SyncState, kind: Kind, id: string): SyncState 
  * from, so it stays the same across several edits until a push lands. */
 export function editNote(state: SyncState, kind: Kind, id: string, text: string, now: number): SyncState {
   const k = itemKey(kind, id);
-  const clipped = text.slice(0, MAX_NOTE_CHARS);
+  const clipped = clip(text, MAX_NOTE_CHARS);
   const goneItem = state.gone[k];
   if (goneItem) {
     // Nothing to push to: the text only lives on the phone.
@@ -133,7 +155,10 @@ export function editNote(state: SyncState, kind: Kind, id: string, text: string,
   const baseHash = prev?.baseHash ?? item?.noteHash ?? EMPTY_HASH;
   const pending = { ...state.pending };
   if (item && clipped === item.note && baseHash === item.noteHash) delete pending[k];
-  else pending[k] = { kind, id, text: clipped, baseHash, editedAt: now };
+  else {
+    const title = item?.title ?? prev?.title;
+    pending[k] = { kind, id, text: clipped, baseHash, editedAt: now, ...(title ? { title } : {}) };
+  }
   return { ...state, pending };
 }
 
@@ -167,7 +192,7 @@ export function applyPushResults(state: SyncState, sent: Change[], results: Push
     if (r.status === "missing") {
       // Deleted on the desktop since: keep the phone's text, marked as gone.
       const text = cur?.text ?? was.text;
-      const base = findItem(state, r.kind, r.id) ?? { kind: r.kind, id: r.id, title: r.id, subtitle: "", bpm: null, key: null, url: null, stage: null, note: "", noteHash: EMPTY_HASH };
+      const base = findItem(state, r.kind, r.id) ?? bareItem(r.kind, r.id, cur?.title);
       gone[k] = { ...base, note: text, noteHash: fnv1a(text) };
       delete pending[k];
       delete conflicts[k];
@@ -202,6 +227,84 @@ export function applySnapshot(state: SyncState, snap: { items: Item[]; generated
   return next;
 }
 
+/** An item known only by its key (and maybe the title it had). */
+function bareItem(kind: Kind, id: string, title?: string): Item {
+  return { kind, id, title: title || id.split(/[\\/]/).pop() || id, subtitle: "", bpm: null, key: null, url: null, stage: null, note: "", noteHash: EMPTY_HASH };
+}
+
+/**
+ * The first snapshot after a new pairing, for edits made against the old
+ * one. An edit whose item is there stays pending with its old base: when the
+ * computer's note changed meanwhile, the push conflicts and the computer
+ * keeps both texts (nothing overwritten). An edit that now says the same as
+ * the computer is dropped. An edit whose item isn't there (another computer)
+ * becomes "gone": the text stays on the phone, shown and copyable.
+ */
+export function rebaseOnSnapshot(state: SyncState, snap: { items: Item[] }): SyncState {
+  const byKey = indexOf(snap.items);
+  const pending = { ...state.pending };
+  const gone = { ...state.gone };
+  for (const [k, p] of Object.entries(state.pending)) {
+    const there = byKey.get(k);
+    if (there) {
+      if (there.note === p.text) delete pending[k];
+      continue;
+    }
+    gone[k] = { ...bareItem(p.kind, p.id, p.title), note: p.text, noteHash: fnv1a(p.text) };
+    delete pending[k];
+  }
+  return { ...state, pending, gone, rebase: false };
+}
+
+/** The phone's own text (pending edits and gone items), split from the library cache. */
+export const editsOf = (s: SyncState): Edits => ({ pending: s.pending, gone: s.gone });
+
+/** The library cache without the phone's own text (kept under its own key). */
+export function cacheOf(s: SyncState): Omit<SyncState, "pending" | "gone"> {
+  const { pending: _p, gone: _g, ...rest } = s;
+  return rest;
+}
+
+/** Validates stored edits; anything malformed is left out, never thrown. */
+export function parseEdits(raw: unknown): Edits {
+  const out: Edits = { pending: {}, gone: {} };
+  if (!raw || typeof raw !== "object") return out;
+  const r = raw as Record<string, unknown>;
+  if (r.pending && typeof r.pending === "object") {
+    for (const [k, v] of Object.entries(r.pending as Record<string, unknown>)) {
+      const p = v as Partial<PendingEdit> | null;
+      if (p && isKind(p.kind) && typeof p.id === "string" && typeof p.text === "string" && typeof p.baseHash === "string" && typeof p.editedAt === "number" && k === itemKey(p.kind, p.id)) {
+        out.pending[k] = { kind: p.kind, id: p.id, text: p.text, baseHash: p.baseHash, editedAt: p.editedAt, ...(typeof p.title === "string" ? { title: p.title } : {}) };
+      }
+    }
+  }
+  if (r.gone && typeof r.gone === "object") {
+    for (const [k, v] of Object.entries(r.gone as Record<string, unknown>)) {
+      const g = parseItem(v);
+      if (g && k === itemKey(g.kind, g.id)) out.gone[k] = g;
+    }
+  }
+  return out;
+}
+
+/** A fresh state for a new (or no) pairing that keeps the phone's own text. */
+export function keepEdits(edits: Edits): SyncState {
+  return { ...emptyState(), pending: edits.pending, gone: edits.gone, rebase: Object.keys(edits.pending).length > 0 };
+}
+
+/** Every note the computer doesn't have yet, as plain text (to copy before unpairing). */
+export function unsyncedText(state: SyncState): string {
+  const blocks: string[] = [];
+  for (const p of Object.values(state.pending).sort((a, b) => a.editedAt - b.editedAt)) {
+    const title = findItem(state, p.kind, p.id)?.title ?? p.title ?? bareItem(p.kind, p.id).title;
+    blocks.push(`${title}\n${"-".repeat(Math.min(40, Math.max(3, title.length)))}\n${p.text}`);
+  }
+  for (const g of Object.values(state.gone)) {
+    if (g.note.trim()) blocks.push(`${g.title}\n${"-".repeat(Math.min(40, Math.max(3, g.title.length)))}\n${g.note}`);
+  }
+  return blocks.join("\n\n");
+}
+
 export function dismissConflict(state: SyncState, kind: Kind, id: string): SyncState {
   const conflicts = { ...state.conflicts };
   delete conflicts[itemKey(kind, id)];
@@ -225,6 +328,12 @@ export async function runSync(
     const h = (await call("/v1/hello", hello)) as { desktopName?: unknown } | null;
     if (h && typeof h.desktopName === "string" && h.desktopName.trim()) desktopName = h.desktopName.trim().slice(0, 80);
     set({ ...get(), helloDone: true });
+  }
+  // Edits kept from an earlier pairing: see what this computer has first.
+  if (get().rebase) {
+    const first = parseSnapshot(await call("/v1/snapshot", {}));
+    if (!first) throw new Error("bad snapshot response");
+    set(rebaseOnSnapshot(applySnapshot(get(), first, now()), first));
   }
   let conflicts = 0;
   let missing = 0;
@@ -253,7 +362,8 @@ export function filterItems(items: Item[], kind: Kind, query: string, state?: Sy
     .filter((i) => i.kind === kind)
     .filter((i) => {
       if (!q) return true;
-      const note = state ? noteFor(state, i.kind, i.id) : i.note;
+      const k = itemKey(i.kind, i.id);
+      const note = state ? (state.pending[k]?.text ?? state.gone[k]?.note ?? i.note) : i.note;
       return `${i.title}\n${i.subtitle}\n${i.key ?? ""}\n${note}`.toLowerCase().includes(q);
     });
 }

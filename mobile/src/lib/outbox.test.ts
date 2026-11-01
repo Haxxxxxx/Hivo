@@ -5,7 +5,11 @@ import {
   applyOutStatuses,
   checkShared,
   HoldError,
+  KEEP_SENT_MS,
   MAX_CHUNK_BYTES,
+  pruneOut,
+  sendQueue,
+  verdict,
   MAX_FILE_BYTES,
   MAX_ITEM_FILES,
   parseInboxStatuses,
@@ -24,6 +28,7 @@ function fakeDesktop() {
   const parts = new Map<string, Uint8Array>();
   const sizes = new Map<string, number>();
   const done = new Set<string>();
+  const starts: Record<string, unknown>[] = [];
   const knobs = { dropAfterChunks: -1, chunks: 0, loseReplyOnce: false, refuse: "" as string, busyOnce: false, forgetOnce: false };
   const err = (m: string) => new SyncError("server", m);
   const call = async (path: string, p: any): Promise<unknown> => {
@@ -34,6 +39,7 @@ function fakeDesktop() {
     if (knobs.refuse) throw err(knobs.refuse);
     const k = `${p.itemId}/${p.fileIndex}`;
     if (path === "/v1/upload/start") {
+      starts.push(p);
       if (sizes.get(k) !== p.size) {
         sizes.set(k, p.size);
         parts.set(k, new Uint8Array());
@@ -76,7 +82,7 @@ function fakeDesktop() {
     }
     throw new Error(path);
   };
-  return { parts, knobs, call };
+  return { parts, knobs, call, starts };
 }
 
 const fileOf = (n: number) => Uint8Array.from({ length: n }, (_, i) => i % 251);
@@ -125,6 +131,15 @@ describe("uploadItem", () => {
     expect(seen[seen.length - 1]).toBe(1);
   });
 
+  it("sends the shared text (BandLab's link) with the start, and nothing when there's none", async () => {
+    const desk = fakeDesktop();
+    await uploadItem(io(desk, data), item({ text: "Night Run https://www.bandlab.com/post/abc" }), () => {});
+    expect(desk.starts[0]).toMatchObject({ title: "Night run", text: "Night Run https://www.bandlab.com/post/abc" });
+    const plain = fakeDesktop();
+    await uploadItem(io(plain, data), item(), () => {});
+    expect(plain.starts[0]).not.toHaveProperty("text");
+  });
+
   it("resumes after the Wi-Fi drops, and survives a lost reply", async () => {
     const desk = fakeDesktop();
     desk.knobs.dropAfterChunks = 2;
@@ -161,6 +176,93 @@ describe("uploadItem", () => {
     desk.knobs.refuse = "";
     // The file was removed from the phone.
     expect((await uploadItem(io(desk, { b: data.b }), item(), () => {})).error).toBe("missing-file");
+  });
+});
+
+describe("verdict (what an error does to the item)", () => {
+  it("fails the item for what the computer refused, holds for full, stops for the rest", () => {
+    const sealed = (m: string, code: "server" | "outdated" = "server") => new SyncError(code, m);
+    expect(verdict(sealed("bad request", "outdated"))).toEqual({ fail: "refused" });
+    expect(verdict(sealed("type"))).toEqual({ fail: "type" });
+    expect(verdict(sealed("too big"))).toEqual({ fail: "too-big" });
+    expect(verdict(sealed("size"))).toEqual({ fail: "size" });
+    expect(verdict(sealed("something else"))).toEqual({ fail: "refused" });
+    expect(verdict(new SyncError("too-big", "HTTP 413"))).toEqual({ fail: "too-big" });
+    expect(verdict(sealed("inbox full"))).toEqual({ hold: "inbox-full" });
+    expect(verdict(sealed("disk full"))).toEqual({ hold: "disk-full" });
+    for (const code of ["offline", "off", "busy", "forgotten", "clock", "demo"] as const) {
+      const e = new SyncError(code);
+      expect(verdict(e)).toEqual({ stop: e });
+    }
+    expect(verdict(new SyncError("outdated", "HTTP 404"))).toMatchObject({ stop: expect.any(SyncError) });
+  });
+});
+
+describe("sendQueue", () => {
+  /** A desktop that refuses some items by id, else behaves. */
+  function picky(rules: Record<string, string>) {
+    const desk = fakeDesktop();
+    const call = async (path: string, p: any) => {
+      const rule = rules[p.itemId];
+      if (rule && path === "/v1/upload/start") throw rule === "offline" ? new SyncError("offline") : new SyncError(rule === "bad request" ? "outdated" : "server", rule);
+      return desk.call(path, p);
+    };
+    return { desk, call };
+  }
+  const small = (id: string, createdAt: number, size: number): OutItem => item({ id, createdAt, files: [{ uri: `f-${id}`, name: "a.wav", size, done: false }] });
+  function run(list: OutItem[], call: UploadIO["call"]) {
+    let items = list;
+    const files = Object.fromEntries(list.map((i) => [i.files[0].uri, fileOf(i.files[0].size)]));
+    const started: string[] = [];
+    const io: UploadIO = { call, read: async (uri, o, l) => files[uri].slice(o, o + l), exists: async (uri) => uri in files, sleep: async () => {}, now: () => 99 };
+    const put = (i: OutItem) => (items = items.map((x) => (x.id === i.id ? i : x)));
+    const done = sendQueue(io, { items: () => items, onStart: (id) => started.push(id), onUpdate: put, onDone: put });
+    return { done, get: () => items, started };
+  }
+
+  it("one refused item fails on its own with a reason; the others still go", async () => {
+    const { call } = picky({ a: "bad request", b: "type" });
+    const r = run([small("a", 1, 10), small("b", 2, 10), small("c", 3, 10)], call);
+    expect(await r.done).toBeNull();
+    const by = Object.fromEntries(r.get().map((i) => [i.id, i]));
+    expect(by.a).toMatchObject({ state: "failed", error: "refused" });
+    expect(by.b).toMatchObject({ state: "failed", error: "type" });
+    expect(by.c).toMatchObject({ state: "sent" });
+  });
+
+  it("a full inbox holds that item and bigger ones; smaller ones still go", async () => {
+    const { call } = picky({ big: "inbox full" });
+    const r = run([small("big", 1, 1000), small("bigger", 2, 2000), small("tiny", 3, 10)], call);
+    expect(await r.done).toBe("inbox-full");
+    const by = Object.fromEntries(r.get().map((i) => [i.id, i]));
+    expect(by.big.state).toBe("waiting");
+    expect(by.bigger.state).toBe("waiting");
+    expect(r.started).not.toContain("bigger");
+    expect(by.tiny.state).toBe("sent");
+  });
+
+  it("a full disk holds everything", async () => {
+    const { call } = picky({ a: "disk full" });
+    const r = run([small("a", 1, 10), small("b", 2, 10)], call);
+    expect(await r.done).toBe("disk-full");
+    expect(r.get().map((i) => i.state)).toEqual(["waiting", "waiting"]);
+  });
+
+  it("offline stops the queue (the sync reports it)", async () => {
+    const { call } = picky({ a: "offline" });
+    const r = run([small("a", 1, 10), small("b", 2, 10)], call);
+    await expect(r.done).rejects.toMatchObject({ code: "offline" });
+    expect(r.get().find((i) => i.id === "b")?.state).toBe("waiting");
+  });
+});
+
+describe("pruning", () => {
+  it("drops sent items after 30 days, keeps the rest", () => {
+    const now = KEEP_SENT_MS * 3;
+    const list = [item({ id: "old", state: "sent", sentAt: now - KEEP_SENT_MS - 1 }), item({ id: "new", state: "sent", sentAt: now - 1000 }), item({ id: "wait" })];
+    const r = pruneOut(list, now);
+    expect(r.removed).toEqual(["old"]);
+    expect(r.keep.map((i) => i.id)).toEqual(["new", "wait"]);
   });
 });
 

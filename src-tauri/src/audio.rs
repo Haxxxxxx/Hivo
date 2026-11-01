@@ -520,12 +520,83 @@ pub async fn export_launch_kit(
     master: Option<String>,
     master_name: String,
     clips: Vec<Snippet>,
+    previous_folder: Option<String>,
 ) -> Result<String, String> {
     let scope = crate::scope::Scope::load(&app)?;
     let output_folder = scope.output()?.to_string_lossy().to_string();
     let master = master.map(|m| scope.audio(&m).map(|p| p.to_string_lossy().to_string())).transpose()?;
     check_kit_files(&files)?;
-    write_launch_kit(output_folder, folder_name, files, master, master_name, clips).await
+    write_launch_kit(output_folder, folder_name, files, master, master_name, clips, previous_folder).await
+}
+
+/// What an export wrote, kept in the kit folder so the next export removes
+/// its own leftovers (an old master name, renamed snippets) and nothing else.
+const KIT_MANIFEST: &str = ".hivo-kit.json";
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct KitManifest {
+    files: Vec<String>,
+}
+
+/// A manifest entry the cleanup may remove: a plain file name, or one in
+/// `snippets/`, of a type an export writes. The manifest is a file on disk,
+/// so it's checked like any input: no other folder, no other kind of file.
+fn kit_entry(entry: &str) -> bool {
+    let parts: Vec<&str> = entry.split('/').collect();
+    let name = match parts.as_slice() {
+        [name] => *name,
+        ["snippets", name] => *name,
+        _ => return false,
+    };
+    let ok_part = |p: &str| !p.is_empty() && p != "." && p != ".." && safe_name(p) == p;
+    if !parts.iter().all(|p| ok_part(p)) {
+        return false;
+    }
+    let ext = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    matches!(ext.as_str(), "txt" | "json" | "csv" | "md" | "wav" | "aif" | "aiff" | "flac" | "mp3" | "ogg" | "m4a")
+}
+
+fn read_manifest(dir: &Path) -> KitManifest {
+    fs::read_to_string(dir.join(KIT_MANIFEST))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Removes what the manifest in `dir` lists, except `keep`. When the whole
+/// folder is an old one (`keep` empty), the manifest and the emptied
+/// folders go too; anything the user put there (cover art, shorts) stays.
+fn remove_previous(dir: &Path, keep: &[String]) {
+    for entry in read_manifest(dir).files {
+        if kit_entry(&entry) && !keep.contains(&entry) {
+            let _ = fs::remove_file(dir.join(&entry));
+        }
+    }
+    // Only succeeds when empty.
+    let _ = fs::remove_dir(dir.join("snippets"));
+    if keep.is_empty() {
+        let _ = fs::remove_file(dir.join(KIT_MANIFEST));
+        let _ = fs::remove_dir(dir);
+    }
+}
+
+/// The saved cover concept of a kit, as base64, for the shorts' art (the
+/// webview can't read a file itself). None when there isn't one.
+#[tauri::command]
+pub async fn read_kit_cover(app: tauri::AppHandle, folder_name: String) -> Result<Option<String>, String> {
+    use base64::Engine;
+    let scope = crate::scope::Scope::load(&app)?;
+    let path = scope.output()?.join(crate::scanner::LAUNCH_KITS_DIR).join(safe_name(&folder_name)).join(crate::cover::COVER_FILE);
+    tauri::async_runtime::spawn_blocking(move || {
+        match fs::metadata(&path) {
+            Ok(m) if m.is_file() && m.len() <= 20 * 1024 * 1024 => {}
+            _ => return Ok(None),
+        }
+        let bytes = fs::read(&path).map_err(|e| format!("could not read the cover concept: {e}"))?;
+        Ok(Some(base64::engine::general_purpose::STANDARD.encode(bytes)))
+    })
+    .await
+    .map_err(|e| format!("reading the cover failed: {e}"))?
 }
 
 /// What a kit's text files may be called: the kit's own text formats only.
@@ -547,31 +618,48 @@ async fn write_launch_kit(
     master: Option<String>,
     master_name: String,
     clips: Vec<Snippet>,
+    previous_folder: Option<String>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         // <export folder>/Launch Kits/<song>; the song part is sanitized here
         // so a title like ".." can't climb out.
-        let dir = PathBuf::from(&output_folder)
-            .join(crate::scanner::LAUNCH_KITS_DIR)
-            .join(safe_name(&folder_name));
+        let kits = PathBuf::from(&output_folder).join(crate::scanner::LAUNCH_KITS_DIR);
+        let dir = kits.join(safe_name(&folder_name));
         fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+        let mut written: Vec<String> = Vec::new();
         for f in &files {
-            let path = dir.join(safe_name(&f.name));
+            let name = safe_name(&f.name);
+            let path = dir.join(&name);
             fs::write(&path, &f.content).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+            written.push(name);
         }
         if let Some(master) = master {
             let src = Path::new(&master);
             let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("wav");
-            let dest = dir.join(format!("{}.{ext}", safe_name(&master_name)));
+            let name = format!("{}.{ext}", safe_name(&master_name));
+            let dest = dir.join(&name);
             // Copying a file onto itself truncates it on Unix: never do that.
             let same = matches!((src.canonicalize(), dest.canonicalize()), (Ok(a), Ok(b)) if a == b);
             if !same {
                 fs::copy(src, &dest).map_err(|e| format!("could not copy the mixdown: {e}"))?;
             }
+            written.push(name);
             if !clips.is_empty() {
-                export_clips(src, &clips, &dir.join("snippets"))?;
+                for path in export_clips(src, &clips, &dir.join("snippets"))? {
+                    if let Some(n) = path.file_name().and_then(|n| n.to_str()) {
+                        written.push(format!("snippets/{n}"));
+                    }
+                }
             }
         }
+        // Leftovers of the last export: in this folder (a new master name,
+        // renamed snippets), and the old folder after a title change.
+        remove_previous(&dir, &written);
+        if let Some(prev) = previous_folder.map(|p| safe_name(&p)).filter(|p| *p != safe_name(&folder_name)) {
+            remove_previous(&kits.join(prev), &[]);
+        }
+        let manifest = serde_json::to_string_pretty(&KitManifest { files: written }).map_err(|e| e.to_string())?;
+        fs::write(dir.join(KIT_MANIFEST), manifest).map_err(|e| format!("could not write {KIT_MANIFEST}: {e}"))?;
         Ok(dir.to_string_lossy().to_string())
     })
     .await
@@ -705,6 +793,71 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         assert!(written[0].ends_with("snippets/Hook 15s.wav"));
         assert_eq!(bytes.len(), 44 + 15 * 8000 * 2);
+    }
+
+    #[test]
+    fn re_export_replaces_only_the_files_it_wrote() {
+        let dir = temp("reexport");
+        let out = dir.join("out");
+        let src = fixture(&dir);
+        let src_str = src.to_string_lossy().to_string();
+        let text = |name: &str| vec![KitFile { name: name.to_string(), content: "x".to_string() }];
+        let clip = |label: &str| vec![Snippet { label: label.into(), start_sec: 30.0, length_sec: 7.0, reason: None }];
+        let export = |folder: &str, master_name: &str, label: &str, prev: Option<&str>| {
+            tauri::async_runtime::block_on(write_launch_kit(
+                out.to_string_lossy().to_string(),
+                folder.to_string(),
+                text("README.md"),
+                Some(src_str.clone()),
+                master_name.to_string(),
+                clip(label),
+                prev.map(str::to_string),
+            ))
+            .unwrap()
+        };
+
+        let first = PathBuf::from(export("Night Run", "Ana - Night Run", "Hook 7s", None));
+        // Things the user put in the kit folder.
+        fs::write(first.join("cover-concept.jpg"), b"jpg").unwrap();
+        fs::write(first.join("notes.md"), b"mine").unwrap();
+        // A file next to the kit folders, never touched.
+        fs::write(dir.join("out").join("keep.md"), b"outside").unwrap();
+
+        // Same title, new artist and snippet name: the old master and clip go.
+        let again = PathBuf::from(export("Night Run", "Ana feat. Ben - Night Run", "Hook 15s", Some("Night Run")));
+        assert_eq!(again, first);
+        assert!(!first.join("Ana - Night Run.wav").exists());
+        assert!(first.join("Ana feat. Ben - Night Run.wav").exists());
+        assert!(!first.join("snippets").join("Hook 7s.wav").exists());
+        assert!(first.join("snippets").join("Hook 15s.wav").exists());
+        assert!(first.join("cover-concept.jpg").exists() && first.join("notes.md").exists());
+
+        // New title: a new folder; the old one keeps only what the user put there.
+        let renamed = PathBuf::from(export("Night Drive", "Ana - Night Drive", "Hook 15s", Some("Night Run")));
+        assert!(renamed.join("Ana - Night Drive.wav").exists());
+        assert!(!first.join("Ana feat. Ben - Night Run.wav").exists());
+        assert!(!first.join("README.md").exists());
+        assert!(!first.join("snippets").exists());
+        assert!(!first.join(KIT_MANIFEST).exists());
+        assert!(first.join("cover-concept.jpg").exists() && first.join("notes.md").exists());
+        assert!(dir.join("out").join("keep.md").exists());
+
+        // Only a renamed folder whose files were all ours disappears.
+        let _ = export("Solo", "Ana - Solo", "Hook 15s", None);
+        let _ = export("Solo 2", "Ana - Solo 2", "Hook 15s", Some("Solo"));
+        let kits = out.join(crate::scanner::LAUNCH_KITS_DIR);
+        assert!(!kits.join("Solo").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_entries_stay_in_the_kit_folder() {
+        for ok in ["README.md", "Ana - Night.wav", "snippets/Hook 15s.wav"] {
+            assert!(kit_entry(ok), "{ok}");
+        }
+        for bad in ["../x.md", "snippets/../../x.wav", "a/b.md", "/etc/x.md", "cover-concept.jpg", "run.sh", "snippets", "..", "x\\..\\y.md"] {
+            assert!(!kit_entry(bad), "{bad}");
+        }
     }
 
     #[test]

@@ -4,6 +4,8 @@ import { TargetPicker } from "../components/TargetPicker";
 import { Button, Engrave, Led } from "../components/ui";
 import { s } from "../inboxStrings";
 import { tr } from "../lib/i18n";
+import { filedTitle } from "../lib/filedTo";
+import { findItem } from "../lib/sync";
 import { isEmptyIdea, isLocked, MAX_IDEA_CHARS, MAX_TITLE_CHARS } from "../lib/ideas";
 import { flushExtras, removeIdea, requestSync, updateIdea, useApp } from "../store";
 import { T } from "../strings";
@@ -12,6 +14,7 @@ import { C, FONT, RADIUS } from "../theme";
 /** Writing an idea: a title, the text, what it's for. Autosaves; sent at the next sync. */
 export function IdeaScreen({ id, onBack }: { id: string; onBack: () => void }) {
   const idea = useApp((st) => st.ideas.find((i) => i.id === id));
+  const library = useApp((st) => st.sync);
   const [title, setTitle] = useState(idea?.title ?? "");
   const [text, setText] = useState(idea?.text ?? "");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -64,14 +67,15 @@ export function IdeaScreen({ id, onBack }: { id: string; onBack: () => void }) {
   if (!idea) {
     return (
       <View style={{ padding: 16 }}>
-        <Pressable onPress={onBack}>
+        <Pressable onPress={onBack} accessibilityRole="button">
           <Text style={styles.back}>‹ {t.back}</Text>
         </Pressable>
       </View>
     );
   }
 
-  const status = idea.status === "filed" ? s().filedOnComputer : idea.status === "dismissed" ? s().dismissedOnComputer : idea.status === "stored" && idea.sentAt !== null && idea.updatedAt <= idea.sentAt ? s().onComputer : s().notSent;
+  const filedWhere = idea.status === "filed" ? filedTitle(idea.filedTo, (k, i) => findItem(library, k, i)) : null;
+  const status = idea.status === "filed" ? (filedWhere ? s().filedTo(filedWhere) : s().filedOnComputer) : idea.status === "dismissed" ? s().dismissedOnComputer : idea.status === "stored" && idea.sentAt !== null && idea.updatedAt <= idea.sentAt ? s().onComputer : s().notSent;
   const led = idea.status === "filed" || (idea.status === "stored" && idea.sentAt !== null && idea.updatedAt <= idea.sentAt) ? C.ok : idea.status === "dismissed" ? C.engrave : C.warn;
 
   return (
@@ -89,11 +93,11 @@ export function IdeaScreen({ id, onBack }: { id: string; onBack: () => void }) {
         {locked ? <Text style={styles.locked}>{idea.status === "filed" ? s().lockedFiled : s().lockedDismissed}</Text> : null}
         <View>
           <Engrave>{s().ideaTitle}</Engrave>
-          <TextInput value={title} onChangeText={(v) => edit({ title: v })} editable={!locked} maxLength={MAX_TITLE_CHARS} placeholder={s().ideaTitlePlaceholder} placeholderTextColor={C.engrave} style={styles.title} />
+          <TextInput value={title} onChangeText={(v) => edit({ title: v })} editable={!locked} accessibilityLabel={s().ideaTitle} maxLength={MAX_TITLE_CHARS} placeholder={s().ideaTitlePlaceholder} placeholderTextColor={C.engrave} style={styles.title} />
         </View>
         <View>
           <Engrave>{s().ideaText}</Engrave>
-          <TextInput value={text} onChangeText={(v) => edit({ text: v })} editable={!locked} multiline maxLength={MAX_IDEA_CHARS} placeholder={s().ideaTextPlaceholder} placeholderTextColor={C.engrave} style={styles.text} textAlignVertical="top" />
+          <TextInput value={text} onChangeText={(v) => edit({ text: v })} editable={!locked} accessibilityLabel={s().ideaText} multiline maxLength={MAX_IDEA_CHARS} placeholder={s().ideaTextPlaceholder} placeholderTextColor={C.engrave} style={styles.text} textAlignVertical="top" />
         </View>
         <TargetPicker value={idea.target} disabled={locked} onChange={(target) => updateIdea(id, { target })} />
         {isEmptyIdea({ title, text }) ? <Text style={styles.hint}>{s().emptyIdea}</Text> : null}

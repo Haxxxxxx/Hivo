@@ -8,8 +8,9 @@ import {
   useAudioRecorder,
   useAudioRecorderState,
 } from "expo-audio";
-import { useEffect, useRef, useState } from "react";
-import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
+import { useEffect, useRef, useState, type MutableRefObject } from "react";
+import { Alert, AppState, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { TargetPicker } from "../components/TargetPicker";
 import { Button, Engrave, Led } from "../components/ui";
 import { adopt, SpaceError } from "../files";
@@ -28,8 +29,11 @@ const clock = (ms: number) => {
   return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
 };
 
-/** Record a flow or a melody; kept in the outbox, sent at the next sync. */
-export function RecordScreen({ target: initialTarget, onDone }: { target: IdeaTarget | null; onDone: () => void }) {
+const KEEP_AWAKE_TAG = "hivo-recording";
+
+/** Record a flow or a melody; kept in the outbox, sent at the next sync.
+ * `backRef`: what the hardware Back does here (App.tsx calls it). */
+export function RecordScreen({ target: initialTarget, onDone, backRef }: { target: IdeaTarget | null; onDone: () => void; backRef: MutableRefObject<(() => void) | null> }) {
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const rec = useAudioRecorderState(recorder, 250);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
@@ -39,6 +43,8 @@ export function RecordScreen({ target: initialTarget, onDone }: { target: IdeaTa
   const [denied, setDenied] = useState(false);
   const [busy, setBusy] = useState(false);
   const stoppingByUser = useRef(false);
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
   const t = tr(T);
   const player = useAudioPlayer(phase.kind === "done" ? phase.uri : null);
   const playing = useAudioPlayerStatus(player).playing;
@@ -48,13 +54,74 @@ export function RecordScreen({ target: initialTarget, onDone }: { target: IdeaTa
   }, []);
 
   // Stopped without the Stop button: the 15-minute cap, a call, another app.
+  // Judged by "it did start", not by the clock: a call in the first second
+  // left the screen stuck on "recording" at 0:00.
+  const started = useRef(false);
   useEffect(() => {
-    if (phase.kind !== "recording" || rec.isRecording || stoppingByUser.current) return;
-    if (rec.durationMillis === 0) return; // not started yet
+    if (rec.isRecording) {
+      started.current = true;
+      return;
+    }
+    if (phase.kind !== "recording" || stoppingByUser.current || !started.current) return;
     void finish(rec.durationMillis >= MAX_MEMO_MS - 1000 ? s().recMaxReached : s().recStopped);
   }, [rec.isRecording]);
 
+  // The screen stays on while recording (a take on a mic stand runs for
+  // minutes): a locked screen would cut the microphone.
+  useEffect(() => {
+    if (phase.kind !== "recording") return;
+    void activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch(() => {});
+    return () => {
+      void deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {});
+    };
+  }, [phase.kind]);
+
+  // Hivo left the screen while recording: stop and keep what was recorded
+  // (Android cuts a background app's microphone anyway).
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (st) => {
+      if (st === "background" && phaseRef.current.kind === "recording" && !stoppingByUser.current) {
+        stoppingByUser.current = true;
+        void finish(s().recBackground);
+      }
+    });
+    return () => sub.remove();
+  });
+
+  function discard() {
+    player.pause();
+    setPhase({ kind: "idle" });
+    setMessage(null);
+  }
+
+  function confirmDiscard(then: () => void) {
+    Alert.alert(s().discardTitle, s().discardBody, [
+      { text: s().cancel, style: "cancel" },
+      { text: s().recDiscard, style: "destructive", onPress: then },
+    ]);
+  }
+
+  /** Back (on screen or hardware): never during a take; a finished take is confirmed first. */
+  function back() {
+    if (phaseRef.current.kind === "recording" || busy) return;
+    if (phaseRef.current.kind === "done") {
+      confirmDiscard(() => {
+        player.pause();
+        onDone();
+      });
+      return;
+    }
+    onDone();
+  }
+  useEffect(() => {
+    backRef.current = back;
+    return () => {
+      backRef.current = null;
+    };
+  });
+
   async function start() {
+    started.current = false;
     setMessage(null);
     const p = await requestRecordingPermissionsAsync();
     if (!p.granted) {
@@ -102,7 +169,7 @@ export function RecordScreen({ target: initialTarget, onDone }: { target: IdeaTa
     try {
       player.pause();
       const id = newOutId();
-      const file = await adopt(id, { uri: phase.uri, name: `${title.trim() || "Voice memo"}.m4a` });
+      const file = await adopt(id, { uri: phase.uri, name: `${title.trim() || s().memoLabel}.m4a` });
       addOutItem(id, "memo", [file], { title: title.trim(), target, durationMs: phase.durationMs });
       requestSync();
       onDone();
@@ -116,7 +183,7 @@ export function RecordScreen({ target: initialTarget, onDone }: { target: IdeaTa
   return (
     <ScrollView contentContainerStyle={{ padding: 16, gap: 16 }} keyboardShouldPersistTaps="handled">
       {!recording ? (
-        <Pressable onPress={onDone} hitSlop={10} accessibilityRole="button" style={{ paddingVertical: 4 }}>
+        <Pressable onPress={back} hitSlop={10} accessibilityRole="button" style={{ paddingVertical: 4 }}>
           <Text style={styles.back}>‹ {t.back}</Text>
         </Pressable>
       ) : (
@@ -143,18 +210,10 @@ export function RecordScreen({ target: initialTarget, onDone }: { target: IdeaTa
       {phase.kind === "done" ? (
         <View style={{ gap: 12 }}>
           <Button label={playing ? s().pause : s().play} onPress={() => (playing ? player.pause() : (player.seekTo(0), player.play()))} />
-          <TextInput value={title} onChangeText={setTitle} maxLength={200} placeholder={s().recNamePlaceholder} placeholderTextColor={C.engrave} style={styles.input} />
+          <TextInput value={title} onChangeText={setTitle} accessibilityLabel={s().titleLabel} maxLength={200} placeholder={s().recNamePlaceholder} placeholderTextColor={C.engrave} style={styles.input} />
           <TargetPicker value={target} onChange={setTarget} />
           <View style={{ flexDirection: "row", gap: 8 }}>
-            <Button
-              label={s().recDiscard}
-              variant="quiet"
-              onPress={() => {
-                player.pause();
-                setPhase({ kind: "idle" });
-                setMessage(null);
-              }}
-            />
+            <Button label={s().recDiscard} variant="quiet" onPress={() => confirmDiscard(discard)} />
             <View style={{ flex: 1 }} />
             <Button label={s().recSave} variant="primary" disabled={busy} onPress={() => void keep()} />
           </View>

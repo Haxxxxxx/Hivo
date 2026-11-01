@@ -67,6 +67,26 @@ pub struct ProjectInfo {
     /// Named mixer tracks and recorded-take labels ("Lead Voices - Nova"),
     /// minus generic ones. Collaborator names usually live here.
     pub track_names: Vec<String>,
+    /// Mixdowns in the export folder named after this song that weren't
+    /// counted: another linked song has the same name, and an export's file
+    /// name doesn't say which one it came from.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ambiguous_exports: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// What a scan found: the projects, and the linked folders that couldn't
+/// be read right now (unplugged drive, unmounted share, renamed folder).
+/// Songs under those are missing from `projects` because their folder is
+/// gone, not because they were moved or deleted.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanResult {
+    pub projects: Vec<ProjectInfo>,
+    pub unreachable: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

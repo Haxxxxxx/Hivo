@@ -1,7 +1,9 @@
 import type { Album, AlbumKind, ProjectInfo, Workspace } from "../types";
 import { dict, locale, tr } from "../i18n";
-import { parseDate } from "./launchKit";
-import { isFinished, renderFreshness } from "./songs";
+import { kitTitleFor, parseDate } from "./launchKit";
+import { datedRelease } from "./releaseDates";
+import { isKitAccepted, kitMaster, masterFreshness } from "./kitState";
+import { isFinished } from "./songs";
 
 // The release calendar (docs/ROADMAP.md, Phase 1a): every dated release,
 // planned and past, with how ready it is. Sources: releases (albums, EPs,
@@ -46,7 +48,7 @@ const T = dict(
     stuckInPrep: (n: number) => `Released, but ${n} track${n === 1 ? " is" : "s are"} still in Prep: move to Release or Promotion`,
     notFound: (n: number) => `${n} track${s(n)} not found (moved or renamed)`,
     mixdownNotReady: (n: number) => `${n} track${s(n)}: mixdown outdated or missing (render before you export the kit)`,
-    otherKitDate: (n: number) => `${n} track${s(n)} ${n === 1 ? "has" : "have"} another date in ${n === 1 ? "its" : "their"} Launch Kit: the release's date is the one used`,
+    otherKitDate: (n: number) => `${n} track${s(n)} ${n === 1 ? "has" : "have"} another date typed in ${n === 1 ? "its" : "their"} Launch Kit, and the kit exports that one: set the same date on both`,
   },
   {
     notFriday: "Pas un vendredi : les nouveaux sons sortent partout le vendredi",
@@ -57,7 +59,7 @@ const T = dict(
       `Sorti, mais ${n} morceau${n === 1 ? " est" : "x sont"} encore en Prépa : passe-${n === 1 ? "le" : "les"} en Sortie ou Promo`,
     notFound: (n: number) => `${n} morceau${n === 1 ? " introuvable" : "x introuvables"} (déplacé${s(n)} ou renommé${s(n)})`,
     mixdownNotReady: (n: number) => `${n} morceau${n === 1 ? "" : "x"} : mixdown pas à jour ou absent (fais le rendu avant d'exporter le kit)`,
-    otherKitDate: (n: number) => `${n} morceau${n === 1 ? " a" : "x ont"} une autre date dans ${n === 1 ? "son" : "leur"} Launch Kit : c'est la date de la sortie qui compte`,
+    otherKitDate: (n: number) => `${n} morceau${n === 1 ? " a" : "x ont"} une autre date tapée dans ${n === 1 ? "son" : "leur"} Launch Kit, et c'est celle que le kit exporte : mets la même date des deux côtés`,
   },
 );
 
@@ -85,14 +87,15 @@ function checksFor(e: Omit<CalendarEntry, "checks">, ws: Workspace, releaseDate?
     out.push({ level: "info", message: t.stuckInPrep(stuckInPrep) });
   }
   // Readiness also needs a mixdown made after the last save (the kit's master and snippets).
-  const notRendered = e.tracks.filter((track) => renderFreshness(track) !== "fresh").length;
+  const notRendered = e.tracks.filter((track) => masterFreshness(track, kitMaster(track, ws.songs[track.path])) !== "fresh").length;
   if (e.daysAway >= 0 && notRendered) out.push({ level: e.daysAway < 14 ? "warn" : "info", message: t.mixdownNotReady(notRendered) });
   if (releaseDate) {
+    // Same rule as the kit (releaseDates.ts): only a typed date stays.
     const other = e.tracks.filter((track) => {
-      const own = ws.songs[track.path]?.launchKit?.edits?.releaseDate;
+      const own = datedRelease(track.path, ws.songs[track.path], ws.albums);
       return !!own && own !== releaseDate;
     }).length;
-    if (other) out.push({ level: "info", message: t.otherKitDate(other) });
+    if (other) out.push({ level: "warn", message: t.otherKitDate(other) });
   }
   if (e.missingTracks) out.push({ level: "warn", message: t.notFound(e.missingTracks) });
   return out;
@@ -116,7 +119,7 @@ export function buildCalendar(projects: ProjectInfo[], ws: Workspace, today = ne
       tracks,
       missingTracks: paths.length - tracks.length,
       finished: tracks.filter((t) => isFinished(ws.songs[t.path]?.status)).length,
-      kitsAccepted: tracks.filter((t) => ws.songs[t.path]?.launchKit?.acceptedAtMs).length,
+      kitsAccepted: tracks.filter((t) => isKitAccepted(t, ws.songs[t.path], ws.albums)).length,
     };
     return { ...e, checks: checksFor(e, ws, base.source.type === "album" ? base.date : undefined) };
   };
@@ -127,12 +130,36 @@ export function buildCalendar(projects: ProjectInfo[], ws: Workspace, today = ne
     const e = make({ key: `album:${a.id}`, date: a.releaseDate, title: a.title, kind: a.kind, color: a.color, source: { type: "album", id: a.id } }, a.trackPaths);
     if (e) entries.push(e);
   }
+  // Tracks of an undated release that have a kit date: one entry for the
+  // release per date (an EP is one release, not five singles).
+  const onUndated = new Map<string, Map<string, string[]>>();
+  for (const a of ws.albums as Album[]) {
+    if (a.releaseDate) continue;
+    for (const p of a.trackPaths) {
+      const meta = ws.songs[p];
+      const date = datedRelease(p, meta, ws.albums);
+      if (!date || onDatedRelease.has(p) || meta?.archived || !byPath.has(p)) continue;
+      const byDate = onUndated.get(a.id) ?? new Map<string, string[]>();
+      byDate.set(date, [...(byDate.get(date) ?? []), p]);
+      onUndated.set(a.id, byDate);
+    }
+  }
+  const grouped = new Set<string>();
+  for (const a of ws.albums as Album[]) {
+    for (const [date, paths] of onUndated.get(a.id) ?? []) {
+      if (paths.every((p) => grouped.has(p))) continue;
+      paths.forEach((p) => grouped.add(p));
+      const e = make({ key: `album:${a.id}:${date}`, date, title: a.title, kind: a.kind, color: a.color, source: { type: "album", id: a.id } }, paths);
+      if (e) entries.push(e);
+    }
+  }
   for (const [path, meta] of Object.entries(ws.songs)) {
     const date = meta.launchKit?.edits?.releaseDate;
-    if (!date || onDatedRelease.has(path) || meta.archived) continue;
+    if (!date || onDatedRelease.has(path) || grouped.has(path) || meta.archived) continue;
     const song = byPath.get(path);
     if (!song) continue;
-    const e = make({ key: `song:${path}`, date, title: song.name, kind: "single", color: "#e8743b", source: { type: "song", path } }, [path]);
+    // The kit's title (what the files and captions announce), not the file name.
+    const e = make({ key: `song:${path}`, date, title: kitTitleFor(song, meta), kind: "single", color: "#e8743b", source: { type: "song", path } }, [path]);
     if (e) entries.push(e);
   }
   return entries.sort((a, b) => a.dateMs - b.dateMs);

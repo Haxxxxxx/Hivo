@@ -46,6 +46,44 @@ export async function adopt(id: string, src: { uri: string; name: string }, copy
   return { uri: out.uri, name: out.name, size: out.size ?? size, done: false };
 }
 
+/**
+ * Adopts every file of one item, or none: on any failure the files already
+ * moved go back where they were (so the share can be sent again) and the
+ * item's folder is removed. No file is ever left without an item.
+ */
+export async function adoptAll(id: string, srcs: { uri: string; name: string }[], copy = false): Promise<OutFile[]> {
+  const done: { from: string; file: OutFile }[] = [];
+  try {
+    for (const src of srcs) done.push({ from: src.uri, file: await adopt(id, src, copy) });
+    return done.map((d) => d.file);
+  } catch (e) {
+    if (!copy) {
+      for (const d of done) {
+        try {
+          await new File(d.file.uri).move(new File(d.from));
+        } catch (err) {
+          console.warn("Hivo: could not put a shared file back", err);
+        }
+      }
+    }
+    removeItemFiles(id);
+    throw e;
+  }
+}
+
+/** Removes outbox folders no item points to (an app killed between the copy and the save). */
+export function sweepOutbox(keep: Set<string>): void {
+  try {
+    const root = new Directory(Paths.document, "outbox");
+    if (!root.exists) return;
+    for (const entry of root.list()) {
+      if (entry instanceof Directory && !keep.has(entry.name)) entry.delete();
+    }
+  } catch (e) {
+    console.warn("Hivo: could not sweep the outbox folder", e);
+  }
+}
+
 /** Up to `length` bytes at `offset`. */
 export async function readChunk(uri: string, offset: number, length: number): Promise<Uint8Array> {
   const handle = new File(uri).open();

@@ -10,14 +10,18 @@ import type {
   PackagePlan,
   PackageResult,
   InboxList,
+  FiledSketch,
   InboxStatus,
-  ProjectInfo,
   RenderEvent,
+  ScanResult,
   Settings,
   Snippet,
   TemplateInfo,
   Workspace,
+  BeatAnalysis,
   BeatFile,
+  BeatScan,
+  PlatformLink,
   YoutubeStatus,
   YoutubeVideo,
   DigResult,
@@ -34,7 +38,7 @@ import type {
 } from "../types";
 
 /** Scans the linked folders and export folder saved in Settings (Rust reads them). */
-export async function scanProjects(): Promise<ProjectInfo[]> {
+export async function scanProjects(): Promise<ScanResult> {
   return invoke("scan_projects");
 }
 
@@ -55,6 +59,10 @@ export const pickWatchedFolder = (): Promise<Settings> => invoke("pick_watched_f
 /** Links a folder detection found (Rust refuses anything it didn't detect). */
 export const linkDetectedFolder = (path: string): Promise<Settings> => invoke("link_detected_folder", { path });
 export const removeWatchedFolder = (folder: string): Promise<Settings> => invoke("remove_watched_folder", { folder });
+/** A linked folder that moved: the user picks its new place (in Rust), which
+ * replaces it. null when the picker was cancelled. */
+export const repointWatchedFolder = (folder: string): Promise<{ settings: Settings; from: string; to: string } | null> =>
+  invoke("repoint_watched_folder", { folder });
 export const pickOutputFolder = (): Promise<Settings> => invoke("pick_output_folder");
 /** Beats folders (the Digger), picked natively like project folders. */
 export const pickBeatFolder = (): Promise<Settings> => invoke("pick_beat_folder");
@@ -62,7 +70,11 @@ export const removeBeatFolder = (folder: string): Promise<Settings> => invoke("r
 /** Sample libraries: where moved packs are looked up by file name. */
 export const pickSampleFolder = (): Promise<Settings> => invoke("pick_sample_folder");
 export const removeSampleFolder = (folder: string): Promise<Settings> => invoke("remove_sample_folder", { folder });
-export const scanBeats = (): Promise<BeatFile[]> => invoke("scan_beats");
+/** The beats and what the scan didn't show (capped, unreadable formats). */
+export const scanBeatsFull = (): Promise<BeatScan> => invoke("scan_beats");
+export const scanBeats = (): Promise<BeatFile[]> => scanBeatsFull().then((s) => s.beats);
+/** Tempo, key, loudness and length, offline (no AI key), cached per file in Rust; at most MAX_ANALYZE paths. */
+export const analyzeBeats = (paths: string[]): Promise<BeatAnalysis[]> => invoke("analyze_beats", { paths });
 /** Whether a YouTube Data API key is set (the key itself never comes back). */
 export const youtubeStatus = (): Promise<YoutubeStatus> => invoke("youtube_status");
 /** Whether the app runs from a read-only place on macOS ("dmg", "translocated") or null. */
@@ -85,6 +97,12 @@ export const digDeeper = (
   language: "fr" | "en",
 ): Promise<DigDeeperResult> =>
   invoke("dig_deeper", { request: { analysis: { summary, traits, tempo, queries }, exclude, foundTitles, searchesDone, likedTitles, language } });
+/** Lifts the "web search isn't available" pause ("Try again"). */
+export const resetWebSearch = (): Promise<void> => invoke("reset_web_search");
+/** Keeps the last dig in the config dir (null forgets it). */
+export const saveLastDig = (state: unknown): Promise<void> => invoke("save_last_dig", { state });
+/** The kept dig, or null; checked again by `restoreDig`. */
+export const loadLastDig = (): Promise<unknown> => invoke("load_last_dig");
 /** Writes `<first beats folder>/_leads/<slug>-<hash>.md` (text only, never
  * audio); returns the file's path. Saving the same url again overwrites it. */
 export const saveLead = (lead: Lead): Promise<string> => invoke("save_lead", { lead });
@@ -97,6 +115,8 @@ export const deleteLead = (path: string): Promise<void> => invoke("delete_lead",
 export const lookupArtists = (query: string): Promise<LookupCandidate[]> => invoke("lookup_artists", { query });
 export const lookupProfile = (source: LookupSource, id: string): Promise<LookupProfile> => invoke("lookup_profile", { source, id });
 export const spotifyStatus = (): Promise<SpotifyStatus> => invoke("spotify_status");
+/** A profile link typed by hand, classified like MusicBrainz's (Rust rebuilds known platforms' links). */
+export const classifyProfileLink = (url: string): Promise<PlatformLink> => invoke("classify_profile_link", { url });
 export const setSpotifyCredentials = (clientId: string | null, clientSecret: string | null): Promise<void> =>
   invoke("set_spotify_credentials", { clientId, clientSecret });
 export const pickFlStudio = (): Promise<Settings> => invoke("pick_fl_studio");
@@ -111,6 +131,23 @@ export async function getWorkspace(): Promise<Workspace | null> {
 export async function saveWorkspace(workspace: Workspace): Promise<void> {
   return invoke("save_workspace", { workspace });
 }
+
+/** What the "can't read your workspace" strip can offer. */
+export interface WorkspaceFiles {
+  hasBackup: boolean;
+  backupSavedAtMs: number | null;
+}
+export const workspaceFiles = (): Promise<WorkspaceFiles> => invoke("workspace_files");
+/** Puts `workspace.json.bak` back (the unreadable file is kept as `.bad`). */
+export const restoreWorkspaceBackup = (): Promise<Workspace> => invoke("restore_workspace_backup");
+/** "Start fresh": the unreadable workspace is kept as `workspace.json.bad`. */
+export const setAsideWorkspace = (): Promise<void> => invoke("set_aside_workspace");
+/** Shows the app's config folder (workspace.json, settings.json) in Finder / Explorer. */
+export const showConfigFolder = (): Promise<void> => invoke("show_config_folder");
+/** settings.json didn't parse and was reset: where the old file was kept (answers once). */
+export const takeSettingsRecovery = (): Promise<string | null> => invoke("take_settings_recovery");
+/** Saved folders (projects, beats, samples, export) that can't be reached right now. */
+export const unreachableSettingFolders = (): Promise<string[]> => invoke("unreachable_setting_folders");
 
 export async function detectFlStudio(): Promise<string | null> {
   return invoke("detect_fl_studio");
@@ -158,6 +195,10 @@ export interface Continued {
   flp: string;
   clips: number;
   note: string | null;
+  /** Audio files left off the playlist past 20 (FL_BUILD MAX_CLIPS). */
+  skipped: number;
+  /** Mixdown files left off because the stems (`BandLab/Stems/`) are on it. */
+  mixdown: string[];
 }
 export const continueSketch = (sketchPath: string, templatePath: string): Promise<Continued> => invoke("continue_sketch", { sketchPath, templatePath });
 
@@ -208,8 +249,15 @@ export async function exportLaunchKit(args: {
   master: string | null;
   masterName: string;
   clips: Snippet[];
+  /** The folder name of the last export (a title change cleans it up). */
+  previousFolder: string | null;
 }): Promise<string> {
   return invoke("export_launch_kit", args);
+}
+
+/** The saved cover concept of a kit (base64 JPEG), or null. */
+export async function readKitCover(folderName: string): Promise<string | null> {
+  return invoke("read_kit_cover", { folderName });
 }
 
 /** Whether a Gemini key is set (never the key itself). */
@@ -336,13 +384,18 @@ export function onPhoneSyncRequest(handler: (request: PhoneSyncRequest) => void)
 export const phoneSyncSetDemo = (on: boolean): Promise<void> => invoke("phone_sync_set_demo", { on });
 export const phoneInboxList = (): Promise<InboxList> => invoke("phone_inbox_list");
 /** `<parentFolder>/<name>/BandLab/` with the sketch's audio (zips unpacked); returns the sketch's key. */
-export const phoneInboxFileSketch = (id: string, parentFolder: string, name: string): Promise<string> =>
+export const phoneInboxFileSketch = (id: string, parentFolder: string, name: string): Promise<FiledSketch> =>
   invoke("phone_inbox_file_sketch", { id, parentFolder, name });
 /** Copies a memo (or a sketch's audio) into `<song folder>/Voice memos/`; returns the copies. */
 export const phoneInboxAttachSong = (id: string, songPath: string): Promise<string[]> => invoke("phone_inbox_attach_song", { id, songPath });
 export const phoneInboxMark = (id: string, status: InboxStatus, filedTo: string | null = null): Promise<void> =>
   invoke("phone_inbox_mark", { id, status, filedTo });
 export const phoneInboxRemove = (id: string): Promise<void> => invoke("phone_inbox_remove", { id });
+/** A memo linked to a beat or a saved prod, copied into that beats folder's `_memos`; returns the copy. */
+export const phoneInboxLinkMemo = (id: string, kind: "beat" | "prod", targetId: string): Promise<string> =>
+  invoke("phone_inbox_link_memo", { id, kind, targetId });
+/** A new QR for a paired phone (port or address changed), replacing it in place. */
+export const phoneSyncRepair = (deviceId: string): Promise<PhonePairing> => invoke("phone_sync_repair", { deviceId });
 export function onPhoneInboxChanged(handler: () => void): Promise<UnlistenFn> {
   return listen("phone-inbox-changed", () => handler());
 }

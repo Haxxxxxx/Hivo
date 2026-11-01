@@ -40,16 +40,24 @@ pub fn run() {
             phone_sync::init(app.handle());
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
+                session::close_with_main(tauri::Manager::app_handle(window));
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             scanner::scan_projects,
             location::app_location,
             settings::get_settings,
+            settings::take_settings_recovery,
+            settings::unreachable_setting_folders,
             settings::save_settings,
             settings::detect_fl_studio,
             settings::detect_daw_folders,
             settings::pick_watched_folder,
             settings::link_detected_folder,
             settings::remove_watched_folder,
+            settings::repoint_watched_folder,
             settings::pick_output_folder,
             settings::pick_beat_folder,
             settings::remove_beat_folder,
@@ -58,6 +66,11 @@ pub fn run() {
             beats::scan_beats,
             digger::dig_beats,
             digger::dig_deeper,
+            digger::reset_web_search,
+            digger::save_last_dig,
+            digger::load_last_dig,
+            beats::analyze_beats,
+            lookup::classify_profile_link,
             leads::save_lead,
             leads::list_leads,
             leads::delete_lead,
@@ -72,6 +85,10 @@ pub fn run() {
             render::render_projects,
             workspace::get_workspace,
             workspace::save_workspace,
+            workspace::workspace_files,
+            workspace::restore_workspace_backup,
+            workspace::set_aside_workspace,
+            workspace::show_config_folder,
             actions::list_templates,
             actions::default_template,
             actions::create_project,
@@ -86,6 +103,7 @@ pub fn run() {
             files::kit_files,
             audio::analyze_audio,
             audio::export_launch_kit,
+            audio::read_kit_cover,
             ai::ai_status,
             ai::set_ai_key,
             ai::ai_kit,
@@ -102,6 +120,8 @@ pub fn run() {
             phone_sync::phone_sync_enable,
             phone_sync::phone_sync_pair,
             phone_sync::phone_sync_forget,
+            phone_sync::phone_sync_repair,
+            phone_sync::phone_inbox_link_memo,
             phone_sync::phone_sync_reply,
             phone_sync::phone_sync_set_demo,
             phone_sync::phone_inbox_list,

@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { ago, tr } from "../lib/i18n";
-import { sync, unpair, useApp } from "../store";
+import { sync, useApp } from "../store";
+import { confirmUnpair } from "./confirmUnpair";
 import { errorText, pairAgainText, T } from "../strings";
 import { C, FONT } from "../theme";
 import { Button, Engrave, Led } from "./ui";
@@ -45,8 +46,15 @@ export function SyncHeader({ onSettings }: { onSettings: () => void }) {
       {error ? (
         <View style={styles.error}>
           <Led color={C.missing} size={7} />
-          <Text style={styles.errorText}>{errorText(error)}</Text>
-          {error === "forgotten" ? <Button label={pairAgainText()} onPress={() => void unpair()} style={{ marginLeft: 8, paddingVertical: 5 }} /> : null}
+          <Text style={styles.errorText}>{errorText(error, lastSyncAt !== null)}</Text>
+          {error === "forgotten" ? (
+            <Button
+              label={pairAgainText()}
+              // Same question as Settings: unsynced notes stay, and can be copied first.
+              onPress={confirmUnpair}
+              style={{ marginLeft: 8, paddingVertical: 5 }}
+            />
+          ) : null}
         </View>
       ) : null}
     </View>

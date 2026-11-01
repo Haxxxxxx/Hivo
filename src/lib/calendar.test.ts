@@ -45,7 +45,35 @@ describe("release calendar checks", () => {
       songs: { "/p/A.flp": { status: "prep", launchKit: { edits: { releaseDate: "2026-11-06" } } } } as unknown as Workspace["songs"],
     };
     const [entry] = buildCalendar([song("A")], w, TODAY);
-    expect(entry.checks.map((c) => c.message)).toContain("1 track has another date in its Launch Kit: the release's date is the one used");
+    expect(entry.checks.map((c) => c.message)).toContain("1 track has another date typed in its Launch Kit, and the kit exports that one: set the same date on both");
+  });
+
+  it("a date the kit only suggested gives way to the release's date (B10)", () => {
+    const w: Workspace = {
+      ...ws,
+      songs: { "/p/A.flp": { status: "prep", launchKit: { edits: { releaseDate: "2026-11-06" }, releaseDatePin: "suggested" } } } as unknown as Workspace["songs"],
+    };
+    const [entry] = buildCalendar([song("A")], w, TODAY);
+    expect(entry.date).toBe("2026-10-19");
+    expect(entry.checks.map((c) => c.message).join(" ")).not.toMatch(/another date/);
+  });
+
+  it("shows an undated EP's tracks as one release, and singles by their kit title (B9)", () => {
+    const w: Workspace = {
+      version: 2,
+      songs: {
+        "/p/A.flp": { launchKit: { edits: { releaseDate: "2026-11-20" } } },
+        "/p/B.flp": { launchKit: { edits: { releaseDate: "2026-11-20" } } },
+        "/p/C_v2.flp": { launchKit: { edits: { releaseDate: "2026-12-04", title: "Cold Nights" } } },
+      } as unknown as Workspace["songs"],
+      albums: [{ id: "ep", title: "Tape", kind: "ep", color: "#fff", releaseDate: null, trackPaths: ["/p/A.flp", "/p/B.flp"] }] as Workspace["albums"],
+      people: [],
+    };
+    const entries = buildCalendar(["A", "B", "C_v2"].map(song), w, TODAY);
+    expect(entries.map((e) => [e.title, e.date, e.tracks.length])).toEqual([
+      ["Tape", "2026-11-20", 2],
+      ["Cold Nights", "2026-12-04", 1],
+    ]);
   });
 });
 

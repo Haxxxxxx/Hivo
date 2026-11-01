@@ -5,8 +5,10 @@
 //! local network. Plain HTTP, but every request and response body is an
 //! envelope sealed with the device's pairing key (XChaCha20-Poly1305,
 //! AAD = `hivo-sync-v1|<deviceId>|<path>`, `|resp` for answers), with a
-//! timestamp window and a nonce set against replays. Anything that doesn't
-//! open gets a bare 401.
+//! timestamp window and a nonce set against replays. Anything that can't be
+//! authenticated gets a bare 401; once the envelope opened, every error is
+//! answered sealed (`bad request`, `clock` for a timestamp outside the
+//! window), so the phone can tell "forgotten" from "something's off".
 //!
 //! Paired devices and their keys live in `phone-sync.json` in the app config
 //! dir (owner-only, like ai.json / spotify.json), never in workspace.json and
@@ -64,6 +66,8 @@ const FORWARDED: [&str; 2] = ["/v1/snapshot", "/v1/notes"];
 /// v1.1 (step 4): answered here from the phone inbox (crate::phone_inbox).
 const INBOX_PATHS: [&str; 5] = ["/v1/ideas", "/v1/upload/start", "/v1/upload/chunk", "/v1/upload/finish", "/v1/inbox"];
 pub const INBOX_EVENT: &str = "phone-inbox-changed";
+/// Progress events (upload start/chunk/finish) at most this often.
+const INBOX_EVENT_EVERY: Duration = Duration::from_millis(1000);
 
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
@@ -182,6 +186,10 @@ pub struct StoredDevice {
     pub paired_at_ms: i64,
     #[serde(default)]
     pub last_seen_ms: Option<i64>,
+    /// The port its QR carried. When the listener had to take another one,
+    /// this phone needs a new QR (Settings → Phone sync → Re-pair).
+    #[serde(default)]
+    pub paired_port: Option<u16>,
 }
 
 impl StoredDevice {
@@ -224,9 +232,37 @@ pub fn add_device(file: &mut SyncFile, now: i64) -> Result<StoredDevice, String>
         app_version: None,
         paired_at_ms: now,
         last_seen_ms: None,
+        paired_port: None,
     };
     file.devices.push(device.clone());
     Ok(device)
+}
+
+/// "Re-pair this phone": a new key for the same device id, in place (its
+/// name and what it sent stay; the old key stops working). Until the phone
+/// scans the new QR it counts as never seen.
+pub fn repair_device(file: &mut SyncFile, id: &str, port: u16, now: i64) -> Result<StoredDevice, String> {
+    let d = file.devices.iter_mut().find(|d| d.id == id).ok_or("That phone isn't paired any more.")?;
+    d.key = B64.encode(random_bytes::<32>()?);
+    d.paired_at_ms = now;
+    d.last_seen_ms = None;
+    d.paired_port = Some(port);
+    Ok(d.clone())
+}
+
+/// The listener took `port` while another one was saved (the one phones
+/// know): every phone paired before keeps the old one as its paired port,
+/// so the settings can say it needs a new QR. True when the port changed.
+pub fn note_port(file: &mut SyncFile, port: u16) -> bool {
+    let old = file.port;
+    file.port = Some(port);
+    let Some(old) = old.filter(|p| *p != port) else {
+        return false;
+    };
+    for d in file.devices.iter_mut().filter(|d| d.paired_port.is_none()) {
+        d.paired_port = Some(old);
+    }
+    true
 }
 
 pub fn forget_device(file: &mut SyncFile, id: &str) -> bool {
@@ -374,6 +410,8 @@ pub struct Inner {
     pub inbox: Arc<crate::phone_inbox::Inbox>,
     /// The webview says so when it shows sample data: uploads are refused.
     demo: AtomicBool,
+    /// When the last progress event went out (`inbox_progress`).
+    last_progress: Mutex<Option<Instant>>,
 }
 
 /// `<config dir>/phone-inbox` next to `phone-sync.json` (tests: `<file>.inbox`).
@@ -405,7 +443,20 @@ impl Inner {
             in_flight: AtomicUsize::new(0),
             next_id: AtomicU64::new(1),
             error: Mutex::new(None),
+            last_progress: Mutex::new(None),
         })
+    }
+
+    /// An upload moved: the desktop's "Receiving…" line refreshes, at most
+    /// once a second.
+    fn inbox_progress(&self, host: &dyn Host) {
+        let mut last = lock(&self.last_progress);
+        if last.is_some_and(|t| t.elapsed() < INBOX_EVENT_EVERY) {
+            return;
+        }
+        *last = Some(Instant::now());
+        drop(last);
+        host.inbox_changed();
     }
 
     fn save(&self, file: &SyncFile) -> Result<(), String> {
@@ -521,7 +572,7 @@ pub fn start(inner: &Arc<Inner>, host: Arc<dyn Host>, ip: IpAddr) -> Result<u16,
     drop(slot);
     let mut store = lock(&inner.store);
     if store.port != Some(port) {
-        store.port = Some(port);
+        note_port(&mut store, port);
         let snapshot = store.clone();
         drop(store);
         inner.save(&snapshot)?;
@@ -611,9 +662,20 @@ pub fn handle_sealed(inner: &Arc<Inner>, host: &dyn Host, path: &str, device_id:
     let Some(key) = device.key_bytes() else { return Outcome::Status(401) };
     let Ok(env) = serde_json::from_slice::<Envelope>(body) else { return Outcome::Status(401) };
     let Some(plain) = open(&key, &aad(device_id, path), &env) else { return Outcome::Status(401) };
-    let Ok(sealed) = serde_json::from_slice::<SealedRequest>(&plain) else { return Outcome::Status(401) };
-    if lock(&inner.replay).check(device_id, &sealed.nonce, sealed.ts, now_ms()).is_err() {
-        return Outcome::Status(401);
+    // Authenticated from here on: errors are answered sealed, never as a
+    // bare 401 (which the phone reads as "this computer forgot me").
+    let Ok(sealed) = serde_json::from_slice::<SealedRequest>(&plain) else {
+        return sealed_answer(&key, device_id, path, Err("bad request".to_string()));
+    };
+    let checked = lock(&inner.replay).check(device_id, &sealed.nonce, sealed.ts, now_ms());
+    match checked {
+        Ok(()) => {}
+        // Replays stay refused without a word.
+        Err(Reject::Replayed) => return Outcome::Status(401),
+        // The phone's clock is more than TS_WINDOW_MS off this computer's.
+        Err(Reject::Stale) => return sealed_answer(&key, device_id, path, Err("clock".to_string())),
+        Err(Reject::BadNonce) => return sealed_answer(&key, device_id, path, Err("bad request".to_string())),
+        Err(Reject::Full) => return sealed_answer(&key, device_id, path, Err("busy".to_string())),
     }
     if !inner.allow_rate(device_id) {
         return Outcome::Status(429);
@@ -643,12 +705,17 @@ pub fn handle_sealed(inner: &Arc<Inner>, host: &dyn Host, path: &str, device_id:
         }
         _ => return Outcome::Status(404),
     };
+    sealed_answer(&key, device_id, path, answer)
+}
+
+/// `{"ok": true, "body"}` or `{"ok": false, "error"}`, sealed for the device.
+fn sealed_answer(key: &[u8; 32], device_id: &str, path: &str, answer: Reply) -> Outcome {
     let plaintext = match answer {
         Ok(body) => json!({ "ok": true, "body": body }),
         Err(e) => json!({ "ok": false, "error": clip(&e, MAX_ERROR_CHARS) }),
     };
     let bytes = serde_json::to_vec(&plaintext).unwrap_or_default();
-    match seal(&key, &aad(device_id, &resp_path(path)), &bytes) {
+    match seal(key, &aad(device_id, &resp_path(path)), &bytes) {
         Ok(env) => Outcome::Sealed(env),
         Err(_) => Outcome::Status(500),
     }
@@ -674,11 +741,13 @@ fn answer_inbox(inner: &Inner, host: &dyn Host, path: &str, device_id: &str, pho
             }
             r
         }
-        "/v1/upload/start" => inner.inbox.upload_start(device_id, phone, body, now),
-        "/v1/upload/chunk" => inner.inbox.upload_chunk(device_id, body),
+        "/v1/upload/start" => inner.inbox.upload_start(device_id, phone, body, now).inspect(|_| inner.inbox_progress(host)),
+        "/v1/upload/chunk" => inner.inbox.upload_chunk(device_id, body).inspect(|_| inner.inbox_progress(host)),
         "/v1/upload/finish" => inner.inbox.upload_finish(device_id, body, now).map(|(v, ready)| {
             if ready {
                 host.inbox_changed();
+            } else {
+                inner.inbox_progress(host);
             }
             v
         }),
@@ -761,6 +830,11 @@ pub fn init(app: &AppHandle) {
     if lock(&inner.store).enabled {
         let _ = start_for_app(app, &inner);
     }
+    // Unfinished uploads are dropped while the app runs, not only at start.
+    let handle = app.clone();
+    crate::phone_inbox::sweep_every(&inner.inbox, crate::phone_inbox::SWEEP_EVERY, move || {
+        let _ = handle.emit(INBOX_EVENT, ());
+    });
     app.manage(PhoneSync(inner));
 }
 
@@ -772,6 +846,8 @@ pub struct DeviceInfo {
     pub app_version: Option<String>,
     pub paired_at_ms: i64,
     pub last_seen_ms: Option<i64>,
+    /// Paired on another port than the one open now: it needs a new QR.
+    pub needs_new_qr: bool,
 }
 
 #[derive(Serialize)]
@@ -794,7 +870,14 @@ fn status_of(inner: &Inner) -> PhoneSyncStatus {
         devices: store
             .devices
             .into_iter()
-            .map(|d| DeviceInfo { id: d.id, name: d.name, app_version: d.app_version, paired_at_ms: d.paired_at_ms, last_seen_ms: d.last_seen_ms })
+            .map(|d| DeviceInfo {
+                needs_new_qr: port.is_some() && d.paired_port.is_some_and(|p| Some(p) != port),
+                id: d.id,
+                name: d.name,
+                app_version: d.app_version,
+                paired_at_ms: d.paired_at_ms,
+                last_seen_ms: d.last_seen_ms,
+            })
             .collect(),
         error: lock(&inner.error).clone(),
     }
@@ -849,6 +932,29 @@ pub fn phone_sync_pair(app: AppHandle) -> Result<Pairing, String> {
     }
     let mut store = lock(&inner.store);
     let device = add_device(&mut store, now_ms())?;
+    if let Some(d) = store.devices.iter_mut().find(|d| d.id == device.id) {
+        d.paired_port = Some(port);
+    }
+    let snapshot = store.clone();
+    drop(store);
+    inner.save(&snapshot)?;
+    Ok(Pairing { url: pairing_url(&device.id, &device.key, &hosts, port, &desktop_name()), device_id: device.id })
+}
+
+/// "Re-pair this phone" (the port or the address changed): a new QR for the
+/// same device, which replaces it in place.
+#[tauri::command]
+pub fn phone_sync_repair(app: AppHandle, device_id: String) -> Result<Pairing, String> {
+    let inner = state_inner(&app)?;
+    let Some(port) = inner.port() else {
+        return Err("Turn phone sync on first.".to_string());
+    };
+    let hosts = lan_addresses();
+    if hosts.is_empty() {
+        return Err("No local network address found. Connect this computer to Wi-Fi (or a local network) first.".to_string());
+    }
+    let mut store = lock(&inner.store);
+    let device = repair_device(&mut store, &device_id, port, now_ms())?;
     let snapshot = store.clone();
     drop(store);
     inner.save(&snapshot)?;
@@ -893,8 +999,10 @@ pub fn phone_sync_set_demo(app: AppHandle, on: bool) -> Result<(), String> {
 #[serde(rename_all = "camelCase")]
 pub struct InboxList {
     pub items: Vec<crate::phone_inbox::InboxView>,
-    /// Items still arriving (not listed yet).
+    /// Items still arriving (not in `items`).
     pub receiving: usize,
+    /// The same, with their progress (they can be removed).
+    pub incoming: Vec<crate::phone_inbox::IncomingView>,
 }
 
 /// Everything the phones sent, newest first. The inbox's files folder is
@@ -906,13 +1014,13 @@ pub fn phone_inbox_list(app: AppHandle) -> Result<InboxList, String> {
     if dir.is_dir() {
         let _ = app.asset_protocol_scope().allow_directory(&dir, true);
     }
-    Ok(InboxList { items: inner.inbox.list(), receiving: inner.inbox.receiving() })
+    Ok(InboxList { items: inner.inbox.list(), receiving: inner.inbox.receiving(), incoming: inner.inbox.incoming() })
 }
 
 /// "File as a new song": `<parent_folder>/<name>/BandLab/` (a linked folder
 /// only). Returns the sketch's key.
 #[tauri::command]
-pub async fn phone_inbox_file_sketch(app: AppHandle, id: String, parent_folder: String, name: String) -> Result<String, String> {
+pub async fn phone_inbox_file_sketch(app: AppHandle, id: String, parent_folder: String, name: String) -> Result<crate::phone_inbox::FiledSketch, String> {
     let scope = crate::scope::Scope::load(&app)?;
     if scope.folders().is_empty() {
         return Err("Link a project folder in Settings first.".to_string());
@@ -943,8 +1051,44 @@ pub async fn phone_inbox_attach_song(app: AppHandle, id: String, song_path: Stri
     tauri::async_runtime::spawn_blocking(move || inner.inbox.attach_to_song_folder(&id, &folder)).await.map_err(|e| format!("copy failed: {e}"))?
 }
 
-/// Status from the desktop: an idea appended to a note, a memo linked to a
-/// beat or a prod ("filed" + where), "dismissed", or back to "new".
+/// Links a memo to a beat or a saved prod and copies its audio into that
+/// beats folder's `_memos/` (a beat: the beats folder holding it; a prod:
+/// the one holding its lead file, else the first). Returns the copy.
+#[tauri::command]
+pub async fn phone_inbox_link_memo(app: AppHandle, id: String, kind: String, target_id: String) -> Result<String, String> {
+    let scope = crate::scope::Scope::load(&app)?;
+    let folder = beats_folder_for(&scope, &kind, &target_id)?;
+    let key = format!("{kind}:{target_id}");
+    let inner = state_inner(&app)?;
+    tauri::async_runtime::spawn_blocking(move || inner.inbox.link_memo(&id, &key, &folder)).await.map_err(|e| format!("copy failed: {e}"))?
+}
+
+/// The beats folder a beat or a saved prod belongs to (from settings only).
+pub fn beats_folder_for(scope: &crate::scope::Scope, kind: &str, target_id: &str) -> Result<PathBuf, String> {
+    let folders = scope.beat_folders();
+    match kind {
+        "beat" => {
+            let real = scope.beat(target_id)?;
+            folders
+                .iter()
+                .find(|f| f.canonicalize().map(crate::paths::plain).is_ok_and(|r| real.starts_with(r)))
+                .cloned()
+                .ok_or_else(|| "That beat isn't inside a beats folder linked in Settings.".to_string())
+        }
+        "prod" => {
+            if target_id.len() != 8 || !target_id.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err("bad request".to_string());
+            }
+            let holds = |f: &&PathBuf| crate::leads::hashes_in(&f.join(crate::leads::LEADS_DIR)).iter().any(|l| l.hash == target_id);
+            folders.iter().find(holds).or(folders.first()).cloned().ok_or_else(|| "Add a beats folder in Settings first.".to_string())
+        }
+        _ => Err("bad request".to_string()),
+    }
+}
+
+/// Status from the desktop: an idea appended to a note ("filed" + where),
+/// "dismissed", or back to "new" (also "File elsewhere": what was already
+/// filed stays where it went).
 #[tauri::command]
 pub fn phone_inbox_mark(app: AppHandle, id: String, status: String, filed_to: Option<String>) -> Result<(), String> {
     use crate::phone_inbox::Status;
@@ -1049,6 +1193,30 @@ mod tests {
         fs::write(&path, "not json").unwrap();
         assert_eq!(read_store(&path), SyncFile::default());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_new_port_flags_phones_and_repair_replaces_in_place() {
+        let mut f = SyncFile { enabled: true, port: Some(41000), devices: vec![] };
+        let a = add_device(&mut f, 1).unwrap();
+        f.devices[0].last_seen_ms = Some(2);
+        f.devices[0].name = Some("Pixel".into());
+        // Same port: nothing to say.
+        assert!(!note_port(&mut f, 41000));
+        assert_eq!(f.devices[0].paired_port, None);
+        // The saved port was taken: phones paired before keep the old one.
+        assert!(note_port(&mut f, 52000));
+        assert_eq!((f.port, f.devices[0].paired_port), (Some(52000), Some(41000)));
+        // Re-pair: same id and name, a new key, the new port, not seen yet.
+        let before = f.devices[0].clone();
+        let r = repair_device(&mut f, &a.id, 52000, 9).unwrap();
+        assert_eq!((r.id.as_str(), r.name.as_deref(), r.paired_port, r.last_seen_ms), (a.id.as_str(), Some("Pixel"), Some(52000), None));
+        assert_ne!(r.key, before.key);
+        assert_eq!(f.devices.len(), 1);
+        assert!(repair_device(&mut f, "nobody", 1, 1).is_err());
+        // A new port again: an already-recorded port isn't overwritten.
+        assert!(note_port(&mut f, 53000));
+        assert_eq!(f.devices[0].paired_port, Some(52000));
     }
 
     #[test]
@@ -1170,9 +1338,20 @@ mod tests {
 
         // Replayed body: 401.
         assert_eq!(http(port, "POST", "/v1/hello", &hdr, &hello).0, 401);
-        // Stale ts: 401.
+        // Stale ts (the phone's clock is off), but authenticated: a sealed "clock".
         let stale = sealed_request(&dev, "/v1/hello", now_ms() - TS_WINDOW_MS - 5_000, "n-stale", json!({}));
-        assert_eq!(http(port, "POST", "/v1/hello", &hdr, &stale).0, 401);
+        let (s, b) = http(port, "POST", "/v1/hello", &hdr, &stale);
+        assert_eq!(s, 200);
+        assert_eq!(open_reply(&dev, "/v1/hello", &b), json!({ "ok": false, "error": "clock" }));
+        let ahead = sealed_request(&dev, "/v1/inbox", now_ms() + TS_WINDOW_MS + 5_000, "n-ahead", json!({}));
+        assert_eq!(open_reply(&dev, "/v1/inbox", &http(port, "POST", "/v1/inbox", &hdr, &ahead).1)["error"], "clock");
+        // Authenticated but not a request (no ts/nonce, or an empty nonce): a sealed "bad request".
+        let junk = serde_json::to_vec(&seal(&dev.key_bytes().unwrap(), &aad(&dev.id, "/v1/upload/chunk"), b"[1,2]").unwrap()).unwrap();
+        let (s, b) = http(port, "POST", "/v1/upload/chunk", &hdr, &junk);
+        assert_eq!(s, 200, "never a bare 401 once the envelope opened");
+        assert_eq!(open_reply(&dev, "/v1/upload/chunk", &b), json!({ "ok": false, "error": "bad request" }));
+        let no_nonce = sealed_request(&dev, "/v1/inbox", now_ms(), "", json!({}));
+        assert_eq!(open_reply(&dev, "/v1/inbox", &http(port, "POST", "/v1/inbox", &hdr, &no_nonce).1)["error"], "bad request");
         // Sealed for another path: 401.
         let other = sealed_request(&dev, "/v1/snapshot", now_ms(), "n-other", json!({}));
         assert_eq!(http(port, "POST", "/v1/hello", &hdr, &other).0, 401);
@@ -1253,6 +1432,7 @@ mod tests {
                 app_version: None,
                 paired_at_ms: now_ms(),
                 last_seen_ms: Some(now_ms()),
+                paired_port: None,
             }];
         }
         // Answers like an empty library, so a real phone app can sync against it.

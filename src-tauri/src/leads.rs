@@ -161,9 +161,17 @@ pub fn write_lead(folder: &Path, lead: &Lead, date: &str) -> Result<PathBuf, Str
 /// A lead file bigger than this isn't one of ours: skipped.
 const MAX_LEAD_FILE: u64 = 64 * 1024;
 
-/// The lead files in `dir` (`<slug>-<hash>.md`), newest first, each read
-/// back into its facts (a file that doesn't parse keeps its hash and path,
-/// with the file name as title).
+/// The `<hash>` of a `<slug>-<hash>` file stem, when it is one.
+fn stem_hash(stem: &str) -> Option<&str> {
+    let hash = stem.rsplit('-').next()?;
+    (hash.len() == 8 && hash.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())).then_some(hash)
+}
+
+/// The `.md` files in `dir`, newest first, each read back into its facts.
+/// A file named otherwise (a cloud copy: "night-8fd69810 (1).md") that still
+/// reads as a lead gets its link's hash. One that doesn't read as a lead
+/// (too big, no "# title" line, no link and no hash in its name) is listed
+/// `unrecognised`, so the user can show or delete it instead of losing it.
 pub fn hashes_in(dir: &Path) -> Vec<SavedLead> {
     let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
     let mut leads: Vec<SavedLead> = entries
@@ -172,21 +180,27 @@ pub fn hashes_in(dir: &Path) -> Vec<SavedLead> {
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
             let stem = name.strip_suffix(".md")?;
-            let hash = stem.rsplit('-').next()?;
-            if hash.len() != 8 || !hash.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+            if stem.starts_with('.') {
                 return None;
             }
             let meta = e.metadata().ok()?;
-            if meta.len() > MAX_LEAD_FILE {
-                return None;
-            }
             let modified_at_ms = meta.modified().ok().and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64).unwrap_or(0);
+            let path = e.path().to_string_lossy().to_string();
+            let unrecognised = || SavedLead { path: path.clone(), modified_at_ms, title: clip(stem, MAX_TITLE), unrecognised: true, ..SavedLead::default() };
+            if meta.len() > MAX_LEAD_FILE {
+                return Some(unrecognised());
+            }
             let text = fs::read_to_string(e.path()).unwrap_or_default();
-            let mut lead = parse_lead(&text).unwrap_or_default();
+            let Some(mut lead) = parse_lead(&text) else { return Some(unrecognised()) };
+            let hash = match stem_hash(stem) {
+                Some(h) => h.to_string(),
+                None if !lead.url.is_empty() => lead_hash(&lead.url),
+                None => return Some(unrecognised()),
+            };
             if lead.title.is_empty() {
                 lead.title = stem.to_string();
             }
-            Some(SavedLead { hash: hash.to_string(), path: e.path().to_string_lossy().to_string(), modified_at_ms, ..lead })
+            Some(SavedLead { hash, path, modified_at_ms, ..lead })
         })
         .collect();
     leads.sort_by(|a, b| b.modified_at_ms.cmp(&a.modified_at_ms).then_with(|| a.title.cmp(&b.title)));
@@ -262,6 +276,9 @@ pub struct SavedLead {
     pub summary: Option<String>,
     /// "YYYY-MM-DD" as written when saved.
     pub saved_on: String,
+    /// A `.md` in `_leads` that doesn't read as a lead: listed with its file
+    /// name as title (and no hash) so it can be shown or deleted.
+    pub unrecognised: bool,
 }
 
 impl Default for LeadSource {
@@ -407,10 +424,19 @@ mod tests {
         assert!(fs::read_to_string(&again).unwrap().contains("Updated."));
         fs::write(root.join(LEADS_DIR).join("notes.md"), "x").unwrap();
         fs::write(root.join(LEADS_DIR).join("other-DEADBEEF.md"), "x").unwrap();
+        fs::write(root.join(LEADS_DIR).join("readme.txt"), "x").unwrap();
+        // A cloud copy keeps reading as the lead, keyed by its link.
+        fs::copy(&first, root.join(LEADS_DIR).join("free-dark-trap-type-beat-night-prod-x-8fd69810 (1).md")).unwrap();
         let saved = hashes_in(&root.join(LEADS_DIR));
         let _ = fs::remove_dir_all(&root);
-        assert_eq!(saved.len(), 1);
-        let s = &saved[0];
+        assert_eq!(saved.len(), 4);
+        let (odd, saved): (Vec<SavedLead>, Vec<SavedLead>) = saved.into_iter().partition(|s| s.unrecognised);
+        let mut odd: Vec<&str> = odd.iter().map(|s| s.title.as_str()).collect();
+        odd.sort();
+        assert_eq!(odd, ["notes", "other-DEADBEEF"], "listed, not hidden");
+        assert_eq!(saved.len(), 2);
+        assert!(saved.iter().all(|s| s.hash == "8fd69810"));
+        let s = saved.iter().find(|s| s.path == first.to_string_lossy()).unwrap();
         assert_eq!((s.hash.as_str(), s.path.as_str()), ("8fd69810", first.to_string_lossy().as_ref()));
         assert_eq!((s.url.as_str(), s.title.as_str(), s.producer.as_str(), s.year.as_str()), (lead().url.as_str(), lead().title.as_str(), "X Beats", "2024"));
         assert_eq!((s.source, s.bpm, s.key.as_deref(), s.saved_on.as_str()), (LeadSource::Youtube, Some(140.0), Some("Am"), "2026-10-25"));
