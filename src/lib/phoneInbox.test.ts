@@ -3,6 +3,9 @@ import type { InboxItem } from "../types";
 import {
   appendIdea,
   bandlabLink,
+  canFileElsewhere,
+  filedPath,
+  removeLoses,
   isOpaqueName,
   duration,
   filterInbox,
@@ -34,6 +37,8 @@ const item = (over: Partial<InboxItem>): InboxItem => ({
   status: "new",
   filedTo: null,
   filedAt: null,
+  filedAs: null,
+  copiedTo: null,
   files: [],
   ...over,
 });
@@ -123,5 +128,33 @@ describe("memos", () => {
   it("formats durations", () => {
     expect(duration(125_400)).toBe("2:05");
     expect(duration(null)).toBe("");
+  });
+});
+
+describe("filed items: where they are and what Remove loses", () => {
+  it("shows a sketch's folder or a memo's copy, never an idea or a bare link", () => {
+    expect(filedPath(item({ itemType: "sketch", status: "filed", filedTo: "/p/Night/BandLab", filedAs: "song" }))).toBe("/p/Night/BandLab");
+    expect(filedPath(item({ itemType: "memo", status: "filed", filedTo: "/p/Envy/Voice memos/a.m4a", filedAs: "folder" }))).toBe("/p/Envy/Voice memos/a.m4a");
+    expect(filedPath(item({ itemType: "memo", status: "filed", filedTo: "beat:/b/x.wav", copiedTo: "/b/_memos/a.m4a", filedAs: "link" }))).toBe("/b/_memos/a.m4a");
+    expect(filedPath(item({ itemType: "memo", status: "filed", filedTo: "beat:/b/x.wav" }))).toBeNull();
+    expect(filedPath(item({ itemType: "idea", status: "filed", filedTo: "song:/p/a.flp" }))).toBeNull();
+    expect(filedPath(item({ itemType: "memo", status: "new" }))).toBeNull();
+  });
+
+  it("warns when the inbox holds the only copy", () => {
+    expect(removeLoses(item({ itemType: "memo", status: "new" }))).toBe("only");
+    expect(removeLoses(item({ itemType: "memo", status: "dismissed" }))).toBe("only");
+    // Linked before links were copied: the inbox file is the only one.
+    expect(removeLoses(item({ itemType: "memo", status: "filed", filedTo: "prod:8fd69810" }))).toBe("only");
+    expect(removeLoses(item({ itemType: "memo", status: "filed", filedTo: "prod:8fd69810", copiedTo: "/b/_memos/a.m4a" }))).toBe("kept");
+    expect(removeLoses(item({ itemType: "memo", status: "filed", filedTo: "/p/Envy/Voice memos/a.m4a" }))).toBe("kept");
+    expect(removeLoses(item({ itemType: "idea", status: "filed", filedTo: "song:/p/a.flp" }))).toBe("kept");
+  });
+
+  it("files elsewhere only what can go somewhere else", () => {
+    expect(canFileElsewhere(item({ itemType: "idea", status: "filed" }))).toBe(true);
+    expect(canFileElsewhere(item({ itemType: "memo", status: "filed" }))).toBe(true);
+    expect(canFileElsewhere(item({ itemType: "sketch", status: "filed" }))).toBe(false);
+    expect(canFileElsewhere(item({ itemType: "idea", status: "new" }))).toBe(false);
   });
 });

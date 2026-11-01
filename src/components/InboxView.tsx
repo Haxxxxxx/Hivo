@@ -5,9 +5,23 @@ import { usePhoneInbox } from "../store/usePhoneInbox";
 import * as api from "../lib/tauri";
 import { audioSrc } from "../lib/tauri";
 import { formatBytes, formatDateTime } from "../lib/format";
-import { bandlabLink, duration, filterInbox, knownTarget, newCount, parseTargetKey, sketchName, targetOptions, type InboxFilter, type TargetOption } from "../lib/phoneInbox";
+import {
+  bandlabLink,
+  canFileElsewhere,
+  duration,
+  filedPath,
+  filterInbox,
+  knownTarget,
+  newCount,
+  parseTargetKey,
+  removeLoses,
+  sketchName,
+  targetOptions,
+  type InboxFilter,
+  type TargetOption,
+} from "../lib/phoneInbox";
 import { isSketchAudioName } from "../lib/sketch";
-import type { BeatFile, InboxItem, InboxTarget, SavedLead } from "../types";
+import type { BeatFile, FiledSketch, IncomingItem, InboxItem, InboxTarget, SavedLead } from "../types";
 import { ConfirmButton, btn, btnPrimary, btnQuiet, engrave, input } from "./ui";
 import { StatusDot } from "../ui";
 import { dict, tr } from "../i18n";
@@ -52,12 +66,24 @@ const T = dict(
     restore: "Back to new",
     remove: "Remove",
     removeConfirm: "Remove from inbox?",
-    removeHint: "Removes it from the inbox only: what was filed into a song folder stays.",
+    removeKept: "Removes it from the inbox only: what was filed stays where it went.",
+    removeOnly: "Deletes it for good: the inbox holds the only copy.",
+    removeOnlyConfirm: "Delete the only copy?",
+    incomingTitle: "Still arriving",
+    incomingLine: (done: number, of: number, got: string, total: string) => `${done} of ${of} file${of === 1 ? "" : "s"} in · ${got} of ${total}`,
+    incomingHint: "Interrupted uploads hold space in the inbox until they finish or a week goes by. Remove one to free it now; if the phone is still sending it, it starts again.",
+    fileElsewhere: "File elsewhere",
+    fileElsewhereHint: "Back to new, to file it somewhere else: what was already filed stays there.",
+    filedFolder: "Copied into the song's BandLab folder",
+    filedSketchNotice: (name: string) => `${name} is filed as a new song.`,
+    stemsApart: (n: number) => ` The ${n} stem${n === 1 ? "" : "s"} went to BandLab/Stems, apart from the mixdown: Continue in FL Studio lays out the stems, not the mixdown over them.`,
+    overTwenty: (n: number) => ` ${n} audio files: Continue in FL Studio lays out the first 20, drag the rest in from the BandLab folder.`,
     filedNote: (title: string) => `Added to the notes of ${title}`,
     filedSketch: "Filed as a new song",
     sharedWith: "Shared with it",
     filedMemo: "Copied into the song's Voice memos folder",
     filedLink: (title: string) => `Linked to ${title}`,
+    filedLinkCopy: (title: string) => `Linked to ${title} (copied into the beats folder's _memos)`,
     dismissed: "Dismissed",
     openSong: "Open the song",
     reveal: "Show in folder",
@@ -101,12 +127,24 @@ const T = dict(
     restore: "Remettre en nouveau",
     remove: "Retirer",
     removeConfirm: "Retirer de la boîte ?",
-    removeHint: "Le retire de la boîte seulement : ce qui a été rangé dans un dossier de son y reste.",
+    removeKept: "Le retire de la boîte seulement : ce qui a été rangé reste où il est.",
+    removeOnly: "Le supprime pour de bon : la boîte en a la seule copie.",
+    removeOnlyConfirm: "Supprimer la seule copie ?",
+    incomingTitle: "En cours de réception",
+    incomingLine: (done: number, of: number, got: string, total: string) => `${done} fichier${done > 1 ? "s" : ""} sur ${of} reçu${done > 1 ? "s" : ""} · ${got} sur ${total}`,
+    incomingHint: "Un envoi interrompu garde sa place dans la boîte jusqu'à ce qu'il finisse ou qu'une semaine passe. Retire-le pour la libérer tout de suite ; si le téléphone l'envoie encore, il recommence.",
+    fileElsewhere: "Ranger ailleurs",
+    fileElsewhereHint: "Remet en nouveau pour le ranger ailleurs : ce qui a déjà été rangé y reste.",
+    filedFolder: "Copié dans le dossier BandLab du son",
+    filedSketchNotice: (name: string) => `${name} est rangé comme nouveau son.`,
+    stemsApart: (n: number) => ` ${n === 1 ? "Le stem est allé" : `Les ${n} stems sont allés`} dans BandLab/Stems, à part du mix : Continuer dans FL Studio place les stems, pas le mix par-dessus.`,
+    overTwenty: (n: number) => ` ${n} fichiers audio : Continuer dans FL Studio place les 20 premiers, glisse les autres depuis le dossier BandLab.`,
     filedNote: (title: string) => `Ajouté aux notes de ${title}`,
     filedSketch: "Rangé comme nouveau son",
     sharedWith: "Partagé avec",
     filedMemo: "Copié dans le dossier Voice memos du son",
     filedLink: (title: string) => `Lié à ${title}`,
+    filedLinkCopy: (title: string) => `Lié à ${title} (copié dans _memos du dossier de prods)`,
     dismissed: "Écarté",
     openSong: "Ouvrir le son",
     reveal: "Afficher dans le dossier",
@@ -122,6 +160,8 @@ export function InboxView() {
   const t = tr(T);
   const items = usePhoneInbox((s) => s.items);
   const receiving = usePhoneInbox((s) => s.receiving);
+  const incoming = usePhoneInbox((s) => s.incoming);
+  const [notice, setNotice] = useState<string | null>(null);
   const paired = usePhoneInbox((s) => s.paired);
   const loadError = usePhoneInbox((s) => s.error);
   const refresh = usePhoneInbox((s) => s.refresh);
@@ -167,6 +207,8 @@ export function InboxView() {
             <StatusDot color="var(--color-warn)" size={7} /> {t.receiving(receiving)}
           </div>
         )}
+        {incoming.length > 0 && <IncomingList items={incoming} />}
+        {notice && <Notice>{notice}</Notice>}
 
         <div className="flex gap-2">
           {(["new", "filed", "all"] as const).map((f) => (
@@ -197,7 +239,7 @@ export function InboxView() {
         )}
 
         {shown.map((item) => (
-          <InboxCard key={item.id} item={item} options={options} />
+          <InboxCard key={item.id} item={item} options={options} onNotice={setNotice} />
         ))}
       </div>
     </div>
@@ -255,7 +297,48 @@ function optionFor(options: TargetOption[], key: string): InboxTarget | null {
   return k ? (options.find((o) => o.kind === k.kind && o.id === k.id) ?? null) : null;
 }
 
-function InboxCard({ item, options }: { item: InboxItem; options: TargetOption[] }) {
+/** Items still arriving: how far they got, and Remove to free their space. */
+function IncomingList({ items }: { items: IncomingItem[] }) {
+  const t = tr(T);
+  const remove = usePhoneInbox((s) => s.removeIncoming);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <section className="flex flex-col gap-2 rounded-lg border border-rule bg-panel p-4">
+      <div className={engrave}>{t.incomingTitle}</div>
+      {items.map((i) => (
+        <div key={i.id} className="flex items-center gap-3 text-sm">
+          <StatusDot color="var(--color-warn)" size={6} />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-cream">{i.title || (i.itemType === "memo" ? t.memo : t.sketch)}</div>
+            <div className="text-xs text-engrave">
+              {t.from(i.phoneName || "Phone", formatDateTime(i.updatedAt))} · {t.incomingLine(i.filesDone, i.fileCount, formatBytes(i.receivedBytes), formatBytes(i.totalBytes))}
+            </div>
+          </div>
+          <ConfirmButton
+            label={
+              <>
+                <Trash2 size={14} /> {t.remove}
+              </>
+            }
+            confirmLabel={t.removeConfirm}
+            onConfirm={() => void remove(i.id).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
+            className={btnQuiet}
+          />
+        </div>
+      ))}
+      <p className="text-xs text-engrave">{t.incomingHint}</p>
+      {error && <Notice error>{error}</Notice>}
+    </section>
+  );
+}
+
+function sketchNotice(name: string, filed: FiledSketch): string | null {
+  const t = tr(T);
+  const extra = (filed.stemsApart ? t.stemsApart(filed.stems) : "") + (filed.audio + filed.stems > 20 ? t.overTwenty(filed.audio + filed.stems) : "");
+  return extra ? t.filedSketchNotice(name) + extra : null;
+}
+
+function InboxCard({ item, options, onNotice }: { item: InboxItem; options: TargetOption[]; onNotice: (text: string | null) => void }) {
   const t = tr(T);
   const fileIdea = usePhoneInbox((s) => s.fileIdea);
   const attachMemo = usePhoneInbox((s) => s.attachMemo);
@@ -298,6 +381,8 @@ function InboxCard({ item, options }: { item: InboxItem; options: TargetOption[]
   const filedTitle = filedTarget ? (options.find((o) => o.kind === filedTarget.kind && o.id === filedTarget.id)?.title ?? t.unknown) : null;
   // A sketch filed as a song: its key is the BandLab folder; open it if scanned.
   const filedSong = item.itemType === "sketch" && item.filedTo && projects.some((p) => p.path === item.filedTo) ? item.filedTo : null;
+  const shownAt = filedPath(item);
+  const loses = removeLoses(item);
 
   return (
     <article className={`flex flex-col gap-3 rounded-lg border bg-panel p-4 ${isNew ? "border-rule-strong" : "border-rule opacity-80"}`}>
@@ -311,7 +396,19 @@ function InboxCard({ item, options }: { item: InboxItem; options: TargetOption[]
         {!isNew && (
           <span className="flex shrink-0 items-center gap-1.5 text-xs text-body">
             <StatusDot color={item.status === "filed" ? "var(--color-ok)" : "var(--color-engrave)"} size={6} />
-            {item.status === "dismissed" ? t.dismissed : item.itemType === "sketch" && !filedTarget ? t.filedSketch : item.itemType === "idea" && filedTitle ? t.filedNote(filedTitle) : filedTitle ? t.filedLink(filedTitle) : t.filedMemo}
+            {item.status === "dismissed"
+              ? t.dismissed
+              : item.itemType === "sketch" && !filedTarget
+                ? item.filedAs === "folder"
+                  ? t.filedFolder
+                  : t.filedSketch
+                : item.itemType === "idea" && filedTitle
+                  ? t.filedNote(filedTitle)
+                  : filedTitle
+                    ? item.copiedTo
+                      ? t.filedLinkCopy(filedTitle)
+                      : t.filedLink(filedTitle)
+                    : t.filedMemo}
           </span>
         )}
       </div>
@@ -394,8 +491,9 @@ function InboxCard({ item, options }: { item: InboxItem; options: TargetOption[]
                 disabled={busy || !name.trim() || !folder}
                 onClick={() =>
                   void run(async () => {
-                    const key = await fileSketch(item, folder, name.trim(), bandlabLink(item) ?? undefined);
-                    openDetail(key);
+                    const filed = await fileSketch(item, folder, name.trim(), bandlabLink(item) ?? undefined);
+                    onNotice(sketchNotice(name.trim(), filed));
+                    openDetail(filed.key);
                   })
                 }
               >
@@ -421,6 +519,16 @@ function InboxCard({ item, options }: { item: InboxItem; options: TargetOption[]
             <FolderOpen size={14} /> {t.openSong}
           </button>
         )}
+        {shownAt && (
+          <button className={btnQuiet} disabled={busy} onClick={() => void run(() => api.revealInFileManager(shownAt))}>
+            <FolderOpen size={14} /> {t.reveal}
+          </button>
+        )}
+        {canFileElsewhere(item) && (
+          <button className={btnQuiet} disabled={busy} title={t.fileElsewhereHint} onClick={() => void run(() => restore(item))}>
+            <Undo2 size={14} /> {t.fileElsewhere}
+          </button>
+        )}
         {isNew && !missing && (
           <button className={btnQuiet} disabled={busy} onClick={() => void run(() => dismiss(item))}>
             {t.dismiss}
@@ -431,14 +539,14 @@ function InboxCard({ item, options }: { item: InboxItem; options: TargetOption[]
             <Undo2 size={14} /> {t.restore}
           </button>
         )}
-        <span className="ml-auto" title={t.removeHint}>
+        <span className="ml-auto" title={loses === "only" ? t.removeOnly : t.removeKept}>
           <ConfirmButton
             label={
               <>
                 <Trash2 size={14} /> {t.remove}
               </>
             }
-            confirmLabel={t.removeConfirm}
+            confirmLabel={loses === "only" && item.itemType !== "idea" ? t.removeOnlyConfirm : t.removeConfirm}
             onConfirm={() => void run(() => remove(item))}
             className={btnQuiet}
             disabled={busy}

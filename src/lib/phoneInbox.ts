@@ -117,6 +117,28 @@ export function memosFor(items: InboxItem[], kind: "beat" | "prod", id: string):
   return items.filter((i) => i.status === "filed" && i.itemType === "memo" && i.filedTo === key);
 }
 
+/** Where "Show in folder" goes for a filed item: a sketch's BandLab folder,
+ * a memo's copy (in a song's folder or a beats folder's `_memos`); null for
+ * an idea (it's in a note) or anything not filed. */
+export function filedPath(item: InboxItem): string | null {
+  if (item.status !== "filed" || item.itemType === "idea") return null;
+  if (item.copiedTo) return item.copiedTo;
+  return item.filedTo && !parseTargetKey(item.filedTo) ? item.filedTo : null;
+}
+
+/** What "Remove" loses: "only" when the inbox holds the only copy (not
+ * filed yet, or a memo linked before links were copied), "kept" when what
+ * was filed stays where it went. */
+export function removeLoses(item: InboxItem): "only" | "kept" {
+  if (item.status !== "filed") return "only";
+  if (item.itemType === "memo" && parseTargetKey(item.filedTo) && !item.copiedTo) return "only";
+  return "kept";
+}
+
+/** "File elsewhere" (back to new, what was filed stays) makes sense for an
+ * idea or a memo; a sketch filed as a song became that song. */
+export const canFileElsewhere = (item: InboxItem): boolean => item.status === "filed" && (item.itemType === "idea" || item.itemType === "memo");
+
 /** "2:05" from milliseconds. */
 export function duration(ms: number | null): string {
   if (ms === null || !Number.isFinite(ms) || ms < 0) return "";

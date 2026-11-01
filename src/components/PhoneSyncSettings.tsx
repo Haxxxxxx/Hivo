@@ -31,6 +31,9 @@ const T = dict(
     neverSeen: "Never connected",
     lastSeen: (when: string) => `Last seen ${when}`,
     forget: "Forget",
+    repair: "Re-pair this phone",
+    repairHint: "Shows a new QR for this phone: scan it with the Hivo phone app. Its old key stops working.",
+    needsQr: "This computer listens on a new port now: this phone needs the new QR. Re-pair it.",
     unnamed: "Phone",
     security:
       "Each phone gets its own key, kept on this computer in an owner-only file and never shown again. Every request is encrypted and signed with it; Forget deletes the key, and that phone can't sync any more.",
@@ -59,6 +62,9 @@ const T = dict(
     neverSeen: "Jamais connecté",
     lastSeen: (when: string) => `Vu ${when}`,
     forget: "Oublier",
+    repair: "Réappairer ce téléphone",
+    repairHint: "Affiche un nouveau QR pour ce téléphone : scanne-le avec l'appli Hivo. Son ancienne clé ne marche plus.",
+    needsQr: "Cet ordi écoute maintenant sur un autre port : ce téléphone a besoin du nouveau QR. Réappaire-le.",
     unnamed: "Téléphone",
     security:
       "Chaque téléphone a sa propre clé, gardée sur cet ordi dans un fichier réservé à ton compte et jamais réaffichée. Chaque requête est chiffrée et signée avec ; Oublier supprime la clé, et ce téléphone ne peut plus synchroniser.",
@@ -105,7 +111,8 @@ export function PhoneSyncSettings() {
     }
   }
 
-  async function pair() {
+  /** A new pairing, or (deviceId) a new QR for a paired phone, in place. */
+  async function pair(deviceId?: string) {
     if (!status?.addresses.length) {
       setError(t.noAddress);
       return;
@@ -113,7 +120,7 @@ export function PhoneSyncSettings() {
     setBusy(true);
     setError(null);
     try {
-      const p = await api.phoneSyncPair();
+      const p = deviceId ? await api.phoneSyncRepair(deviceId) : await api.phoneSyncPair();
       // Low error correction keeps the modules big; a 4-module quiet zone and a
       // 2x bitmap shown at 320 px (no smoothing) are what phone scanners need.
       const qr = await QRCode.toDataURL(p.url, { errorCorrectionLevel: "L", margin: 4, width: 640 });
@@ -200,7 +207,18 @@ export function PhoneSyncSettings() {
                   {d.lastSeenMs ? t.lastSeen(formatDateTime(d.lastSeenMs)) : t.neverSeen}
                   {d.appVersion ? ` · ${d.appVersion}` : ""}
                 </div>
+                {d.needsNewQr && <div className="mt-0.5 text-[11px] text-warn">{t.needsQr}</div>}
               </div>
+              {on && (
+                <button
+                  onClick={() => void pair(d.id)}
+                  disabled={busy}
+                  title={t.repairHint}
+                  className={`shrink-0 rounded-md px-3 py-1.5 text-xs disabled:opacity-40 ${d.needsNewQr ? "bg-orange-500 font-medium text-chassis hover:bg-orange-400" : "border border-rule-strong text-body hover:bg-raised"}`}
+                >
+                  {t.repair}
+                </button>
+              )}
               <button
                 onClick={() => {
                   if (pairing?.deviceId === d.id) setPairing(null);

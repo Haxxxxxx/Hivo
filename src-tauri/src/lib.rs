@@ -40,6 +40,11 @@ pub fn run() {
             phone_sync::init(app.handle());
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
+                session::close_with_main(tauri::Manager::app_handle(window));
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             scanner::scan_projects,
             location::app_location,
@@ -102,6 +107,8 @@ pub fn run() {
             phone_sync::phone_sync_enable,
             phone_sync::phone_sync_pair,
             phone_sync::phone_sync_forget,
+            phone_sync::phone_sync_repair,
+            phone_sync::phone_inbox_link_memo,
             phone_sync::phone_sync_reply,
             phone_sync::phone_sync_set_demo,
             phone_sync::phone_inbox_list,

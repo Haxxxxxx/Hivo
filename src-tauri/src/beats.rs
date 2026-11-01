@@ -31,7 +31,12 @@ pub fn list_beats(folders: &[std::path::PathBuf]) -> Vec<BeatFile> {
     let mut out = Vec::new();
     let mut visited = 0usize;
     'roots: for root in folders {
-        for e in WalkDir::new(root).max_depth(MAX_DEPTH).into_iter().filter_map(|e| e.ok()) {
+        // Phone memos linked to beats (`_memos`) aren't beats.
+        let walker = WalkDir::new(root)
+            .max_depth(MAX_DEPTH)
+            .into_iter()
+            .filter_entry(|e| !(e.depth() == 1 && e.file_type().is_dir() && e.file_name() == crate::phone_inbox::BEAT_MEMOS_DIR));
+        for e in walker.filter_map(|e| e.ok()) {
             visited += 1;
             if out.len() >= MAX_BEATS || visited > MAX_VISITED {
                 break 'roots;

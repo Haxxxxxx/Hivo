@@ -10,6 +10,7 @@ import type {
   PackagePlan,
   PackageResult,
   InboxList,
+  FiledSketch,
   InboxStatus,
   ProjectInfo,
   RenderEvent,
@@ -158,6 +159,10 @@ export interface Continued {
   flp: string;
   clips: number;
   note: string | null;
+  /** Audio files left off the playlist past 20 (FL_BUILD MAX_CLIPS). */
+  skipped: number;
+  /** Mixdown files left off because the stems (`BandLab/Stems/`) are on it. */
+  mixdown: string[];
 }
 export const continueSketch = (sketchPath: string, templatePath: string): Promise<Continued> => invoke("continue_sketch", { sketchPath, templatePath });
 
@@ -336,13 +341,18 @@ export function onPhoneSyncRequest(handler: (request: PhoneSyncRequest) => void)
 export const phoneSyncSetDemo = (on: boolean): Promise<void> => invoke("phone_sync_set_demo", { on });
 export const phoneInboxList = (): Promise<InboxList> => invoke("phone_inbox_list");
 /** `<parentFolder>/<name>/BandLab/` with the sketch's audio (zips unpacked); returns the sketch's key. */
-export const phoneInboxFileSketch = (id: string, parentFolder: string, name: string): Promise<string> =>
+export const phoneInboxFileSketch = (id: string, parentFolder: string, name: string): Promise<FiledSketch> =>
   invoke("phone_inbox_file_sketch", { id, parentFolder, name });
 /** Copies a memo (or a sketch's audio) into `<song folder>/Voice memos/`; returns the copies. */
 export const phoneInboxAttachSong = (id: string, songPath: string): Promise<string[]> => invoke("phone_inbox_attach_song", { id, songPath });
 export const phoneInboxMark = (id: string, status: InboxStatus, filedTo: string | null = null): Promise<void> =>
   invoke("phone_inbox_mark", { id, status, filedTo });
 export const phoneInboxRemove = (id: string): Promise<void> => invoke("phone_inbox_remove", { id });
+/** A memo linked to a beat or a saved prod, copied into that beats folder's `_memos`; returns the copy. */
+export const phoneInboxLinkMemo = (id: string, kind: "beat" | "prod", targetId: string): Promise<string> =>
+  invoke("phone_inbox_link_memo", { id, kind, targetId });
+/** A new QR for a paired phone (port or address changed), replacing it in place. */
+export const phoneSyncRepair = (deviceId: string): Promise<PhonePairing> => invoke("phone_sync_repair", { deviceId });
 export function onPhoneInboxChanged(handler: () => void): Promise<UnlistenFn> {
   return listen("phone-inbox-changed", () => handler());
 }

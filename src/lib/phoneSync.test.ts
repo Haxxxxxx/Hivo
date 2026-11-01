@@ -122,6 +122,34 @@ describe("apply changes", () => {
     expect(writes).toEqual([{ kind: "song", id: "/p/Song one.flp", text: merged }]);
   });
 
+  it("a conflict merges on lines: the original body is never doubled", () => {
+    const desktop = "[Verse 1]\nline one\nline two\n\n[Hook]\nhook a";
+    // The phone edited the same note: kept its lines, added a verse.
+    const phone = "[Verse 1]\nline one\nline two\n\n[Verse 2]\nnew bar\nnew bar 2\n\n\n[Hook]\nhook a";
+    const merged = mergeConflict(desktop, "Pixel", phone);
+    expect(merged).toBe(`${desktop}\n\n--- from Pixel ---\n[Verse 2]\nnew bar\nnew bar 2`);
+    expect(merged.split("line one")).toHaveLength(2);
+    // Nothing new on the phone's side: the desktop's note as it is.
+    expect(mergeConflict(desktop, "Pixel", "line two\n  hook a  ")).toBe(desktop);
+    expect(mergeConflict("", "Pixel", "a\n\n\nb")).toBe("a\n\nb");
+  });
+
+  it("a merge past the cap is refused, never cut: nothing written, both texts kept", () => {
+    const desktopNote = "d".repeat(MAX_NOTE_CHARS - 10);
+    const current = () => desktopNote;
+    const phoneText = "a brand new verse line that does not fit";
+    const { results, writes } = applyNoteChanges([{ kind: "song", id: "/p/x.flp", text: phoneText, baseHash: "deadbeef" }], current, "Pixel");
+    expect(results[0]).toEqual({ kind: "song", id: "/p/x.flp", status: "too long", note: desktopNote, noteHash: fnv1a32(desktopNote) });
+    expect(writes).toEqual([]);
+    // A clean change longer than the cap (UTF-16 units) is refused too, not cut.
+    const long = applyNoteChanges([{ kind: "song", id: "/p/x.flp", text: "😀".repeat(MAX_NOTE_CHARS / 2 + 1), baseHash: fnv1a32(desktopNote) }], current, "Pixel");
+    expect(long.results[0].status).toBe("too long");
+    expect(long.writes).toEqual([]);
+    // Just under: merged in full.
+    const fits = applyNoteChanges([{ kind: "song", id: "/p/x.flp", text: "ok", baseHash: "deadbeef" }], () => "d".repeat(100), "P");
+    expect(fits.results[0].note).toBe(`${"d".repeat(100)}\n\n--- from P ---\nok`);
+  });
+
   it("a retry of an already applied change, or an empty desktop note, is applied without a merge", () => {
     const retry = applyNoteChanges([{ kind: "prod", id: "aaaa1111", text: "verse idea", baseHash: "00000000" }], lookup, "P");
     expect(retry.results[0].status).toBe("applied");

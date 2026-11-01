@@ -40,6 +40,25 @@ pub struct Continued {
     pub clips: usize,
     /// Why the audio isn't in the project, or what was converted.
     pub note: Option<String>,
+    /// Audio files left off the playlist past `MAX_CLIPS` (dragged in by hand).
+    pub skipped: usize,
+    /// The mixdown(s) left off the playlist because the stems are on it
+    /// (`BandLab/Stems/`, phone_inbox.rs): file names.
+    pub mixdown: Vec<String>,
+}
+
+/// The audio files directly in `dir`, sorted, hidden ones left out.
+fn audio_in(dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = fs::read_dir(dir)
+        .map(|r| r.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.is_file() && is_sketch_audio(p)).collect())
+        .unwrap_or_default();
+    files.retain(|p| !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')));
+    files.sort();
+    files
+}
+
+fn file_name(p: &Path) -> String {
+    p.file_name().unwrap_or_default().to_string_lossy().to_string()
 }
 
 /// "Continue in FL Studio": a new `<song>/<song>.flp` next to the sketch's
@@ -57,14 +76,30 @@ pub async fn continue_sketch(app: AppHandle, sketch_path: String, template_path:
         .map_err(|e| format!("Continue in FL Studio failed: {e}"))?
 }
 
-/// The sketch's audio, as FL will play it: M4A/AAC converted to a WAV next
-/// to the original (reused when it's already there). Sorted by name.
-fn playable_audio(sketch: &Path) -> (Vec<Clip>, Vec<String>) {
-    let mut files: Vec<PathBuf> = fs::read_dir(sketch)
-        .map(|r| r.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.is_file() && is_sketch_audio(p)).collect())
-        .unwrap_or_default();
-    files.retain(|p| !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')));
-    files.sort();
+/// What goes on the playlist: the sketch's audio as FL will play it (M4A/
+/// AAC converted to a WAV next to the original, reused when it's already
+/// there), sorted by name. When `BandLab/Stems/` holds audio, the stems
+/// only: the files beside it are the mixdown, which would play over them.
+struct Playable {
+    clips: Vec<Clip>,
+    notes: Vec<String>,
+    /// Clips left out past `MAX_CLIPS`.
+    skipped: usize,
+    /// Mixdown file names left off.
+    mixdown: Vec<String>,
+}
+
+fn playable_audio(sketch: &Path) -> Playable {
+    let stems = audio_in(&sketch.join(crate::phone_inbox::STEMS_DIR));
+    let (files, mixdown) = if stems.is_empty() {
+        (audio_in(sketch), Vec::new())
+    } else {
+        // A WAV converted from the mixdown earlier is still the mixdown.
+        let all: Vec<String> = audio_in(sketch).iter().map(|p| file_name(p)).collect();
+        let converted = |n: &String| n.to_ascii_lowercase().ends_with(".wav") && all.iter().any(|o| o != n && Path::new(o).file_stem() == Path::new(n).file_stem());
+        let mix: Vec<String> = all.iter().filter(|n| !converted(n)).cloned().collect();
+        (stems, mix)
+    };
     let mut clips: Vec<Clip> = Vec::new();
     let mut notes = Vec::new();
     for f in files {
@@ -99,8 +134,9 @@ fn playable_audio(sketch: &Path) -> (Vec<Clip>, Vec<String>) {
         }
         clips.push(Clip { path: path.to_string_lossy().to_string(), name: stem, duration_ms: ms });
     }
+    let skipped = clips.len().saturating_sub(crate::flp_build::MAX_CLIPS);
     clips.truncate(crate::flp_build::MAX_CLIPS);
-    (clips, notes)
+    Playable { clips, notes, skipped, mixdown }
 }
 
 fn continue_in(sketch: &Path, template: &Path) -> Result<Continued, String> {
@@ -124,7 +160,7 @@ fn continue_in(sketch: &Path, template: &Path) -> Result<Continued, String> {
     if target.exists() {
         return Err(format!("\"{name}.flp\" already exists there"));
     }
-    let (clips, mut notes) = playable_audio(sketch);
+    let Playable { clips, mut notes, skipped, mixdown } = playable_audio(sketch);
     let built = if clips.is_empty() {
         Err("no audio FL Studio can play in the BandLab folder".to_string())
     } else {
@@ -140,13 +176,13 @@ fn continue_in(sketch: &Path, template: &Path) -> Result<Continued, String> {
                 let _ = fs::remove_file(&target);
                 return Err(format!("could not write {}: {e}", target.display()));
             }
-            Ok(Continued { flp, clips: clips.len(), note: (!notes.is_empty()).then(|| notes.join("; ")) })
+            Ok(Continued { flp, clips: clips.len(), note: (!notes.is_empty()).then(|| notes.join("; ")), skipped, mixdown })
         }
         Err(e) => {
             // The template alone, as before: the audio stays in BandLab/.
             copy_file(template, &target)?;
             notes.insert(0, format!("The BandLab audio isn't in the project ({e}): drag it in from the BandLab folder"));
-            Ok(Continued { flp, clips: 0, note: Some(notes.join("; ")) })
+            Ok(Continued { flp, clips: 0, note: Some(notes.join("; ")), skipped: 0, mixdown: Vec::new() })
         }
     }
 }
@@ -206,6 +242,35 @@ mod tests {
     fn tone(path: &Path, secs: f32) {
         let samples: Vec<f32> = (0..(44_100.0 * secs) as usize * 2).map(|i| ((i / 2) as f32 * 0.05).sin() * 0.3).collect();
         crate::audio::write_wav(path, &samples, 2, 44_100).unwrap();
+    }
+
+    #[test]
+    fn stems_go_on_the_playlist_without_the_mixdown_and_extras_are_counted() {
+        let d = temp("stems");
+        let sketch = d.0.join("Night Run").join(SKETCH_DIR);
+        let stems = sketch.join(crate::phone_inbox::STEMS_DIR);
+        fs::create_dir_all(&stems).unwrap();
+        tone(&sketch.join("Night Run.wav"), 0.1);
+        tone(&stems.join("Drums.wav"), 0.1);
+        tone(&stems.join("Vox.wav"), 0.1);
+        let p = playable_audio(&sketch);
+        let names: Vec<&str> = p.clips.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["Drums", "Vox"], "the stems only");
+        assert_eq!(p.mixdown, vec!["Night Run.wav"]);
+        assert_eq!(p.skipped, 0);
+        // More than MAX_CLIPS stems: the first ones, and how many were left off.
+        for i in 0..21 {
+            tone(&stems.join(format!("stem {i:02}.wav")), 0.05);
+        }
+        let p = playable_audio(&sketch);
+        assert_eq!(p.clips.len(), crate::flp_build::MAX_CLIPS);
+        assert_eq!(p.skipped, 23 - crate::flp_build::MAX_CLIPS);
+        // No Stems folder: everything in BandLab/ is laid out, no mixdown aside.
+        let flat = d.0.join("Flat").join(SKETCH_DIR);
+        fs::create_dir_all(&flat).unwrap();
+        tone(&flat.join("a.wav"), 0.05);
+        let p = playable_audio(&flat);
+        assert_eq!((p.clips.len(), p.mixdown.len(), p.skipped), (1, 0, 0));
     }
 
     #[test]

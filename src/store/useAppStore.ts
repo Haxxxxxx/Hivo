@@ -13,6 +13,7 @@ import { canRenderInApp, dawOf, splitRenderable } from "../lib/daws";
 import type {
   DetectedFolder,
   CaptionLang,
+  FiledSketch,
   PackagePlan,
   PackageResult,
   Person,
@@ -118,6 +119,9 @@ interface AppState {
   scanning: boolean;
   /** Songs whose record followed a rename/move in the last scan (shown once). */
   relinked: Relink[];
+  /** The last records moved to new paths (a rename, "Continue in FL Studio"):
+   * what's open elsewhere (the session window) follows them. */
+  lastRelinks: Relink[];
   dismissRelinked: () => void;
   search: string;
   selected: Set<string>;
@@ -296,7 +300,7 @@ interface AppState {
   }) => Promise<string>;
   /** File a sketch from the phone inbox into `<parentFolder>/<name>/BandLab/`
    * (a sketch song in Creation); returns its key. */
-  fileInboxSketch: (args: { itemId: string; parentFolder: string; name: string; bandlabUrl?: string }) => Promise<string>;
+  fileInboxSketch: (args: { itemId: string; parentFolder: string; name: string; bandlabUrl?: string }) => Promise<FiledSketch>;
   /** "Continue in FL Studio": create the .flp from a template next to the
    * sketch and move the song's data (stage, notes, credits, share, release
    * slot, favorite) to it. Returns the new .flp path. */
@@ -327,6 +331,7 @@ const STORE_ERRORS = dict(
     needExportForPackages: "Set an export folder in Settings first: packages go in <export folder>/Packages.",
     exportRunning: "An export is already running.",
     packaging: "Already packaging.",
+    notLoaded: "Your workspace isn't loaded yet: try again in a moment.",
   },
   {
     sampleExport: "Ce sont des données d'exemple : lie un vrai dossier de projets dans les Réglages avant d'exporter.",
@@ -336,6 +341,7 @@ const STORE_ERRORS = dict(
     needExportForPackages: "Choisis d'abord un dossier d'export dans les Réglages : les paquets vont dans <dossier d'export>/Packages.",
     exportRunning: "Un export est déjà en cours.",
     packaging: "Paquet déjà en cours.",
+    notLoaded: "Ton espace de travail n'est pas encore chargé : réessaie dans un instant.",
   },
 );
 
@@ -413,6 +419,8 @@ export const useAppStore = create<AppState>((set, get) => {
    * and the open drawer and Launch Kit follow. */
   function followRelinks(relinks: Relink[]) {
     const map = new Map(relinks.map((r) => [r.from, r.to]));
+    // The session window follows too (sessionBridge.ts).
+    set({ lastRelinks: relinks });
     mutateWorkspace((ws) => applyRelinks(ws, relinks));
     const favs = get().settings.favorites;
     if (favs.some((f) => map.has(f))) void get().updateSettings({ favorites: favs.map((f) => map.get(f) ?? f) });
@@ -482,6 +490,7 @@ export const useAppStore = create<AppState>((set, get) => {
     projects: [],
     scanning: false,
     relinked: [],
+    lastRelinks: [],
     dismissRelinked: () => set({ relinked: [] }),
     search: "",
     selected: new Set(),
@@ -1090,10 +1099,13 @@ export const useAppStore = create<AppState>((set, get) => {
 
     fileInboxSketch: async ({ itemId, parentFolder, name, bandlabUrl }) => {
       if (get().demoMode) throw new Error(tr(STORE_ERRORS).sample);
-      const key = await api.phoneInboxFileSketch(itemId, parentFolder, name);
-      get().updateSong(key, { status: "creation", ...(bandlabUrl ? { bandlabUrl } : {}) });
+      // The song's stage and link go in the workspace: refuse before Rust
+      // makes the folder, or the song would come back without them.
+      if (!get().workspaceWritable) throw new Error(tr(STORE_ERRORS).notLoaded);
+      const filed = await api.phoneInboxFileSketch(itemId, parentFolder, name);
+      get().updateSong(filed.key, { status: "creation", ...(bandlabUrl ? { bandlabUrl } : {}) });
       await get().rescan();
-      return key;
+      return filed;
     },
 
     continueSketch: async (sketchPath, templatePath) => {
