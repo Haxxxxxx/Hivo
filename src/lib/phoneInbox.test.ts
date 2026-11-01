@@ -3,6 +3,7 @@ import type { InboxItem } from "../types";
 import {
   appendIdea,
   bandlabLink,
+  isOpaqueName,
   duration,
   filterInbox,
   ideaBlock,
@@ -87,6 +88,20 @@ describe("sketches", () => {
     expect(sketchName(item({ itemType: "sketch", title: "Cold: room", files }))).toBe("Cold room");
     expect(sketchName(item({ itemType: "sketch", files }))).toBe("Night Run");
     expect(sketchName(item({ itemType: "sketch" }))).toBe("Sketch");
+  });
+  it("never names a sketch after a link or a provider id (BandLab shares from older phones)", () => {
+    const opaque = [{ name: "msf_1000032969.m4a", size: 3, path: "/i/x", missing: false }];
+    expect(sketchName(item({ itemType: "sketch", title: "msf 1000032969", files: opaque }))).toBe("Sketch");
+    expect(sketchName(item({ itemType: "sketch", title: "https://www.bandlab.com/post/abc", files: opaque }))).toBe("BandLab sketch");
+    expect(sketchName(item({ itemType: "sketch", title: "Night Drive on BandLab", files: opaque }))).toBe("Night Drive");
+    expect(sketchName(item({ itemType: "sketch", title: "", text: "https://www.bandlab.com/post/abc", files: opaque }))).toBe("BandLab sketch");
+    const mixed = [...opaque, { name: "Low_Tide (Mixdown).m4a", size: 3, path: "/i/y", missing: false }];
+    expect(sketchName(item({ itemType: "sketch", files: mixed }))).toBe("Low Tide");
+  });
+  it("spots id-like file names", () => {
+    expect(isOpaqueName("msf_1000032969.m4a")).toBe(true);
+    expect(isOpaqueName("1000032969.m4a")).toBe(true);
+    expect(isOpaqueName("Night Drive.m4a")).toBe(false);
   });
   it("finds a BandLab link shared with it", () => {
     expect(bandlabLink(item({ text: "listen https://www.bandlab.com/track/abc?x=1 ok" }))).toBe("https://www.bandlab.com/track/abc?x=1");

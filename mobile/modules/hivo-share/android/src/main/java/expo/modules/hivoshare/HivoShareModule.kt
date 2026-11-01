@@ -4,7 +4,9 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.webkit.MimeTypeMap
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
@@ -90,7 +92,7 @@ class HivoShareModule : Module() {
     val files = mutableListOf<Map<String, Any?>>()
     val skipped = mutableListOf<Map<String, Any?>>()
     for ((i, uri) in uris.withIndex()) {
-      val (name, size) = describe(ctx, uri, i)
+      val (name, size, named) = describe(ctx, uri, i)
       if (i >= MAX_FILES) {
         skipped.add(mapOf("name" to name, "reason" to "count"))
         continue
@@ -106,7 +108,7 @@ class HivoShareModule : Module() {
           target.delete()
           skipped.add(mapOf("name" to name, "reason" to "too-big"))
         } else {
-          files.add(mapOf("uri" to Uri.fromFile(target).toString(), "name" to target.name, "size" to copied, "mime" to ctx.contentResolver.getType(uri)))
+          files.add(mapOf("uri" to Uri.fromFile(target).toString(), "name" to target.name, "size" to copied, "mime" to ctx.contentResolver.getType(uri), "named" to named))
         }
       } catch (e: IOException) {
         val full = e.message?.contains("ENOSPC") == true || e.message?.contains("No space", ignoreCase = true) == true
@@ -118,8 +120,11 @@ class HivoShareModule : Module() {
     return mapOf("files" to files, "skipped" to skipped, "text" to text, "subject" to subject)
   }
 
-  /** The file's display name and size, as the sharing app gave them. */
-  private fun describe(ctx: Context, uri: Uri, index: Int): Pair<String, Long?> {
+  /** The file's name and size, as the sharing app gave them, and whether
+   * that's a real name. Without a display name, the media title (plus the
+   * type's extension) is next; the uri's last segment is only an id
+   * ("msf:1000032969"), so JS renames those after the song's title. */
+  private fun describe(ctx: Context, uri: Uri, index: Int): Triple<String, Long?, Boolean> {
     var name: String? = null
     var size: Long? = null
     try {
@@ -127,15 +132,30 @@ class HivoShareModule : Module() {
         if (c.moveToFirst()) {
           val n = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
           val s = c.getColumnIndex(OpenableColumns.SIZE)
-          if (n >= 0 && !c.isNull(n)) name = c.getString(n)
+          if (n >= 0 && !c.isNull(n)) name = c.getString(n)?.takeIf { it.isNotBlank() }
           if (s >= 0 && !c.isNull(s)) size = c.getLong(s)
         }
       }
     } catch (_: Exception) {
-      // A file:// uri or a provider without columns: fall back to the path.
+      // A file:// uri or a provider without columns: fall back below.
     }
+    if (name == null) {
+      try {
+        ctx.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.TITLE), null, null, null)?.use { c ->
+          val t = c.getColumnIndex(MediaStore.MediaColumns.TITLE)
+          if (c.moveToFirst() && t >= 0 && !c.isNull(t)) {
+            val title = c.getString(t)?.takeIf { it.isNotBlank() }
+            val ext = ctx.contentResolver.getType(uri)?.let { MimeTypeMap.getSingleton().getExtensionFromMimeType(it) }
+            if (title != null) name = if (ext != null && !title.endsWith(".$ext", ignoreCase = true)) "$title.$ext" else title
+          }
+        }
+      } catch (_: Exception) {
+        // Most document providers have no title column.
+      }
+    }
+    if (name != null) return Triple(clean(name!!), size, true)
     val fallback = uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "shared-${index + 1}"
-    return Pair(clean(name ?: fallback), size)
+    return Triple(clean(fallback), size, false)
   }
 
   /** No path separators or control characters; never empty. */

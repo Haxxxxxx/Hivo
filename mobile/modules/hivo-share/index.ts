@@ -3,7 +3,8 @@
 // here returns nothing.
 import { requireOptionalNativeModule, type EventSubscription } from "expo";
 
-export type SharedFile = { uri: string; name: string; size: number; mime: string | null };
+/** `named`: the sharing app gave a real name (false: `name` is the provider's id, e.g. "msf_1000032969"). */
+export type SharedFile = { uri: string; name: string; size: number; mime: string | null; named?: boolean };
 export type SkipReason = "count" | "too-big" | "unreadable" | "space";
 export type Shared = {
   files: SharedFile[];

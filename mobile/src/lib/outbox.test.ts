@@ -24,6 +24,7 @@ function fakeDesktop() {
   const parts = new Map<string, Uint8Array>();
   const sizes = new Map<string, number>();
   const done = new Set<string>();
+  const starts: Record<string, unknown>[] = [];
   const knobs = { dropAfterChunks: -1, chunks: 0, loseReplyOnce: false, refuse: "" as string, busyOnce: false, forgetOnce: false };
   const err = (m: string) => new SyncError("server", m);
   const call = async (path: string, p: any): Promise<unknown> => {
@@ -34,6 +35,7 @@ function fakeDesktop() {
     if (knobs.refuse) throw err(knobs.refuse);
     const k = `${p.itemId}/${p.fileIndex}`;
     if (path === "/v1/upload/start") {
+      starts.push(p);
       if (sizes.get(k) !== p.size) {
         sizes.set(k, p.size);
         parts.set(k, new Uint8Array());
@@ -76,7 +78,7 @@ function fakeDesktop() {
     }
     throw new Error(path);
   };
-  return { parts, knobs, call };
+  return { parts, knobs, call, starts };
 }
 
 const fileOf = (n: number) => Uint8Array.from({ length: n }, (_, i) => i % 251);
@@ -123,6 +125,15 @@ describe("uploadItem", () => {
     expect(desk.parts.get("it1/0")).toEqual(data.a);
     expect(desk.parts.get("it1/1")).toEqual(data.b);
     expect(seen[seen.length - 1]).toBe(1);
+  });
+
+  it("sends the shared text (BandLab's link) with the start, and nothing when there's none", async () => {
+    const desk = fakeDesktop();
+    await uploadItem(io(desk, data), item({ text: "Night Run https://www.bandlab.com/post/abc" }), () => {});
+    expect(desk.starts[0]).toMatchObject({ title: "Night run", text: "Night Run https://www.bandlab.com/post/abc" });
+    const plain = fakeDesktop();
+    await uploadItem(io(plain, data), item(), () => {});
+    expect(plain.starts[0]).not.toHaveProperty("text");
   });
 
   it("resumes after the Wi-Fi drops, and survives a lost reply", async () => {

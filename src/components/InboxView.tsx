@@ -55,6 +55,7 @@ const T = dict(
     removeHint: "Removes it from the inbox only: what was filed into a song folder stays.",
     filedNote: (title: string) => `Added to the notes of ${title}`,
     filedSketch: "Filed as a new song",
+    sharedWith: "Shared with it",
     filedMemo: "Copied into the song's Voice memos folder",
     filedLink: (title: string) => `Linked to ${title}`,
     dismissed: "Dismissed",
@@ -103,6 +104,7 @@ const T = dict(
     removeHint: "Le retire de la boîte seulement : ce qui a été rangé dans un dossier de son y reste.",
     filedNote: (title: string) => `Ajouté aux notes de ${title}`,
     filedSketch: "Rangé comme nouveau son",
+    sharedWith: "Partagé avec",
     filedMemo: "Copié dans le dossier Voice memos du son",
     filedLink: (title: string) => `Lié à ${title}`,
     dismissed: "Écarté",
@@ -303,7 +305,7 @@ function InboxCard({ item, options }: { item: InboxItem; options: TargetOption[]
         <Icon size={18} className="mt-0.5 shrink-0 text-engrave" />
         <div className="min-w-0 flex-1">
           <div className={engrave}>{kindLabel}</div>
-          <div className="truncate font-medium text-cream">{item.title || (item.itemType === "idea" ? item.text.split("\n")[0] : item.files[0]?.name) || kindLabel}</div>
+          <div className="truncate font-medium text-cream">{item.title || (item.itemType === "idea" ? item.text.split("\n")[0] : item.itemType === "sketch" ? sketchName(item) : item.files[0]?.name) || kindLabel}</div>
           <div className="text-xs text-engrave">{t.from(item.phoneName || "Phone", formatDateTime(item.receivedAt ?? item.createdAt))}</div>
         </div>
         {!isNew && (
@@ -315,6 +317,13 @@ function InboxCard({ item, options }: { item: InboxItem; options: TargetOption[]
       </div>
 
       {item.itemType === "idea" && item.text && <p className="whitespace-pre-wrap rounded bg-chassis px-3 py-2 text-sm text-body">{item.text}</p>}
+      {/* What the sharing app sent with the files (BandLab's words and link). */}
+      {item.itemType !== "idea" && item.text && (
+        <p className="whitespace-pre-wrap break-words text-xs text-engrave">
+          <span className="text-body">{t.sharedWith}: </span>
+          {item.text}
+        </p>
+      )}
 
       {item.itemType !== "idea" && (
         <div className="flex flex-col gap-2">

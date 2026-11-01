@@ -35,6 +35,8 @@ export type OutItem = {
   id: string;
   type: OutType;
   title: string;
+  /** What was shared with it (BandLab's words and link), ≤ 2000; absent on older items. */
+  text?: string;
   target: IdeaTarget | null;
   createdAt: number;
   durationMs: number | null;
@@ -181,6 +183,7 @@ export async function uploadItem(io: UploadIO, start: OutItem, onUpdate: (i: Out
               itemId: item.id,
               itemType: item.type,
               title: item.title,
+              ...(item.text ? { text: item.text } : {}),
               target: item.target,
               createdAt: item.createdAt,
               durationMs: item.durationMs,
