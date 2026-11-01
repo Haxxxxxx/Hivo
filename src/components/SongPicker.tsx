@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, ChevronDown, Disc3, Search, Sparkles } from "lucide-react";
 import { formatRelative } from "../lib/format";
+import { isKitAccepted } from "../lib/kitState";
 import { formatBpm, lastSaveMs, renderFreshness, songLabel, stageRank, statusInfo } from "../lib/songs";
 import type { ProjectInfo, Workspace } from "../types";
 import { StatusDot } from "./ui";
@@ -84,7 +85,7 @@ function MixdownState({ song }: { song: ProjectInfo }) {
 function KitState({ song, workspace }: { song: ProjectInfo; workspace: Workspace }) {
   const kit = workspace.songs[song.path]?.launchKit;
   const t = tr(T);
-  if (kit?.acceptedAtMs) {
+  if (isKitAccepted(song, workspace.songs[song.path], workspace.albums)) {
     return (
       <span className="flex items-center gap-1 text-emerald-300/90">
         <CheckCircle2 size={11} /> {t.kitAccepted}

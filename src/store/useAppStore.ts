@@ -27,6 +27,7 @@ import type {
   CoverStatus,
   KitCoverMeta,
   KitAiMeta,
+  LaunchKitMeta,
   KitFieldId,
   SongStatus,
   Workspace,
@@ -225,7 +226,14 @@ interface AppState {
   setSnippetStart: (path: string, label: string, startSec: number | undefined) => void;
   /** Change a snippet's length (undefined = back to the detected length). */
   setSnippetLength: (path: string, label: string, lengthSec: number | undefined) => void;
-  acceptKit: (path: string) => void;
+  /** "Accept all": `fingerprint` is what it was accepted against (kitState.ts). */
+  acceptKit: (path: string, fingerprint?: string) => void;
+  /** Keeps the suggested release date on the song (accept, export): marked as
+   * a suggestion, so a date set on its release later wins. */
+  pinKitReleaseDate: (path: string, date: string) => void;
+  /** Small kit settings that aren't field values (master, export record,
+   * final cover, pre-save link). Doesn't touch "Accepted". */
+  patchKit: (path: string, patch: Partial<LaunchKitMeta>) => void;
   /** Merge AI drafts/review into a song's kit. */
   setKitAi: (path: string, patch: Partial<KitAiMeta>) => void;
   /** null until loaded; whether a Gemini key is set. */
@@ -877,7 +885,20 @@ export const useAppStore = create<AppState>((set, get) => {
       const edits = { ...kit.edits };
       if (value === undefined) delete edits[id];
       else edits[id] = value;
-      get().updateSong(path, { launchKit: { ...kit, edits, acceptedAtMs: undefined } });
+      // A date the user sets is theirs (never silently replaced by the release's).
+      const releaseDatePin = id === "releaseDate" ? (value === undefined ? undefined : "typed") : kit.releaseDatePin;
+      get().updateSong(path, { launchKit: { ...kit, edits, releaseDatePin, acceptedAtMs: undefined } });
+    },
+
+    pinKitReleaseDate: (path, date) => {
+      const kit = get().workspace.songs[path]?.launchKit ?? {};
+      if (kit.edits?.releaseDate) return;
+      get().updateSong(path, { launchKit: { ...kit, edits: { ...kit.edits, releaseDate: date }, releaseDatePin: "suggested" } });
+    },
+
+    patchKit: (path, patch) => {
+      const kit = get().workspace.songs[path]?.launchKit ?? {};
+      get().updateSong(path, { launchKit: { ...kit, ...patch } });
     },
 
     setSnippetStart: (path, label, startSec) => {
@@ -898,12 +919,13 @@ export const useAppStore = create<AppState>((set, get) => {
 
     setKitEdits: (path, edits) => {
       const kit = get().workspace.songs[path]?.launchKit ?? {};
-      get().updateSong(path, { launchKit: { ...kit, edits: edits === null ? {} : { ...kit.edits, ...edits }, acceptedAtMs: undefined } });
+      const releaseDatePin = edits === null ? undefined : edits.releaseDate !== undefined ? "typed" : kit.releaseDatePin;
+      get().updateSong(path, { launchKit: { ...kit, edits: edits === null ? {} : { ...kit.edits, ...edits }, releaseDatePin, acceptedAtMs: undefined } });
     },
 
-    acceptKit: (path) => {
+    acceptKit: (path, fingerprint) => {
       const kit = get().workspace.songs[path]?.launchKit ?? {};
-      get().updateSong(path, { launchKit: { ...kit, acceptedAtMs: Date.now() } });
+      get().updateSong(path, { launchKit: { ...kit, acceptedAtMs: Date.now(), acceptedFingerprint: fingerprint } });
     },
 
     setKitAi: (path, patch) => {

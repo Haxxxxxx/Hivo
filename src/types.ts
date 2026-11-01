@@ -243,6 +243,22 @@ export interface LaunchKitMeta {
   snippetLengths?: Record<string, number>;
   /** Set by "Accept all"; cleared by any later edit. */
   acceptedAtMs?: number;
+  /** What the kit was accepted against (master file, credits, release:
+   * `acceptFingerprint`): a change outside the kit undoes "Accepted". */
+  acceptedFingerprint?: string;
+  /** Where `edits.releaseDate` came from: kept from a suggestion (accept or
+   * export pins it) or typed. A suggestion never beats the release's date. */
+  releaseDatePin?: "suggested" | "typed";
+  /** The mixdown picked as the master (a path among the song's renders);
+   * unset = the newest lossless render, else the newest. */
+  master?: string;
+  /** The last export: when, what (`exportFingerprint`) and the folder name
+   * it went to (so a re-export after a rename cleans up the old one). */
+  exported?: { atMs: number; fingerprint: string; folder: string };
+  /** The user marked the final 3000 × 3000 cover as ready. */
+  finalCoverDone?: boolean;
+  /** A pre-save link (https). Captions mention a pre-save only when set. */
+  preSaveUrl?: string;
   /** Opt-in: the credited people's platform IDs (Spotify artist ID…) go
    * into the exported kit (artist-ids.md, distributor sheet, metadata). */
   includeArtistIds?: boolean;

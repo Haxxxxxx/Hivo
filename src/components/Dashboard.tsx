@@ -14,6 +14,7 @@ import {
 import { useAppStore } from "../store/useAppStore";
 import { formatBytes, formatRelative } from "../lib/format";
 import { localDayMs } from "../lib/launchKit";
+import { isKitAccepted } from "../lib/kitState";
 import { openInFlStudio, revealInFileManager } from "../lib/tauri";
 import { isSketch } from "../lib/daws";
 import {
@@ -323,7 +324,7 @@ function MyDashboard({ editing }: { editing: boolean }) {
     () =>
       [
         ...songs.filter((p) => !isFinished(statusOf(p.path))).map((p) => ({ p, kit: false })),
-        ...songs.filter((p) => statusOf(p.path) === "prep" && !workspace.songs[p.path]?.launchKit?.acceptedAtMs).map((p) => ({ p, kit: true })),
+        ...songs.filter((p) => statusOf(p.path) === "prep" && !isKitAccepted(p, workspace.songs[p.path], workspace.albums)).map((p) => ({ p, kit: true })),
       ].slice(0, 4),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [songs, workspace.songs],

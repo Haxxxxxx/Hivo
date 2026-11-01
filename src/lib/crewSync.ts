@@ -1,5 +1,7 @@
 import type { Album, AlbumKind, CrewCredit, CrewReleaseRow, CrewSongRow, ProjectInfo, SongMeta, SongStatus, StageConflict, Workspace } from "../types";
 import { cleanTitle } from "./launchKit";
+import { datedRelease } from "./releaseDates";
+import { isKitAccepted } from "./kitState";
 import { lastSaveMs } from "./songs";
 import { dict, tr } from "../i18n";
 
@@ -40,8 +42,8 @@ function inScope(meta: SongMeta, scope: ShareScope): boolean {
 
 /** The release date the crew should see: the song's release, else its Launch Kit date. */
 function releaseDateFor(path: string, meta: SongMeta, ws: Workspace): string | null {
-  const album = ws.albums.find((a) => a.trackPaths.includes(path) && a.releaseDate);
-  const date = album?.releaseDate ?? meta.launchKit?.edits?.releaseDate ?? null;
+  // The same rule as the Launch Kit and the Calendar (releaseDates.ts).
+  const date = datedRelease(path, meta, ws.albums);
   return date && isRealDate(date) ? date : null;
 }
 
@@ -137,7 +139,7 @@ export function sharedSongPayload(project: ProjectInfo, meta: SongMeta, ws: Work
     ),
     release_date: releaseDateFor(project.path, meta, ws),
     has_mixdown: project.renders.length > 0,
-    kit_accepted: !!meta.launchKit?.acceptedAtMs,
+    kit_accepted: isKitAccepted(project, meta, ws.albums),
     last_saved_at: lastSaveMs(project) > 0 ? iso(lastSaveMs(project)) : null,
   };
 }

@@ -11,7 +11,6 @@ import {
   kitChecks,
   kitFiles,
   kitGuide,
-  CAPTION_LANGUAGE_NAMES,
   type KitGuide,
   type KitLang,
   kitSnippets,
@@ -25,19 +24,23 @@ import {
   type KitInput,
   inEnglish,
   kitArtists,
+  finalCoverMessage,
+  parseDate,
 } from "../lib/launchKit";
+import { busyDates, daysUntil, releaseOf } from "../lib/releaseDates";
+import { acceptFingerprint, exportFingerprint, exportStatus, isKitAccepted, isLossless, kitMaster, lastLyricsLanguage } from "../lib/kitState";
 import { dict, tr } from "../i18n";
 import { aiDisclosure, draftCopy, reviewKit } from "../lib/ai";
 import { formatRelative } from "../lib/format";
 import { stageRank, statusInfo } from "../lib/songs";
-import type { AudioAnalysis, ProjectInfo, Snippet } from "../types";
+import type { AudioAnalysis, FileEntry, ProjectInfo, Snippet } from "../types";
 import { useVisibleSongs } from "./LibraryView";
 import { SongPicker } from "./SongPicker";
 import { ShortsPanel } from "./ShortsPanel";
 import { CoverConcepts } from "./CoverConcepts";
 import { ConfirmButton, StatusSelect, btn, btnPrimary } from "./ui";
 import { canRenderInApp } from "../lib/daws";
-import { Card, CheckLine, FieldRow, KitStatus } from "../ui";
+import { Card, CheckLine, FieldRow, KitStatus, StatusDot } from "../ui";
 
 // Snippet colors: the dark categorical slots, in fixed order (as elsewhere).
 const SNIPPET_COLORS = ["#ff5a1f", "#f2efe8", "#3ddc84"];
@@ -139,6 +142,30 @@ const T = dict(
     captionsIn: "Captions in",
     forThisKit: "for this kit",
     fromSettings: "(from Settings)",
+    // Export record
+    changedSinceExport: "Changed since export",
+    changedSinceExportHint: "The values, the master or the snippets changed since the last export: export again so the files match",
+    exportedAgo: (when: string) => `Exported ${when}`,
+    waitAnalysis: "Wait until the master has been listened to",
+    releaseDayCame: "The release date has come. Move the song on when it's out.",
+    markCoverDone: "Mark as ready",
+    // Master
+    masterLabel: "Master",
+    masterHint: "The file the kit uploads, cuts the snippets from and puts in the shorts",
+    masterAuto: "newest lossless",
+    lossy: "lossy",
+    // Dates
+    useReleaseDate: (date: string) => `Use the release's date (${date})`,
+    setOnRelease: (title: string) => `Set this date on "${title}"`,
+    setOnReleaseHint: "Every track of the release then takes this date",
+    preSave: "Pre-save link",
+    preSaveHint: "Optional. The captions mention a pre-save only when there's one",
+    preSaveInvalid: "An https:// link",
+    // Cover
+    finalCoverReady: "Final cover ready (3000 × 3000)",
+    // AI overwrite
+    overwriteConfirm: "This replaces the captions and brief you edited. Write new ones anyway?",
+    writeAnyway: "Write anyway",
   },
   {
     empty: "Relie un dossier de projets (ou charge les données d'exemple) pour monter un Launch Kit.",
@@ -229,6 +256,25 @@ const T = dict(
     captionsIn: "Textes en",
     forThisKit: "pour ce kit",
     fromSettings: "(depuis les Réglages)",
+    changedSinceExport: "Modifié depuis l'export",
+    changedSinceExportHint: "Les valeurs, le master ou les extraits ont changé depuis le dernier export : exporte à nouveau pour que les fichiers suivent",
+    exportedAgo: (when: string) => `Exporté ${when}`,
+    waitAnalysis: "Attends la fin de l'écoute du master",
+    releaseDayCame: "La date de sortie est arrivée. Fais avancer le son quand il est sorti.",
+    markCoverDone: "Marquer prête",
+    masterLabel: "Master",
+    masterHint: "Le fichier que le kit envoie, d'où sont coupés les extraits et qui va dans les shorts",
+    masterAuto: "le plus récent sans perte",
+    lossy: "avec perte",
+    useReleaseDate: (date: string) => `Prendre la date de la sortie (${date})`,
+    setOnRelease: (title: string) => `Mettre cette date sur "${title}"`,
+    setOnReleaseHint: "Tous les morceaux de la sortie prennent alors cette date",
+    preSave: "Lien de pré-save",
+    preSaveHint: "Optionnel. Les textes ne parlent de pré-save que s'il y en a un",
+    preSaveInvalid: "Un lien en https://",
+    finalCoverReady: "Cover finale prête (3000 × 3000)",
+    overwriteConfirm: "Ça remplace les textes et le brief que tu as modifiés. En écrire de nouveaux quand même ?",
+    writeAnyway: "Écrire quand même",
   },
 );
 
@@ -237,8 +283,7 @@ const T = dict(
  * changes, or the tempo does (snippets snap to its bar grid). */
 const analysisCache = new Map<string, AudioAnalysis>();
 
-function useAnalysis(project: ProjectInfo | undefined, demoMode: boolean) {
-  const render = project?.renders[0];
+function useAnalysis(project: ProjectInfo | undefined, render: FileEntry | undefined, demoMode: boolean) {
   const key = render ? `${render.path}|${render.modifiedAtMs}|${project?.tempoBpm ?? ""}` : null;
   const [state, setState] = useState<{ key: string | null; analysis: AudioAnalysis | null; error: string | null; loading: boolean }>({
     key: null,
@@ -285,6 +330,9 @@ export function LaunchKitView() {
   const setSnippetStart = useAppStore((s) => s.setSnippetStart);
   const setSnippetLength = useAppStore((s) => s.setSnippetLength);
   const acceptKit = useAppStore((s) => s.acceptKit);
+  const pinKitReleaseDate = useAppStore((s) => s.pinKitReleaseDate);
+  const patchKit = useAppStore((s) => s.patchKit);
+  const updateAlbum = useAppStore((s) => s.updateAlbum);
 
   // Songs closest to release first: ones with a mixdown, then by stage
   // (Promotion … Creation), then by last save.
@@ -303,7 +351,8 @@ export function LaunchKitView() {
   const openDetail = useAppStore((s) => s.openDetail);
   const startRender = useAppStore((s) => s.startRender);
   const rendering = useAppStore((s) => s.rendering);
-  const { analysis, error: analysisError, loading } = useAnalysis(project, demoMode);
+  const masterFile = project ? kitMaster(project, workspace.songs[project.path]) : undefined;
+  const { analysis, error: analysisError, loading } = useAnalysis(project, masterFile, demoMode);
   const [exportState, setExportState] = useState<{ status: "idle" | "running" } | { status: "done"; dir: string } | { status: "error"; message: string }>({ status: "idle" });
   /** Where the last "need you" jump went, so the next click moves on. */
   const lastJump = useRef<string | null>(null);
@@ -329,14 +378,10 @@ export function LaunchKitView() {
   }
 
   const meta = workspace.songs[project.path] ?? {};
-  // Fridays already taken: other releases, other kits, the crew's songs.
-  const busyDates = [
-    ...workspace.albums.filter((a) => !a.trackPaths.includes(project.path)).map((a) => a.releaseDate),
-    ...Object.entries(workspace.songs)
-      .filter(([p]) => p !== project.path)
-      .map(([, m]) => m.launchKit?.edits?.releaseDate),
-    ...crewSongs.filter((s) => s.id !== meta.shareId).map((s) => s.release_date),
-  ].filter((d): d is string => !!d);
+  const master = masterFile;
+  // Fridays already taken: other releases, other kits, the crew's songs
+  // (never this song's own release or its siblings: releaseDates.ts).
+  const busy = busyDates({ path: project.path, albums: workspace.albums, songs: workspace.songs, crewSongs });
   const kitInput: KitInput = {
     project,
     meta,
@@ -344,23 +389,32 @@ export function LaunchKitView() {
     albums: workspace.albums,
     analysis,
     captionLanguage: meta.launchKit?.captionLanguage ?? settings.captionLanguage ?? "fr",
-    language: settings.aiLanguage ?? CAPTION_LANGUAGE_NAMES[meta.launchKit?.captionLanguage ?? settings.captionLanguage ?? "fr"],
+    lastLanguage: lastLyricsLanguage(workspace.songs, project.path),
     labelName: crewName,
-    busyDates,
+    busyDates: busy,
+    songs: workspace.songs,
   };
   const fields = buildKit(kitInput);
   const snippets = kitSnippets(analysis, meta);
-  const extra = kitChecks(project, analysis);
+  const checkOptions = { master, analysisFailed: !!master && !loading && !analysis, finalCoverDone: !!meta.launchKit?.finalCoverDone };
+  const extra = kitChecks(project, analysis, checkOptions);
   const all: KitCheck[] = [...extra, ...fields.flatMap((f) => (f.check ? [f.check] : []))];
   const missing = all.filter((c) => c.level === "missing").length;
   const ai = aiSummary(fields);
   const warnings = all.length - missing + ai.flagged;
-  const accepted = meta.launchKit?.acceptedAtMs;
+  const accepted = isKitAccepted(project, meta, workspace.albums);
   const byId = (id: KitField["id"]) => fields.find((f) => f.id === id)!;
+  const fingerprint = exportFingerprint(fields, master, snippets);
+  const exported = exportStatus(meta, fingerprint);
+  const release = releaseOf(workspace.albums, project.path);
+  const releaseDate = byId("releaseDate");
+  const daysToRelease = daysUntil(releaseDate.value);
 
   const edits = meta.launchKit?.edits ?? {};
   // stageRank counts down from Promotion (0) to Creation, Unsorted last.
   const beforeRelease = stageRank(meta.status) > stageRank("release");
+  // "Move to Release" only once the date has come, never before.
+  const releaseDue = beforeRelease && daysToRelease !== null && daysToRelease <= 0;
   const suggestions = fields.filter((f) => f.review && !f.review.stale && f.review.suggestion && f.review.suggestion !== f.value);
 
   /** The status plate's "N need you": each click goes to the next field
@@ -382,14 +436,14 @@ export function LaunchKitView() {
    * next Friday a week later). A release's own date is left alone. */
   function keepReleaseDate() {
     if (!project) return;
-    const date = byId("releaseDate");
-    if (!edits.releaseDate && date.source === "suggested" && date.value) setKitEdit(project.path, "releaseDate", date.value);
+    // Kept as a suggestion: a date set on the release later still wins.
+    if (edits.releaseDate === undefined && releaseDate.source === "suggested" && releaseDate.value) pinKitReleaseDate(project.path, releaseDate.value);
   }
 
   function handleAccept() {
     if (!project) return;
     keepReleaseDate();
-    acceptKit(project.path);
+    acceptKit(project.path, acceptFingerprint(project, meta, workspace.albums));
   }
 
   /** Into the song's panel, in the Library. */
@@ -423,17 +477,19 @@ export function LaunchKitView() {
     setExportState({ status: "running" });
     try {
       const lang: KitLang = kitInput.captionLanguage ?? "fr";
-      const masterExt = project.renders[0]?.path.split(".").pop()?.toLowerCase() ?? null;
+      const masterExt = master?.path.split(".").pop()?.toLowerCase() ?? null;
       const dir = await api.exportLaunchKit({
         folderName: title,
         // The files don't follow the app's language (distributor sheet, checklist).
         files: inEnglish(() =>
-          kitFiles(buildKit(kitInput), snippets, kitChecks(project, analysis), lang, masterExt, meta.launchKit?.includeArtistIds ? kitArtists(meta, kitInput.people) : null),
+          kitFiles(buildKit(kitInput), snippets, kitChecks(project, analysis, checkOptions), lang, masterExt, meta.launchKit?.includeArtistIds ? kitArtists(meta, kitInput.people) : null),
         ),
-        master: project.renders[0]?.path ?? null,
+        master: master?.path ?? null,
         masterName: masterBaseName(fields, project.name),
         clips: snippets,
+        previousFolder: meta.launchKit?.exported?.folder ?? null,
       });
+      patchKit(project.path, { exported: { atMs: Date.now(), fingerprint, folder: title } });
       setExportState({ status: "done", dir });
       setGuide({ guide: kitGuide(lang, { title, master: masterExt ? `${masterBaseName(fields, project.name)}.${masterExt}` : null, snippets: snippets.map((s) => s.label) }), lang, dir });
     } catch (e) {
@@ -481,16 +537,34 @@ export function LaunchKitView() {
             >
               <Check size={14} /> {accepted ? t.accepted : t.acceptAll}
             </button>
+            {exported !== "never" && meta.launchKit?.exported && (
+              <span
+                className={`flex items-center gap-1.5 text-xs ${exported === "changed" ? "text-warn" : "text-engrave"}`}
+                title={exported === "changed" ? t.changedSinceExportHint : undefined}
+              >
+                <StatusDot color={exported === "changed" ? "var(--color-warn)" : "var(--color-ok)"} />
+                {exported === "changed" ? t.changedSinceExport : t.exportedAgo(formatRelative(meta.launchKit.exported.atMs))}
+              </span>
+            )}
             <button
               onClick={handleExport}
-              disabled={demoMode || exportState.status === "running"}
-              title={demoMode ? t.exportOffDemo : t.exportWhere}
+              disabled={demoMode || exportState.status === "running" || loading}
+              title={demoMode ? t.exportOffDemo : loading ? t.waitAnalysis : t.exportWhere}
               className={btnPrimary}
             >
               <Rocket size={14} /> {exportState.status === "running" ? t.exporting : t.exportKit}
             </button>
           </div>
         </header>
+
+        {releaseDue && (
+          <div className="flex flex-wrap items-center gap-3 rounded-md border border-rule bg-panel px-4 py-2.5 text-sm text-cream">
+            <span className="min-w-0 flex-1">{t.releaseDayCame}</span>
+            <button onClick={() => updateSong(project.path, { status: "release" })} className={btn}>
+              {t.moveToStage(statusInfo("release").label)}
+            </button>
+          </div>
+        )}
 
         {exportArmed && (
           <div className="flex flex-wrap items-center gap-3 rounded-md border border-warn/40 bg-panel px-4 py-2.5 text-sm text-cream" role="alertdialog">
@@ -507,12 +581,7 @@ export function LaunchKitView() {
         {exportState.status === "done" && (
           <div className="flex items-center gap-3 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-sm text-emerald-200">
             <CheckCircle2 size={16} /> {t.exported(missing + warnings)}
-            {beforeRelease && (
-              <button onClick={() => updateSong(project.path, { status: "release" })} className="ml-auto rounded border border-emerald-400/40 px-2 py-0.5 text-xs hover:bg-emerald-500/10">
-                {t.moveToStage(statusInfo("release").label)}
-              </button>
-            )}
-            <button onClick={() => api.revealInFileManager(exportState.dir)} className={`${beforeRelease ? "" : "ml-auto "}flex items-center gap-1 text-xs underline`}>
+            <button onClick={() => api.revealInFileManager(exportState.dir)} className="ml-auto flex items-center gap-1 text-xs underline">
               <FolderOpen size={13} /> {t.showFolder}
             </button>
           </div>
@@ -536,6 +605,11 @@ export function LaunchKitView() {
             {project.renders.length === 0 && c.level === "missing" && canRenderInApp(project) && !demoMode && (
               <button onClick={() => void handleRender()} disabled={rendering} className={`${btn} shrink-0 text-xs`}>
                 {rendering ? t.rendering : t.renderNow}
+              </button>
+            )}
+            {c.message === finalCoverMessage() && (
+              <button onClick={() => patchKit(project.path, { finalCoverDone: true })} className={`${btn} shrink-0 text-xs`}>
+                <Check size={13} /> {t.markCoverDone}
               </button>
             )}
           </div>
@@ -567,6 +641,14 @@ export function LaunchKitView() {
         <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] gap-5">
           <div className="flex flex-col gap-5">
             <Card title={t.metadata}>
+              {project.renders.length > 1 && (
+                <MasterPicker
+                  renders={project.renders}
+                  value={meta.launchKit?.master}
+                  current={master}
+                  onChange={(path) => patchKit(project.path, { master: path })}
+                />
+              )}
               <div className="flex flex-col divide-y divide-rule">
                 {METADATA_FIELDS.map((id) => (
                   <FieldRow key={id} field={byId(id)} onChange={(v) => setKitEdit(project.path, id, v)} />
@@ -574,7 +656,20 @@ export function LaunchKitView() {
               </div>
             </Card>
             <Card title={t.releaseTiming}>
-              <FieldRow field={byId("releaseDate")} onChange={(v) => setKitEdit(project.path, "releaseDate", v)} />
+              <FieldRow field={releaseDate} onChange={(v) => setKitEdit(project.path, "releaseDate", v)} />
+              <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                {release?.releaseDate && releaseDate.value !== release.releaseDate && (
+                  <button onClick={() => setKitEdit(project.path, "releaseDate", undefined)} className={btn}>
+                    {t.useReleaseDate(release.releaseDate)}
+                  </button>
+                )}
+                {release && !release.releaseDate && parseDate(releaseDate.value) && (
+                  <button onClick={() => updateAlbum(release.id, { releaseDate: releaseDate.value })} title={t.setOnReleaseHint} className={btn}>
+                    {t.setOnRelease(release.title)}
+                  </button>
+                )}
+              </div>
+              <PreSaveInput value={meta.launchKit?.preSaveUrl ?? ""} onChange={(url) => patchKit(project.path, { preSaveUrl: url || undefined, acceptedAtMs: undefined })} />
             </Card>
             <Card title={t.distribution}>
               <div className="flex flex-col divide-y divide-rule">
@@ -590,6 +685,7 @@ export function LaunchKitView() {
             <Card title={t.snippetsCard}>
               <Snippets
                 project={project}
+                render={master}
                 analysis={analysis}
                 snippets={snippets}
                 loading={loading}
@@ -602,6 +698,7 @@ export function LaunchKitView() {
             <ShortsPanel
               key={`shorts:${project.path}`}
               project={project}
+              master={master}
               fields={fields}
               snippets={snippets}
               analysisLoading={loading}
@@ -609,7 +706,23 @@ export function LaunchKitView() {
             />
             <Card title={t.coverBrief}>
               <FieldRow field={byId("coverBrief")} onChange={(v) => setKitEdit(project.path, "coverBrief", v)} bare />
-              <CoverConcepts key={project.path} path={project.path} title={byId("title").value || project.name} artists={artistLine(byId("artists").value, byId("featuring").value)} brief={byId("coverBrief").value} />
+              <CoverConcepts
+                key={project.path}
+                path={project.path}
+                title={byId("title").value || project.name}
+                artists={artistLine(byId("artists").value, byId("featuring").value)}
+                brief={byId("coverBrief").value}
+                releaseType={byId("releaseType").value}
+              />
+              <label className="mt-3 flex cursor-pointer items-center gap-2 text-xs text-body">
+                <input
+                  type="checkbox"
+                  checked={!!meta.launchKit?.finalCoverDone}
+                  onChange={(e) => patchKit(project.path, { finalCoverDone: e.target.checked || undefined })}
+                  className="accent-orange-500"
+                />
+                {t.finalCoverReady}
+              </label>
             </Card>
             <Card title={t.captions}>
               <CaptionLanguage
@@ -636,6 +749,8 @@ function AiPanel({ path, input, fields }: { path: string; input: KitInput; field
   const setView = useAppStore((s) => s.setView);
   const [running, setRunning] = useState<"draft" | "review" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // "Write captions & brief" over hand-edited text asks first.
+  const [overwriteArmed, setOverwriteArmed] = useState(false);
 
   const t = tr(T);
   if (!aiStatus?.configured) {
@@ -662,6 +777,12 @@ function AiPanel({ path, input, fields }: { path: string; input: KitInput; field
 
   async function run(withDraft: boolean) {
     setError(null);
+    const handEdited = input.meta.launchKit?.edits?.captions !== undefined || input.meta.launchKit?.edits?.coverBrief !== undefined;
+    if (withDraft && handEdited && !overwriteArmed) {
+      setOverwriteArmed(true);
+      return;
+    }
+    setOverwriteArmed(false);
     // A call can take a while: if the user switches between sample data and
     // their real songs meanwhile, the result belongs to neither.
     const startedInDemo = useAppStore.getState().demoMode;
@@ -729,6 +850,17 @@ function AiPanel({ path, input, fields }: { path: string; input: KitInput; field
           </button>
         )}
       </div>
+      {overwriteArmed && (
+        <div className="flex flex-wrap items-center gap-3 rounded-md border border-warn/40 bg-chassis px-3 py-2 text-xs text-cream" role="alertdialog">
+          <span className="min-w-0 flex-1">{t.overwriteConfirm}</span>
+          <button onClick={() => setOverwriteArmed(false)} className="text-body hover:text-cream">
+            {t.cancel}
+          </button>
+          <button onClick={() => void run(true)} className={btnPrimary}>
+            {t.writeAnyway}
+          </button>
+        </div>
+      )}
       <div className={`text-xs ${summary.verified ? "text-emerald-300" : summary.state === "checked" ? "text-amber-300" : "text-engrave"}`}>
         {line}
         {reviewedAt && <span className="text-engrave">{t.checkedAgo(formatRelative(reviewedAt))}</span>}
@@ -745,6 +877,7 @@ function AiPanel({ path, input, fields }: { path: string; input: KitInput; field
 
 function Snippets({
   project,
+  render,
   analysis,
   snippets,
   loading,
@@ -754,6 +887,7 @@ function Snippets({
   onLength,
 }: {
   project: ProjectInfo;
+  render: FileEntry | undefined;
   analysis: AudioAnalysis | null;
   snippets: Snippet[];
   loading: boolean;
@@ -769,7 +903,6 @@ function Snippets({
   const [selected, setSelected] = useState<string | null>(null);
   // While dragging, the snippet's live start (saved once, on release).
   const [drag, setDrag] = useState<{ key: string; offset: number; start: number; moved: boolean } | null>(null);
-  const render = project.renders[0];
 
   useEffect(() => () => audio.current?.pause(), [render?.path]);
 
@@ -974,6 +1107,65 @@ function Snippets({
       {!demoMode && <audio ref={audio} src={api.audioSrc(render.path)} preload="none" />}
       <div className="text-[11px] text-engrave">{t.snippetsHelp}</div>
     </div>
+  );
+}
+
+/** Which render is the master. "Auto" = the newest lossless one (kitState.ts). */
+function MasterPicker({ renders, value, current, onChange }: { renders: FileEntry[]; value: string | undefined; current: FileEntry | undefined; onChange: (path: string | undefined) => void }) {
+  const t = tr(T);
+  const name = (p: string) => p.split(/[\\/]/).pop() ?? p;
+  const picked = value && renders.some((r) => r.path === value) ? value : "";
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-2 border-b border-rule pb-3 text-xs" title={t.masterHint}>
+      <span className="font-medium text-body">{t.masterLabel}</span>
+      <select
+        value={picked}
+        onChange={(e) => onChange(e.target.value || undefined)}
+        aria-label={t.masterLabel}
+        className="min-w-0 flex-1 truncate rounded border border-rule-strong bg-chassis px-1.5 py-1 text-cream"
+      >
+        <option value="">{`${current ? name(current.path) : ""} (${t.masterAuto})`}</option>
+        {[...renders]
+          .sort((a, b) => b.modifiedAtMs - a.modifiedAtMs)
+          .map((r) => (
+            <option key={r.path} value={r.path}>
+              {`${name(r.path)} · ${formatRelative(r.modifiedAtMs)}${isLossless(r.path) ? "" : ` · ${t.lossy}`}`}
+            </option>
+          ))}
+      </select>
+    </div>
+  );
+}
+
+/** The optional pre-save link: https only, saved when leaving the field. */
+function PreSaveInput({ value, onChange }: { value: string; onChange: (url: string) => void }) {
+  const t = tr(T);
+  const [text, setText] = useState<string | null>(null);
+  const shown = text ?? value;
+  const valid = !shown.trim() || /^https:\/\/[^\s]+$/i.test(shown.trim());
+  const commit = () => {
+    if (text === null) return;
+    if (valid) onChange(text.trim());
+    setText(null);
+  };
+  return (
+    <label className="mt-3 flex flex-col gap-1 border-t border-rule pt-3 text-xs">
+      <span className="flex items-center gap-2">
+        <span className="font-medium text-body">{t.preSave}</span>
+        <span className="min-w-0 flex-1 truncate text-[11px] text-engrave">{valid ? t.preSaveHint : t.preSaveInvalid}</span>
+      </span>
+      <input
+        value={shown}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          if (e.key === "Escape") setText(null);
+        }}
+        placeholder="https://"
+        className={`rounded border bg-chassis px-2 py-1 text-cream focus:outline-none ${valid ? "border-rule-strong focus:border-hot" : "border-warn"}`}
+      />
+    </label>
   );
 }
 
