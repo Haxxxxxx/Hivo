@@ -1,14 +1,20 @@
 import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { fnv1a, toB64url } from "./bytes";
-import { createClient, SyncError, type Transport } from "./client";
+import { createClient, SyncError, timeoutFor, type Transport } from "./client";
 import { openRequest, ReplayGuard, sealResponse, type Reply } from "./envelope";
 import type { Pairing } from "./pairing";
 import {
   allItems,
   applyPushResults,
   applySnapshot,
+  cacheOf,
+  editsOf,
   forgetGone,
+  keepEdits,
+  parseEdits,
+  rebaseOnSnapshot,
+  unsyncedText,
   isGone,
   MAX_PUSH_TEXT_BYTES,
   editNote,
@@ -247,6 +253,11 @@ describe("runSync with a fake desktop", () => {
     expect(await codeForError("bad request")).toBe("outdated");
     expect(await codeForError("too many changes (500 max)")).toBe("too-big");
     expect(await codeForError("note too long (20000 characters max)")).toBe("too-big");
+    // The desktop opened the request but its time is off by more than 2 minutes.
+    expect(await codeForError("clock")).toBe("clock");
+    // "bad request" keeps its words, so the uploader can fail just that item.
+    const bad = await createClient({ pairing, transport: errReply("bad request"), random: rnd, now: Date.now })("/v1/upload/start", {}).catch((e: SyncError) => e);
+    expect(bad).toMatchObject({ message: "bad request" });
 
     const html: Transport = async () => ({ status: 200, text: async () => "<html>" });
     const err = (await createClient({ pairing, transport: html, random: rnd, now: Date.now })("/v1/hello", {}).catch((e: unknown) => e)) as SyncError;
@@ -279,6 +290,63 @@ describe("batching", () => {
     const r = await runSync(call, () => s, (n) => (s = n), hello, Date.now);
     expect(r.conflicts).toBe(0);
     expect(noteFor(s, "song", "s1")).toBe("same");
+  });
+});
+
+describe("timeouts", () => {
+  it("waits longer than the desktop's 10 s for a snapshot or a notes push, and longer still for a chunk", () => {
+    expect(timeoutFor("/v1/snapshot", 5000)).toBe(12_000);
+    expect(timeoutFor("/v1/notes", 5000)).toBe(12_000);
+    expect(timeoutFor("/v1/upload/chunk", 5000)).toBe(30_000);
+    expect(timeoutFor("/v1/hello", 5000)).toBe(5000);
+  });
+});
+
+describe("pending edits across re-pairing", () => {
+  it("keep the phone's text through unpair, re-base on the new pairing's first snapshot, then push", async () => {
+    // Paired to computer A: two edits, one on an item only A has.
+    let s = withItems(item("song", "s1", "v1", { title: "Night Run" }), item("beat", "onlyA", "", { title: "Old beat" }));
+    s = editNote(s, "song", "s1", "v1 + phone line", 1);
+    s = editNote(s, "beat", "onlyA", "bars for A", 2);
+    s = editNote(s, "beat", "same", "x", 3); // no item: pending with no title
+    // Unpair: the edits are stored on their own and survive (JSON round trip).
+    const stored = JSON.parse(JSON.stringify(editsOf(s)));
+    expect(JSON.stringify(cacheOf(s))).not.toContain("phone line");
+    let fresh = keepEdits(parseEdits(stored));
+    expect(fresh.items).toEqual([]);
+    expect(fresh.rebase).toBe(true);
+    expect(Object.keys(fresh.pending)).toHaveLength(3);
+    expect(unsyncedText(fresh)).toContain("Night Run\n---------\nv1 + phone line");
+
+    // Paired again (the computer's address changed): it has s1 (changed meanwhile) and "same" with that text.
+    const desk = fakeDesktop(pairing, [item("song", "s1", "v1 edited on desk"), item("beat", "same", "x")]);
+    const call = createClient({ pairing, transport: desk.transport, random: rnd, now: Date.now });
+    fresh = { ...fresh, helloDone: true };
+    await runSync(call, () => fresh, (n) => (fresh = n), hello, Date.now);
+    expect(fresh.rebase).toBe(false);
+    expect(fresh.pending).toEqual({});
+    // Nothing overwritten: the computer kept both texts.
+    expect(desk.notes.get(itemKey("song", "s1"))?.note).toBe("v1 edited on desk\n\n--- from Phone ---\nv1 + phone line");
+    // Not on this computer: kept on the phone as "gone", with its title.
+    expect(fresh.gone[itemKey("beat", "onlyA")]).toMatchObject({ title: "Old beat", note: "bars for A" });
+    // Already the same text there: dropped, never pushed.
+    expect(desk.log.filter((l) => l.endsWith("/v1/notes"))).toHaveLength(1);
+  });
+
+  it("rebaseOnSnapshot drops what matches and keeps the old base for the rest", () => {
+    let s = withItems(item("song", "s1", "a"));
+    s = editNote(s, "song", "s1", "b", 1);
+    const base = s.pending[itemKey("song", "s1")].baseHash;
+    const r = rebaseOnSnapshot(keepEdits(editsOf(s)), { items: [item("song", "s1", "c")] });
+    expect(r.pending[itemKey("song", "s1")].baseHash).toBe(base);
+    expect(rebaseOnSnapshot(keepEdits(editsOf(s)), { items: [item("song", "s1", "b")] }).pending).toEqual({});
+  });
+
+  it("parseEdits leaves malformed rows out", () => {
+    const e = parseEdits({ pending: { "song:x": { kind: "song", id: "x", text: "t", baseHash: "811c9dc5", editedAt: 1 }, bad: { kind: "nope" }, "song:y": { kind: "song", id: "z", text: "t", baseHash: "1", editedAt: 1 } }, gone: { junk: 1 } });
+    expect(Object.keys(e.pending)).toEqual(["song:x"]);
+    expect(e.gone).toEqual({});
+    expect(parseEdits("garbage")).toEqual({ pending: {}, gone: {} });
   });
 });
 

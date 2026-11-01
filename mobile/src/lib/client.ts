@@ -6,7 +6,8 @@ import type { Pairing } from "./pairing";
 export type SyncErrorCode =
   | "offline" // no host answered: not on the same Wi-Fi
   | "off" // a host refused the connection: phone sync is off (or Hivo is closed)
-  | "forgotten" // 401: the desktop no longer knows this phone's key
+  | "forgotten" // bare 401: the desktop no longer knows this phone's key (or, from an older desktop, the clock is off)
+  | "clock" // sealed "clock": the request opened but its time is more than 2 minutes off the computer's
   | "demo" // the desktop is in demo mode
   | "busy" // 429 / 503 / "busy": scan running, workspace loading, rate limit; retry in a few seconds
   | "too-big" // 413, "too many changes", "note too long": the whole push was refused
@@ -36,6 +37,15 @@ export type ClientOptions = {
   refusedUnderMs?: number;
 };
 
+/** How long to wait for `path`. A chunk is ~700 KB sealed: on weak Wi-Fi 5 s
+ * would cut every one at the same point. The desktop gives its webview 10 s
+ * for a snapshot or a notes push, so the phone waits a little longer. */
+export function timeoutFor(path: string, base: number): number {
+  if (path === "/v1/upload/chunk") return Math.max(base, 30_000);
+  if (path === "/v1/snapshot" || path === "/v1/notes") return Math.max(base, 12_000);
+  return base;
+}
+
 /** Returns `call(path, payload)`; remembers the host that answered last and tries it first. */
 export function createClient(opts: ClientOptions) {
   const key = keyBytes(opts.pairing.key);
@@ -49,8 +59,7 @@ export function createClient(opts: ClientOptions) {
     for (const host of hosts) {
       const body = JSON.stringify(sealRequest(key, deviceId, path, payload, opts.random, opts.now()));
       const ctrl = new AbortController();
-      // A chunk is ~700 KB sealed: on weak Wi-Fi 5 s would cut every one at the same point.
-      const timer = setTimeout(() => ctrl.abort(), path === "/v1/upload/chunk" ? Math.max(timeoutMs, 30_000) : timeoutMs);
+      const timer = setTimeout(() => ctrl.abort(), timeoutFor(path, timeoutMs));
       const started = opts.now();
       let res: HttpResponse;
       let text: string;
@@ -83,6 +92,7 @@ export function createClient(opts: ClientOptions) {
       }
       if (reply.ok) return reply.body;
       if (reply.error === "demo") throw new SyncError("demo");
+      if (reply.error === "clock") throw new SyncError("clock");
       if (reply.error === "busy") throw new SyncError("busy");
       if (reply.error === "bad request") throw new SyncError("outdated", reply.error);
       if (/^(too many changes|note too long)/.test(reply.error)) throw new SyncError("too-big", reply.error);

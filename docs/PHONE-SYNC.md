@@ -230,7 +230,10 @@ Inside the envelope (`ok: false`), on top of v1's:
 | `offset:<n>` | chunk out of order (lost reply, resume) | silently re-sends from `n` |
 | `unknown upload` | chunk/finish without a start, or dropped after 7 days | silently starts that file again from 0 |
 | `size` | finish with fewer/more bytes than declared | starts that file again from 0 (once), then failed |
-| `bad request` | malformed payload | `outdated` |
+| `bad request` | malformed payload | `outdated` for notes and ideas; for an upload, that one item fails ("refused") and the others still go |
+| `clock` | the request opened but its `ts` is more than 2 minutes off | "This phone's clock is off: set it to automatic" (nothing sent until it's fixed) |
+
+On the phone (2026-11 review, B20/W13): only `offline`, `off`, `busy`, `forgotten`, `clock`, `demo` and `outdated` stop the uploads; any other sealed error fails just that item with its reason. `inbox full` holds that item and bigger ones (smaller ones still go); `disk full` holds all. A bare 401 on a phone that synced before says "forgotten, or this phone's clock is off" (older desktops answer a wrong clock that way).
 
 Bare statuses as v1 (401 `forgotten`, 413, 429/503 `busy`: the uploader waits and goes on).
 

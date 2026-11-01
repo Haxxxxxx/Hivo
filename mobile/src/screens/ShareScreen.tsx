@@ -1,9 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type MutableRefObject } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { clearShareCache } from "../../modules/hivo-share";
 import { TargetPicker } from "../components/TargetPicker";
 import { Button, Engrave } from "../components/ui";
-import { adopt, SpaceError } from "../files";
+import { adoptAll, SpaceError } from "../files";
 import { s } from "../inboxStrings";
 import { tr } from "../lib/i18n";
 import type { IdeaTarget } from "../lib/ideas";
@@ -21,12 +21,14 @@ export type IncomingShare = {
   subject: string | null;
   /** Picked in Hivo (copy the files) rather than shared from another app (already copies: move them). */
   picked: boolean;
+  /** The native share's own cache folder (cleared when this share is done). */
+  dir?: string | null;
 };
 
 const mb = (n: number) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
 /** What another app shared with Hivo (or files picked here): send it to the computer. */
-export function ShareScreen({ share, onDone, onIdea }: { share: IncomingShare; onDone: () => void; onIdea: (id: string) => void }) {
+export function ShareScreen({ share, onDone, onIdea, backRef }: { share: IncomingShare; onDone: () => void; onIdea: (id: string) => void; backRef: MutableRefObject<(() => void) | null> }) {
   const paired = useApp((st) => st.pairing !== null);
   // Names as the files are (BandLab's M4A may come without an extension, or as .mp4).
   const files = useMemo(() => share.files.map((f) => ({ ...f, name: sharedName(f.name, f.mime), named: f.named !== false })), [share.files]);
@@ -36,7 +38,7 @@ export function ShareScreen({ share, onDone, onIdea }: { share: IncomingShare; o
   // BandLab's subject, a line of its text, else a file's own name; never a link or an id.
   const [title, setTitle] = useState(() => titleFromShare({ subject: share.subject, text: share.text, fileNames: check.ok.map((f) => f.name) }).slice(0, 200));
   // A file named by its id ("msf_1000032969.m4a") takes the song's name.
-  const finalName = (f: (typeof check.ok)[number], i: number) => fileNameFor(f.name, f.named, title, i, check.ok.length);
+  const finalName = (f: (typeof check.ok)[number], i: number) => fileNameFor(f.name, f.named, title, i, check.ok.length, s().sketchLabel);
   const [target, setTarget] = useState<IdeaTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,12 +52,12 @@ export function ShareScreen({ share, onDone, onIdea }: { share: IncomingShare; o
     setBusy(true);
     setError(null);
     const id = newOutId();
-    const files: OutFile[] = [];
     try {
-      for (const [i, f] of check.ok.entries()) files.push(await adopt(id, { ...f, name: finalName(f, i) }, share.picked));
+      // All of the item's files or none (a failure puts back what was moved).
+      const files: OutFile[] = await adoptAll(id, check.ok.map((f, i) => ({ uri: f.uri, name: finalName(f, i) })), share.picked);
       // The shared words and BandLab link go with it (the computer keeps the link on the song).
       addOutItem(id, "sketch", files, { title: title.trim(), target, text: shareText(share.text, share.subject) });
-      void clearShareCache();
+      if (!share.picked) void clearShareCache(share.dir);
       requestSync();
       onDone();
     } catch (e) {
@@ -69,16 +71,23 @@ export function ShareScreen({ share, onDone, onIdea }: { share: IncomingShare; o
     const lines = (share.text ?? "").split("\n").filter((l) => l.trim());
     const title = share.subject?.trim() || (lines.length > 1 && firstLine.length <= 80 ? firstLine : "");
     const id = addIdea({ title, text: share.text ?? "", target });
-    void clearShareCache();
+    if (!share.picked) void clearShareCache(share.dir);
     requestSync();
     onIdea(id);
   }
 
   // Leaving without sending: drop the copies (up to 20 files) from the cache.
   const leave = () => {
-    if (!share.picked) void clearShareCache();
+    if (!share.picked) void clearShareCache(share.dir);
     onDone();
   };
+  // The hardware Back does the same (App.tsx calls it).
+  useEffect(() => {
+    backRef.current = leave;
+    return () => {
+      backRef.current = null;
+    };
+  });
 
   return (
     <ScrollView contentContainerStyle={{ padding: 16, gap: 14 }} keyboardShouldPersistTaps="handled">
@@ -126,7 +135,7 @@ export function ShareScreen({ share, onDone, onIdea }: { share: IncomingShare; o
       {hasFiles ? (
         <View>
           <Engrave>{s().shareName}</Engrave>
-          <TextInput value={title} onChangeText={setTitle} maxLength={200} placeholder={s().shareNamePlaceholder} placeholderTextColor={C.engrave} style={styles.input} />
+          <TextInput value={title} onChangeText={setTitle} accessibilityLabel={s().shareName} maxLength={200} placeholder={s().shareNamePlaceholder} placeholderTextColor={C.engrave} style={styles.input} />
         </View>
       ) : null}
       {hasFiles || hasText ? <TargetPicker value={target} onChange={setTarget} /> : null}

@@ -92,6 +92,34 @@
           ],
           "data": [
             {
+              "mimeType": "video/mp4"
+            },
+            {
+              "mimeType": "application/octet-stream"
+            }
+          ]
+        },
+        {
+          "action": "SEND_MULTIPLE",
+          "category": [
+            "DEFAULT"
+          ],
+          "data": [
+            {
+              "mimeType": "video/mp4"
+            },
+            {
+              "mimeType": "application/octet-stream"
+            }
+          ]
+        },
+        {
+          "action": "SEND",
+          "category": [
+            "DEFAULT"
+          ],
+          "data": [
+            {
               "mimeType": "text/plain"
             }
           ]
