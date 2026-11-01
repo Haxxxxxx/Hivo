@@ -215,6 +215,38 @@ pub fn remove_watched_folder(app: AppHandle, folder: String) -> Result<Settings,
     Ok(saved)
 }
 
+/// A linked folder that moved (drive letter changed, renamed, remounted
+/// elsewhere), pointed at its new place.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Repointed {
+    pub settings: Settings,
+    pub from: String,
+    pub to: String,
+}
+
+/// Replaces one linked folder with a folder the user picks, in place. The
+/// webview then moves the songs' data from the old prefix to the new one.
+/// `None` when the picker was cancelled.
+#[tauri::command]
+pub async fn repoint_watched_folder(app: AppHandle, folder: String) -> Result<Option<Repointed>, String> {
+    if !load(&app)?.watched_folders.contains(&folder) {
+        return Err(format!("not a linked folder: {folder}"));
+    }
+    let Some(picked) = pick(&app, true).await? else { return Ok(None) };
+    let to = usable_folder(&picked)?;
+    let mut saved = load(&app)?;
+    if to != folder && saved.watched_folders.contains(&to) {
+        return Err(format!("{to} is already linked"));
+    }
+    let Some(slot) = saved.watched_folders.iter_mut().find(|f| **f == folder) else {
+        return Err(format!("not a linked folder: {folder}"));
+    };
+    *slot = to.clone();
+    store(&app, &saved)?;
+    Ok(Some(Repointed { settings: saved, from: folder, to }))
+}
+
 /// Adds a beats folder the user picks (the Digger's source).
 #[tauri::command]
 pub async fn pick_beat_folder(app: AppHandle) -> Result<Settings, String> {

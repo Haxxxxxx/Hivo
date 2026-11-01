@@ -52,6 +52,7 @@ pub fn run() {
             settings::pick_watched_folder,
             settings::link_detected_folder,
             settings::remove_watched_folder,
+            settings::repoint_watched_folder,
             settings::pick_output_folder,
             settings::pick_beat_folder,
             settings::remove_beat_folder,
