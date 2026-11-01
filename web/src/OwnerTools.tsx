@@ -69,7 +69,7 @@ export function MakeOwner({ userId, name }: { userId: string; name: string }) {
   return (
     <span className="flex flex-col items-end gap-1">
       <TwoClick label={tr(W).makeOwner} armedLabel={tr(W).makeOwnerConfirm(name)} disabled={busy} onConfirm={() => void run(() => transferOwnership(userId))} />
-      {error && <span className="text-xs text-red-300">{error}</span>}
+      {error && <span className="text-xs text-missing">{error}</span>}
     </span>
   );
 }
