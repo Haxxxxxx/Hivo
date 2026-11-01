@@ -7,7 +7,7 @@ import { ALBUM_COLORS, EMPTY_WORKSPACE, migrateWorkspace, newId } from "../lib/s
 import { logStageChanges } from "../lib/stageLog";
 import { addColumn, moveCard, moveColumn, removeColumn, renameColumn } from "../lib/pipeline";
 import type { DashboardLayout } from "../lib/dashboardLayout";
-import { applyRelinks, findRelinks, type Relink } from "../lib/relink";
+import { applyRelinks, findRelinks, isUnder, rootRelinks, type Relink } from "../lib/relink";
 import { setNote } from "../lib/notes";
 import { canRenderInApp, dawOf, splitRenderable } from "../lib/daws";
 import type {
@@ -71,7 +71,7 @@ export type SortDir = "asc" | "desc";
 /** "unsorted" = songs with no status yet. */
 export type StatusFilter = SongStatus | "unsorted" | null;
 
-interface RenderJob {
+export interface RenderJob {
   status: RenderStatus;
   message: string | null;
   outputPath: string | null;
@@ -116,6 +116,15 @@ interface AppState {
   workspaceWritable: boolean;
   projects: ProjectInfo[];
   scanning: boolean;
+  /** Linked folders the last scan couldn't read (unplugged drive, unmounted
+   * share): their songs are missing for now, never taken for moved. */
+  unreachable: string[];
+  /** A linked folder that moved: pick its new place (native picker in Rust);
+   * every song's data under it follows. */
+  repointFolder: (folder: string) => Promise<void>;
+  /** Rescan; a failure shows in the error banner instead of being thrown
+   * (window focus, after a render). */
+  rescanOrReport: () => Promise<void>;
   /** Songs whose record followed a rename/move in the last scan (shown once). */
   relinked: Relink[];
   dismissRelinked: () => void;
@@ -481,6 +490,23 @@ export const useAppStore = create<AppState>((set, get) => {
     workspaceWritable: false,
     projects: [],
     scanning: false,
+    unreachable: [],
+    rescanOrReport: () => scanOrReport(),
+    repointFolder: async (folder) => {
+      if (get().demoMode) throw new Error(tr(STORE_ERRORS).sample);
+      const moved = await api.repointWatchedFolder(folder);
+      if (!moved) return;
+      keepPaths(moved.settings);
+      // Every record under the old folder moves to the same place under the
+      // new one (stage, notes, credits, crew share, release slots, favorites).
+      if (get().workspaceWritable) {
+        const relinks = rootRelinks(get().workspace, moved.from, moved.to);
+        if (relinks.length) followRelinks(relinks);
+      }
+      const filter = get().folderFilter;
+      if (filter && isUnder(`${filter}/x`, moved.from)) set({ folderFilter: null });
+      await scanOrReport();
+    },
     relinked: [],
     dismissRelinked: () => set({ relinked: [] }),
     search: "",
@@ -672,7 +698,7 @@ export const useAppStore = create<AppState>((set, get) => {
       if (get().demoMode) return;
       const folders = get().settings.watchedFolders;
       if (folders.length === 0) {
-        set({ projects: [] });
+        set({ projects: [], unreachable: [] });
         return;
       }
       // Scans can overlap (window focus + adding a folder); only the newest
@@ -680,17 +706,18 @@ export const useAppStore = create<AppState>((set, get) => {
       const id = ++scanSeq;
       set({ scanning: true });
       try {
-        const projects = await api.scanProjects();
+        const { projects, unreachable } = await api.scanProjects();
         if (id === scanSeq && !get().demoMode) {
           // Renamed/moved .flp files keep their stage, tags, notes, credits,
           // crew share and album slot (lib/relink.ts). Only on the real,
-          // writable workspace, never sample data.
-          const relinks = get().workspaceWritable ? findRelinks(projects, get().workspace, folders) : [];
+          // writable workspace, never sample data. Songs under a linked
+          // folder that's unreachable right now are missing, not moved.
+          const relinks = get().workspaceWritable ? findRelinks(projects, get().workspace, folders, unreachable) : [];
           if (relinks.length) {
             followRelinks(relinks);
             set({ relinked: [...get().relinked, ...relinks] });
           }
-          set({ projects });
+          set({ projects, unreachable });
         }
       } finally {
         if (id === scanSeq) set({ scanning: false });
@@ -759,7 +786,7 @@ export const useAppStore = create<AppState>((set, get) => {
       } finally {
         set({ rendering: false });
         // Pick up the new mixdowns (freshness badges, playback).
-        get().rescan().catch(() => {});
+        void scanOrReport();
       }
     },
 
@@ -1084,7 +1111,9 @@ export const useAppStore = create<AppState>((set, get) => {
       const path = await api.createProject({ templatePath, parentFolder, name });
       get().updateSong(path, { status });
       if (albumId) get().addTracks(albumId, [path]);
-      await get().rescan();
+      // The file exists now: a failed rescan is reported, never thrown (a
+      // retry would only say "already exists").
+      await scanOrReport();
       return path;
     },
 
@@ -1107,11 +1136,16 @@ export const useAppStore = create<AppState>((set, get) => {
 
     duplicateProject: async (path, newName) => {
       const created = await api.duplicateProject(path, newName);
-      // The new version inherits the song's tags and stage only: not its
-      // crew share (one share id per song), Launch Kit, credits or archive flag.
+      // The new version inherits the song's stage, tags, key, notes and
+      // credits: not its crew share (one share id per song), Launch Kit or
+      // archive flag.
       const meta = get().workspace.songs[path];
-      if (meta) get().updateSong(created, { tags: meta.tags, status: meta.status });
-      await get().rescan();
+      if (meta) {
+        const { tags, status, key, notes, credits } = meta;
+        get().updateSong(created, { tags, status, key, notes, credits: credits?.map((c) => ({ ...c })) });
+      }
+      // The copy exists now: a failed rescan is reported, never thrown.
+      await scanOrReport();
       return created;
     },
 

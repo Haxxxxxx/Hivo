@@ -292,10 +292,12 @@ export default function App() {
   useEffect(() => {
     let last = Date.now();
     const onFocus = () => {
-      const { scanning, rendering, demoMode, rescan } = useAppStore.getState();
+      const { scanning, rendering, demoMode, rescanOrReport } = useAppStore.getState();
       if (scanning || rendering || demoMode || Date.now() - last < 15_000) return;
       last = Date.now();
-      rescan().catch(() => {});
+      // A failure shows in the error banner (a linked folder that stops
+      // answering, a settings file that can't be read).
+      void rescanOrReport();
     };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
