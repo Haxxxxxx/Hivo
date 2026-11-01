@@ -41,10 +41,15 @@ export interface NoteChange {
   baseHash: string;
 }
 
+/** "too long": both sides changed the note and the merge would pass
+ * MAX_NOTE_CHARS, so nothing was written; `note` is the desktop's text and
+ * the phone keeps its own edit (docs/PHONE-SYNC.md). */
+export type NoteStatus = "applied" | "conflict" | "missing" | "too long";
+
 export interface NoteResult {
   kind: SyncKind;
   id: string;
-  status: "applied" | "conflict" | "missing";
+  status: NoteStatus;
   note: string;
   noteHash: string;
 }
@@ -162,9 +167,26 @@ export function parseChanges(body: unknown): NoteChange[] | null {
   return out;
 }
 
-/** The text kept when the phone and the desktop both changed a note. */
+/**
+ * The text kept when the phone and the desktop both changed a note: the
+ * desktop's note, then only the phone's lines it doesn't hold yet, under a
+ * `--- from <phone> ---` marker (the phone's text usually starts from the
+ * same note, so appending all of it would double it). Blank lines between
+ * kept lines stay, collapsed to one. The desktop's note unchanged when the
+ * phone adds nothing new. Never cut: the caller checks the length.
+ */
 export function mergeConflict(current: string, phoneName: string, text: string): string {
-  return `${current}\n\n--- from ${phoneName} ---\n${text}`;
+  const have = new Set(current.split("\n").map((l) => l.trim()).filter(Boolean));
+  const kept: string[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) {
+      if (kept.length > 0 && kept[kept.length - 1] !== "") kept.push("");
+    } else if (!have.has(line.trim())) kept.push(line);
+  }
+  while (kept.length > 0 && kept[kept.length - 1] === "") kept.pop();
+  if (kept.length === 0) return current;
+  const base = current.replace(/\s+$/, "");
+  return base ? `${base}\n\n--- from ${phoneName} ---\n${kept.join("\n")}` : kept.join("\n");
 }
 
 /**
@@ -173,7 +195,9 @@ export function mergeConflict(current: string, phoneName: string, text: string):
  * kept (`mergeConflict`) and the result says "conflict". Two cases count as
  * applied without a merge: the desktop already holds exactly `text` (a retry
  * whose answer was lost), and the desktop's note is empty. Unknown ids are
- * "missing" and nothing is written for them.
+ * "missing" and nothing is written for them. Nothing is ever cut: a text or
+ * a merge longer than MAX_NOTE_CHARS is "too long" and nothing is written
+ * (the phone keeps its edit, the desktop its note).
  */
 export function applyNoteChanges(
   changes: NoteChange[],
@@ -191,9 +215,13 @@ export function applyNoteChanges(
       results.push({ kind: c.kind, id: c.id, status: "missing", note: "", noteHash: noteHash("") });
       continue;
     }
-    const text = storedNote(c.text);
-    const clean = noteHash(before) === c.baseHash || before === text || before === "";
-    const next = clean ? text : storedNote(mergeConflict(before, phoneName, c.text));
+    const clean = noteHash(before) === c.baseHash || before === c.text || before === "";
+    const merged = clean ? c.text : mergeConflict(before, phoneName, c.text);
+    if (merged.length > MAX_NOTE_CHARS) {
+      results.push({ kind: c.kind, id: c.id, status: "too long", note: before, noteHash: noteHash(before) });
+      continue;
+    }
+    const next = storedNote(merged);
     if (next !== before) writes.push({ kind: c.kind, id: c.id, text: next });
     now.set(k, next);
     results.push({ kind: c.kind, id: c.id, status: clean ? "applied" : "conflict", note: next, noteHash: noteHash(next) });

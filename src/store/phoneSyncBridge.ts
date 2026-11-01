@@ -12,13 +12,38 @@ import { startPhoneInbox } from "./usePhoneInbox";
 
 type Reply = { body: unknown } | { error: string };
 
+/** How long a request waits for a running scan (Rust gives up after 10 s). */
+export const SCAN_WAIT_MS = 5_000;
+
+/** Resolves when no scan is running, or after `ms` (whichever comes first). */
+function scanSettled(ms: number): Promise<void> {
+  if (!useAppStore.getState().scanning) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      unsub();
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    const unsub = useAppStore.subscribe((s) => {
+      if (!s.scanning) done();
+    });
+  });
+}
+
 async function sources(): Promise<SyncSources | Reply> {
   // Fresh lists: the Digger may never have been opened. No beats folder = none.
-  const [leads, beats] = await Promise.all([api.listLeads().then((ls) => ls.filter((l) => !l.unrecognised)).catch(() => []), api.scanBeats().catch(() => [])]);
+  const [leads, beats] = await Promise.all([
+    api.listLeads().then((ls) => ls.filter((l) => !l.unrecognised)).catch(() => []),
+    api.scanBeats().catch(() => []),
+    scanSettled(SCAN_WAIT_MS),
+  ]);
   const s = useAppStore.getState();
   if (s.demoMode) return { error: "demo" };
-  // Not loaded yet, read-only, or a scan in flight (songs could look deleted).
-  if (!s.workspaceWritable || s.scanning) return { error: "busy" };
+  if (!s.workspaceWritable) return { error: "busy" };
+  // A scan still running answers from the last one; only the very first
+  // scan (nothing listed yet) is worth waiting for, or songs would look deleted.
+  if (s.scanning && s.projects.length === 0) return { error: "busy" };
   return { leads, beats, projects: s.projects, workspace: s.workspace };
 }
 

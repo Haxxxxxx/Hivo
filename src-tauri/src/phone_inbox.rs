@@ -43,6 +43,16 @@ const PARTIAL_TTL_MS: i64 = 7 * 24 * 3600 * 1000;
 pub const MAX_UNZIP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_ID_CHARS: usize = 64;
 pub const MEMOS_DIR: &str = "Voice memos";
+/// Where a memo linked to a beat or a saved prod is copied, inside the
+/// beats folder (next to `_leads`), so removing it from the inbox never
+/// deletes its only copy.
+pub const BEAT_MEMOS_DIR: &str = "_memos";
+/// Stems unpacked from a zip that came with a mixdown go here, inside the
+/// sketch's BandLab folder: the mixdown stays the song's render, and
+/// "Continue in FL Studio" lays out the stems only (sketch.rs).
+pub const STEMS_DIR: &str = "Stems";
+/// How often the running app drops unfinished uploads past `PARTIAL_TTL_MS`.
+pub const SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(3600);
 
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
@@ -145,6 +155,15 @@ pub struct InboxItem {
     pub filed_to: Option<String>,
     #[serde(default)]
     pub filed_at: Option<i64>,
+    /// How it was filed: "song" (a new sketch song), "folder" (copied into
+    /// a song's folder), "link" (a memo linked to a beat or a prod, copied
+    /// into the beats folder's `_memos`). None for items filed before this
+    /// was recorded.
+    #[serde(default)]
+    pub filed_as: Option<String>,
+    /// The durable copy of a memo linked to a beat or a prod.
+    #[serde(default)]
+    pub copied_to: Option<String>,
 }
 
 impl InboxItem {
@@ -228,7 +247,10 @@ impl Inbox {
         fs::rename(&tmp, self.root.join("index.json")).map_err(|e| io_error(&e, "could not save the phone inbox"))
     }
 
-    fn drop_stale(&self, now: i64) {
+    /// Drops uploads that haven't moved for `PARTIAL_TTL_MS` (at start and
+    /// every `SWEEP_EVERY` while the app runs, see `sweep_every`). True when
+    /// something was dropped.
+    pub fn drop_stale(&self, now: i64) -> bool {
         let mut items = lock(&self.items);
         let before = items.len();
         let stale: Vec<String> = items.iter().filter(|i| !i.ready() && now - i.updated_at > PARTIAL_TTL_MS).map(|i| i.id.clone()).collect();
@@ -236,11 +258,13 @@ impl Inbox {
             let _ = fs::remove_dir_all(self.item_dir(id));
         }
         items.retain(|i| !stale.contains(&i.id));
-        if items.len() != before {
-            let snapshot = items.clone();
-            drop(items);
-            let _ = self.save(&snapshot);
+        if items.len() == before {
+            return false;
         }
+        let snapshot = items.clone();
+        drop(items);
+        let _ = self.save(&snapshot);
+        true
     }
 
     fn used_bytes(items: &[InboxItem]) -> u64 {
@@ -327,6 +351,8 @@ impl Inbox {
                 status: Status::New,
                 filed_to: None,
                 filed_at: None,
+                filed_as: None,
+                copied_to: None,
             });
             changed = true;
             results.push(json!({ "id": item_id, "status": "stored", "filedTo": null }));
@@ -397,6 +423,8 @@ impl Inbox {
                     status: Status::New,
                     filed_to: None,
                     filed_at: None,
+                    filed_as: None,
+                    copied_to: None,
                 });
                 items.len() - 1
             }
@@ -558,8 +586,35 @@ impl Inbox {
         lock(&self.items).iter().filter(|i| !i.ready()).count()
     }
 
+    /// The items still arriving, most recently active first, with how far
+    /// they got. They hold space in the quota, so the desktop lists them
+    /// and can remove them (`remove`).
+    pub fn incoming(&self) -> Vec<IncomingView> {
+        let items = lock(&self.items);
+        let mut out: Vec<IncomingView> = items
+            .iter()
+            .filter(|i| !i.ready())
+            .map(|i| {
+                let dir = self.item_dir(&i.id);
+                IncomingView {
+                    id: i.id.clone(),
+                    item_type: i.item_type,
+                    title: i.title.clone(),
+                    phone_name: i.phone_name.clone(),
+                    file_count: i.file_count,
+                    files_done: i.files.iter().filter(|f| f.complete).count(),
+                    received_bytes: i.files.iter().map(|f| if f.complete { f.size } else { part_len(&dir, f).min(f.size) }).sum(),
+                    total_bytes: i.bytes(),
+                    updated_at: i.updated_at,
+                }
+            })
+            .collect();
+        out.sort_by_key(|v| std::cmp::Reverse(v.updated_at));
+        out
+    }
+
     fn get_ready(&self, id: &str) -> Result<InboxItem, String> {
-        lock(&self.items).iter().find(|i| i.id == id && i.ready()).cloned().ok_or_else(|| "That item isn't in the phone inbox any more.".to_string())
+        lock(&self.items).iter().find(|i| i.id == id && i.ready()).cloned().ok_or_else(|| GONE.to_string())
     }
 
     /// Each file's path in the inbox and its name on the phone, in order.
@@ -583,16 +638,57 @@ impl Inbox {
     /// Sets the status (filed somewhere, dismissed, or back to new).
     pub fn mark(&self, id: &str, status: Status, filed_to: Option<String>) -> Result<(), String> {
         let mut items = lock(&self.items);
-        let item = items.iter_mut().find(|i| i.id == id).ok_or("That item isn't in the phone inbox any more.")?;
+        let item = items.iter_mut().find(|i| i.id == id).ok_or(GONE)?;
         item.status = status;
         item.filed_to = if status == Status::Filed { filed_to.map(|f| clip_line(&f, 4096)) } else { None };
         item.filed_at = if status == Status::New { None } else { Some(now_ms()) };
+        if status != Status::Filed {
+            item.filed_as = None;
+        }
         let snapshot = items.clone();
         drop(items);
         self.save(&snapshot)
     }
 
-    /// Removes the item and its files from the inbox.
+    /// Files an item in two steps that can't leave it half done: it's marked
+    /// filed (and saved) first, then `work` copies; when `work` fails, the
+    /// item gets its old status back. A retry never copies twice, and an
+    /// index that can't be saved stops before anything is copied.
+    fn filing<T>(&self, id: &str, filed_to: &str, filed_as: &str, copied_to: Option<String>, work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        let before = {
+            let mut items = lock(&self.items);
+            let item = items.iter_mut().find(|i| i.id == id).ok_or(GONE)?;
+            let before = item.clone();
+            item.status = Status::Filed;
+            item.filed_to = Some(clip_line(filed_to, 4096));
+            item.filed_at = Some(now_ms());
+            item.filed_as = Some(filed_as.to_string());
+            // Where this filing copies to (None: the copy is `filed_to` itself).
+            item.copied_to = copied_to;
+            let snapshot = items.clone();
+            drop(items);
+            if let Err(e) = self.save(&snapshot) {
+                self.put_back(before);
+                return Err(e);
+            }
+            before
+        };
+        work().inspect_err(|_| self.put_back(before))
+    }
+
+    /// Restores an item as it was before `filing` (best effort on disk).
+    fn put_back(&self, before: InboxItem) {
+        let mut items = lock(&self.items);
+        if let Some(item) = items.iter_mut().find(|i| i.id == before.id) {
+            *item = before;
+        }
+        let snapshot = items.clone();
+        drop(items);
+        let _ = self.save(&snapshot);
+    }
+
+    /// Removes the item and its files from the inbox (an item still arriving
+    /// too: its space is freed; a phone still sending it starts it again).
     pub fn remove(&self, id: &str) -> Result<(), String> {
         let mut items = lock(&self.items);
         let before = items.len();
@@ -607,40 +703,44 @@ impl Inbox {
     }
 
     /// "File as a new song": `<parent>/<name>/BandLab/` with the audio (zips
-    /// unpacked). Returns the sketch's key (the BandLab folder, as the scan
-    /// lists it). Anything half made is removed on failure.
-    pub fn file_sketch(&self, id: &str, parent: &Path, name: &str) -> Result<String, String> {
+    /// unpacked; into `BandLab/Stems/` when a mixdown came with them). Anything
+    /// half made is removed on failure. Filing the same item again to the
+    /// same place (a retry whose answer was lost) answers the same.
+    pub fn file_sketch(&self, id: &str, parent: &Path, name: &str) -> Result<FiledSketch, String> {
         let item = self.get_ready(id)?;
         if item.item_type == ItemType::Idea {
             return Err("An idea has no audio to file as a song.".to_string());
         }
-        let sources = self.file_paths(&item)?;
         let name = validate_name(name)?;
         let song = parent.join(name);
+        let dir = song.join(SKETCH_DIR);
+        let key = dir.to_string_lossy().to_string();
+        if item.status == Status::Filed && item.filed_to.as_deref() == Some(key.as_str()) && dir.is_dir() {
+            return Ok(FiledSketch { key, filled: count_sketch(&dir) });
+        }
+        let sources = self.file_paths(&item)?;
         if song.exists() {
             return Err(format!("\"{name}\" already exists in that folder: pick another name."));
         }
-        let dir = song.join(SKETCH_DIR);
-        fs::create_dir_all(&dir).map_err(|e| io_error(&e, "could not create the song folder"))?;
-        match fill_sketch(&sources, &dir) {
-            Ok(0) => {
+        let filled = self.filing(id, &key, "song", None, || {
+            fs::create_dir_all(&dir).map_err(|e| io_error(&e, "could not create the song folder"))?;
+            let mut created = Vec::new();
+            match fill_sketch(&sources, &dir, &mut created) {
+                Ok(f) if f.total() == 0 => Err("No audio in this zip.".to_string()),
+                other => other,
+            }
+            .inspect_err(|_| {
                 let _ = fs::remove_dir_all(&song);
-                Err("No audio in this zip.".to_string())
-            }
-            Ok(_) => {
-                let key = dir.to_string_lossy().to_string();
-                self.mark(id, Status::Filed, Some(key.clone()))?;
-                Ok(key)
-            }
-            Err(e) => {
-                let _ = fs::remove_dir_all(&song);
-                Err(e)
-            }
-        }
+            })
+        })?;
+        Ok(FiledSketch { key, filled })
     }
 
-    /// Copies a memo (or a sketch's audio) into `<song folder>/Voice memos/`,
-    /// never over a file. Returns the copied paths.
+    /// Attaches the item's audio to an existing song: a memo is copied into
+    /// `<song folder>/Voice memos/` (named after its title), a sketch's audio
+    /// into `<song folder>/BandLab/` under the phone's names, zips unpacked
+    /// (stems into `BandLab/Stems/` when a mixdown came with them). Never over
+    /// a file. Returns the copied paths.
     pub fn attach_to_song_folder(&self, id: &str, song_folder: &Path) -> Result<Vec<String>, String> {
         let item = self.get_ready(id)?;
         if item.item_type == ItemType::Idea {
@@ -650,26 +750,147 @@ impl Inbox {
             return Err("This song's folder isn't there any more.".to_string());
         }
         let sources = self.file_paths(&item)?;
-        let dir = song_folder.join(MEMOS_DIR);
-        fs::create_dir_all(&dir).map_err(|e| io_error(&e, "could not create the Voice memos folder"))?;
-        let mut out = Vec::new();
-        for (src, name) in &sources {
-            let ext = ext_of(name);
-            if ext == "zip" {
-                continue;
+        if item.item_type == ItemType::Sketch {
+            let dir = song_folder.join(SKETCH_DIR);
+            let key = dir.to_string_lossy().to_string();
+            if item.status == Status::Filed && item.filed_to.as_deref() == Some(key.as_str()) && dir.is_dir() {
+                return Ok(vec![key]);
             }
-            let base = if item.title.trim().is_empty() { "Voice memo".to_string() } else { crate::audio::safe_name(item.title.trim()) };
-            let base: String = base.chars().take(80).collect();
-            let target = crate::actions::free_path(&dir, &base, &ext);
-            copy_new(src, &target)?;
-            out.push(target.to_string_lossy().to_string());
+            return self.filing(id, &key, "folder", None, || {
+                let made_dir = !dir.exists();
+                fs::create_dir_all(&dir).map_err(|e| io_error(&e, "could not create the BandLab folder"))?;
+                let mut created = Vec::new();
+                let result = match fill_sketch(&sources, &dir, &mut created) {
+                    Ok(f) if f.total() == 0 => Err("No audio in this zip.".to_string()),
+                    other => other,
+                };
+                if result.is_err() {
+                    for p in &created {
+                        let _ = fs::remove_file(p);
+                    }
+                    let _ = fs::remove_dir(dir.join(STEMS_DIR));
+                    if made_dir {
+                        let _ = fs::remove_dir(&dir);
+                    }
+                }
+                result.map(|_| created.iter().map(|p| p.to_string_lossy().to_string()).collect())
+            });
         }
-        if out.is_empty() {
-            return Err("Nothing to copy: this item only holds zip files.".to_string());
+        let (src, name) = sources.first().ok_or("This memo has no audio.")?;
+        if item.status == Status::Filed && item.filed_as.as_deref() == Some("folder") {
+            if let Some(done) = item.filed_to.as_deref().filter(|f| Path::new(f).starts_with(song_folder) && Path::new(f).is_file()) {
+                return Ok(vec![done.to_string()]);
+            }
         }
-        self.mark(id, Status::Filed, out.first().cloned())?;
-        Ok(out)
+        let dir = song_folder.join(MEMOS_DIR);
+        let target = memo_target(&dir, &item, name);
+        let path = target.to_string_lossy().to_string();
+        self.filing(id, &path, "folder", None, || {
+            fs::create_dir_all(&dir).map_err(|e| io_error(&e, "could not create the Voice memos folder"))?;
+            copy_new(src, &target)
+        })?;
+        Ok(vec![path])
     }
+
+    /// Links a memo to a beat or a saved prod (`filed_to` = `<kind>:<id>`)
+    /// and copies its audio into `<beats folder>/_memos/`, so the inbox never
+    /// holds the only copy. Returns the copy.
+    pub fn link_memo(&self, id: &str, target_key: &str, beats_folder: &Path) -> Result<String, String> {
+        let item = self.get_ready(id)?;
+        if item.item_type != ItemType::Memo {
+            return Err("Only a voice memo can be linked to a beat or a prod.".to_string());
+        }
+        if item.status == Status::Filed && item.filed_to.as_deref() == Some(target_key) {
+            if let Some(copy) = item.copied_to.as_deref().filter(|c| Path::new(c).is_file()) {
+                return Ok(copy.to_string());
+            }
+        }
+        if !beats_folder.is_dir() {
+            return Err("This beats folder isn't there any more.".to_string());
+        }
+        let sources = self.file_paths(&item)?;
+        let (src, name) = sources.first().ok_or("This memo has no audio.")?;
+        let dir = beats_folder.join(BEAT_MEMOS_DIR);
+        let target = memo_target(&dir, &item, name);
+        let path = target.to_string_lossy().to_string();
+        self.filing(id, target_key, "link", Some(path.clone()), || {
+            fs::create_dir_all(&dir).map_err(|e| io_error(&e, "could not create the _memos folder"))?;
+            copy_new(src, &target)
+        })?;
+        Ok(path)
+    }
+}
+
+const GONE: &str = "That item isn't in the phone inbox any more.";
+
+/// `<dir>/<memo title>.<ext>` (or "Voice memo"), never an existing file.
+fn memo_target(dir: &Path, item: &InboxItem, name: &str) -> PathBuf {
+    let base = if item.title.trim().is_empty() { "Voice memo".to_string() } else { crate::audio::safe_name(item.title.trim()) };
+    let base: String = base.chars().take(80).collect();
+    crate::actions::free_path(dir, &base, &ext_of(name))
+}
+
+/// Sweeps stale uploads every `every` while the inbox lives (the app keeps
+/// it for its whole run); `on_drop` runs when something was dropped.
+pub fn sweep_every(inbox: &std::sync::Arc<Inbox>, every: std::time::Duration, on_drop: impl Fn() + Send + 'static) {
+    let weak = std::sync::Arc::downgrade(inbox);
+    let _ = std::thread::Builder::new().name("phone-inbox-sweep".into()).spawn(move || loop {
+        std::thread::sleep(every);
+        let Some(inbox) = weak.upgrade() else { return };
+        if inbox.drop_stale(now_ms()) {
+            on_drop();
+        }
+    });
+}
+
+/// What filing a sketch's audio put where.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Filled {
+    /// Audio files copied as they came (the mixdown when stems came with it).
+    pub audio: usize,
+    /// Audio unpacked from zips.
+    pub stems: usize,
+    /// The stems went to `BandLab/Stems/`, the mixdown staying in `BandLab/`.
+    pub stems_apart: bool,
+}
+
+impl Filled {
+    pub fn total(&self) -> usize {
+        self.audio + self.stems
+    }
+}
+
+/// A new sketch song: its key (the BandLab folder, as the scan lists it)
+/// and what's in it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FiledSketch {
+    pub key: String,
+    #[serde(flatten)]
+    pub filled: Filled,
+}
+
+/// What a BandLab folder already holds (for a repeated filing).
+fn count_sketch(dir: &Path) -> Filled {
+    let audio_in = |d: &Path| fs::read_dir(d).map(|r| r.filter_map(|e| e.ok()).filter(|e| e.path().is_file() && is_sketch_audio(&e.path())).count()).unwrap_or(0);
+    let stems = audio_in(&dir.join(STEMS_DIR));
+    Filled { audio: audio_in(dir), stems, stems_apart: stems > 0 }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IncomingView {
+    pub id: String,
+    pub item_type: ItemType,
+    pub title: String,
+    pub phone_name: String,
+    pub file_count: usize,
+    pub files_done: usize,
+    pub received_bytes: u64,
+    /// Declared sizes of the files started so far.
+    pub total_bytes: u64,
+    pub updated_at: i64,
 }
 
 fn status_word(s: Status) -> &'static str {
@@ -700,28 +921,42 @@ fn copy_new(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Copies audio files and unpacks the audio inside zips into `dir`.
-/// Returns how many audio files landed there.
-fn fill_sketch(sources: &[(PathBuf, String)], dir: &Path) -> Result<usize, String> {
-    let mut count = 0;
+/// Copies audio files and unpacks the audio inside zips into `dir`. When
+/// zips come with plain audio (a BandLab mixdown plus its stems), the stems
+/// go to `dir/Stems/` so the mixdown isn't laid out over them. Every file
+/// made is pushed to `created` (for the caller's cleanup).
+fn fill_sketch(sources: &[(PathBuf, String)], dir: &Path, created: &mut Vec<PathBuf>) -> Result<Filled, String> {
+    let has_zip = sources.iter().any(|(_, n)| ext_of(n) == "zip");
+    let has_audio = sources.iter().any(|(_, n)| ext_of(n) != "zip");
+    let apart = has_zip && has_audio;
+    let stems_dir = if apart { dir.join(STEMS_DIR) } else { dir.to_path_buf() };
+    let mut filled = Filled::default();
     let mut budget = MAX_UNZIP_BYTES;
     for (src, name) in sources {
         if ext_of(name) == "zip" {
-            count += unzip_audio(src, dir, &mut budget)?;
+            fs::create_dir_all(&stems_dir).map_err(|e| io_error(&e, "could not create the Stems folder"))?;
+            filled.stems += unzip_audio(src, &stems_dir, &mut budget, created)?;
             continue;
         }
         // The phone's name for it, never over a file already there.
         let clean = crate::audio::safe_name(name);
         let stem = Path::new(&clean).file_stem().unwrap_or_default().to_string_lossy().to_string();
-        copy_new(src, &crate::actions::free_path(dir, &stem, &ext_of(&clean)))?;
-        count += 1;
+        let target = crate::actions::free_path(dir, &stem, &ext_of(&clean));
+        copy_new(src, &target)?;
+        created.push(target);
+        filled.audio += 1;
     }
-    Ok(count)
+    filled.stems_apart = apart && filled.stems > 0;
+    if apart && filled.stems == 0 {
+        let _ = fs::remove_dir(&stems_dir);
+    }
+    Ok(filled)
 }
 
 /// The audio entries of a zip, flat (only the file name is kept, so nothing
 /// can land outside `dir`), never over an existing file, within `budget`.
-pub fn unzip_audio(zip_path: &Path, dir: &Path, budget: &mut u64) -> Result<usize, String> {
+/// Each file made is pushed to `created`.
+pub fn unzip_audio(zip_path: &Path, dir: &Path, budget: &mut u64, created: &mut Vec<PathBuf>) -> Result<usize, String> {
     let file = fs::File::open(zip_path).map_err(|e| io_error(&e, "could not read the zip"))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|_| "This zip can't be read.".to_string())?;
     let mut count = 0;
@@ -744,6 +979,7 @@ pub fn unzip_audio(zip_path: &Path, dir: &Path, budget: &mut u64) -> Result<usiz
         let ext = ext_of(&clean);
         let target = crate::actions::free_path(dir, &stem, &ext);
         let mut out = fs::OpenOptions::new().write(true).create_new(true).open(&target).map_err(|e| io_error(&e, "could not write the audio"))?;
+        created.push(target.clone());
         let limit = *budget + 1;
         let written = io::copy(&mut (&mut entry).take(limit), &mut out).map_err(|e| io_error(&e, "could not unpack the zip"))?;
         if written > *budget {
@@ -952,15 +1188,20 @@ mod tests {
         upload(&inbox, "s1", "sketch", &[("Night Run.mp3", b"mix".to_vec()), ("stems.zip", fs::read(&z).unwrap())]);
         let projects = d.0.join("Projects");
         fs::create_dir_all(&projects).unwrap();
-        let key = inbox.file_sketch("dev.s1", &projects, "Night Run").unwrap();
+        let filed = inbox.file_sketch("dev.s1", &projects, "Night Run").unwrap();
+        let key = filed.key.clone();
         let dir = projects.join("Night Run").join(SKETCH_DIR);
         assert_eq!(PathBuf::from(&key), dir);
-        let mut names: Vec<String> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
-        names.sort();
-        assert_eq!(names, vec!["Drums.wav", "Night Run.mp3", "Vox.wav", "evil.wav"], "flat, audio only, nothing outside");
+        // A mixdown with stems: the mixdown in BandLab/, the stems apart in Stems/.
+        assert_eq!(filed.filled, Filled { audio: 1, stems: 3, stems_apart: true });
+        assert_eq!(names_in(&dir), vec!["Night Run.mp3", "Stems"]);
+        assert_eq!(names_in(&dir.join(STEMS_DIR)), vec!["Drums.wav", "Vox.wav", "evil.wav"], "flat, audio only, nothing outside");
         assert!(!d.0.join("evil.wav").exists() && !projects.join("evil.wav").exists());
         assert_eq!(inbox.list()[0].item.status, Status::Filed);
         assert_eq!(inbox.list()[0].item.filed_to.as_deref(), Some(key.as_str()));
+        // A retry (the answer was lost): the same answer, nothing copied twice.
+        assert_eq!(inbox.file_sketch("dev.s1", &projects, "Night Run").unwrap(), filed);
+        assert_eq!(names_in(&dir.join(STEMS_DIR)).len(), 3);
         // Name taken.
         upload(&inbox, "s2", "sketch", &[("b.wav", b"b".to_vec())]);
         assert!(inbox.file_sketch("dev.s2", &projects, "Night Run").unwrap_err().contains("already exists"));
@@ -979,6 +1220,130 @@ mod tests {
         assert!(!projects.join("Other").exists());
     }
 
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_zip_alone_stays_flat_and_more_than_twenty_are_counted() {
+        let d = temp("many");
+        let inbox = Inbox::open(d.0.join("inbox"));
+        let z = d.0.join("stems.zip");
+        let entries: Vec<(String, Vec<u8>)> = (0..25).map(|i| (format!("stem {i:02}.wav"), vec![b'x'])).collect();
+        let refs: Vec<(&str, &[u8])> = entries.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
+        zip_with(&z, &refs);
+        upload(&inbox, "z1", "sketch", &[("stems.zip", fs::read(&z).unwrap())]);
+        let projects = d.0.join("Projects");
+        fs::create_dir_all(&projects).unwrap();
+        let filed = inbox.file_sketch("dev.z1", &projects, "Many").unwrap();
+        // No mixdown: flat, as before; 25 files, which the desktop names (> 20).
+        assert_eq!(filed.filled, Filled { audio: 0, stems: 25, stems_apart: false });
+        assert!(filed.filled.total() > crate::flp_build::MAX_CLIPS);
+        assert_eq!(names_in(&PathBuf::from(&filed.key)).len(), 25);
+    }
+
+    #[test]
+    fn attaches_zip_stems_to_an_existing_song() {
+        let d = temp("attach-stems");
+        let inbox = Inbox::open(d.0.join("inbox"));
+        let z = d.0.join("stems.zip");
+        zip_with(&z, &[("Stems/Vox.wav", b"vox"), ("Stems/Drums.wav", b"drums"), ("notes.txt", b"no")]);
+        upload(&inbox, "s1", "sketch", &[("Envy mix.mp3", b"mix".to_vec()), ("stems.zip", fs::read(&z).unwrap())]);
+        let song = d.0.join("Envy");
+        fs::create_dir_all(&song).unwrap();
+        fs::write(song.join("Envy.flp"), b"x").unwrap();
+        let out = inbox.attach_to_song_folder("dev.s1", &song).unwrap();
+        // The phone's names, zips unpacked, stems apart from the mixdown.
+        let dir = song.join(SKETCH_DIR);
+        assert_eq!(names_in(&dir), vec!["Envy mix.mp3", "Stems"]);
+        assert_eq!(names_in(&dir.join(STEMS_DIR)), vec!["Drums.wav", "Vox.wav"]);
+        assert_eq!(out.len(), 3);
+        let item = inbox.list()[0].item.clone();
+        assert_eq!((item.status, item.filed_to.as_deref(), item.filed_as.as_deref()), (Status::Filed, Some(dir.to_string_lossy().as_ref()), Some("folder")));
+        // Retried: nothing copied twice.
+        inbox.attach_to_song_folder("dev.s1", &song).unwrap();
+        assert_eq!(names_in(&dir.join(STEMS_DIR)).len(), 2);
+        assert!(fs::read(song.join("Envy.flp")).unwrap() == b"x", "the project is never touched");
+    }
+
+    #[test]
+    fn linking_a_memo_copies_it_into_the_beats_folder() {
+        let d = temp("link");
+        let inbox = Inbox::open(d.0.join("inbox"));
+        upload(&inbox, "m1", "memo", &[("rec.m4a", b"take".to_vec())]);
+        let beats = d.0.join("Beats");
+        assert_eq!(inbox.link_memo("dev.m1", "beat:/b.wav", &beats).unwrap_err(), "This beats folder isn't there any more.");
+        assert_eq!(inbox.list()[0].item.status, Status::New, "a failure leaves it new");
+        fs::create_dir_all(&beats).unwrap();
+        let copy = inbox.link_memo("dev.m1", "beat:/b.wav", &beats).unwrap();
+        assert_eq!(PathBuf::from(&copy), beats.join(BEAT_MEMOS_DIR).join("Night run.m4a"));
+        let item = inbox.list()[0].item.clone();
+        assert_eq!(item.filed_to.as_deref(), Some("beat:/b.wav"));
+        assert_eq!(item.copied_to.as_deref(), Some(copy.as_str()));
+        assert_eq!(item.filed_as.as_deref(), Some("link"));
+        // A retry answers the same copy; removing the item keeps the copy.
+        assert_eq!(inbox.link_memo("dev.m1", "beat:/b.wav", &beats).unwrap(), copy);
+        assert_eq!(names_in(&beats.join(BEAT_MEMOS_DIR)).len(), 1);
+        inbox.remove("dev.m1").unwrap();
+        assert_eq!(fs::read(&copy).unwrap(), b"take");
+        // Only memos link.
+        upload(&inbox, "s1", "sketch", &[("a.wav", b"a".to_vec())]);
+        assert!(inbox.link_memo("dev.s1", "beat:/b.wav", &beats).is_err());
+    }
+
+    #[test]
+    fn a_failed_copy_puts_the_item_back() {
+        let d = temp("rollback");
+        let inbox = Inbox::open(d.0.join("inbox"));
+        upload(&inbox, "m1", "memo", &[("rec.m4a", b"take".to_vec())]);
+        let song = d.0.join("Envy");
+        fs::create_dir_all(&song).unwrap();
+        // "Voice memos" is a file: the folder can't be made, the copy fails.
+        fs::write(song.join(MEMOS_DIR), b"x").unwrap();
+        assert!(inbox.attach_to_song_folder("dev.m1", &song).is_err());
+        let item = inbox.list()[0].item.clone();
+        assert_eq!((item.status, item.filed_to, item.filed_as), (Status::New, None, None));
+        assert_eq!(Inbox::open(d.0.join("inbox")).list()[0].item.status, Status::New, "saved as new too");
+    }
+
+    #[test]
+    fn receiving_items_are_listed_and_can_be_removed() {
+        let d = temp("incoming");
+        let inbox = Inbox::open(d.0.clone());
+        start(&inbox, "big", "sketch", 0, 2, "a.wav", 10).unwrap();
+        chunk(&inbox, "big", 0, 0, b"abcd").unwrap();
+        let list = inbox.incoming();
+        assert_eq!(list.len(), 1);
+        assert_eq!((list[0].id.as_str(), list[0].file_count, list[0].files_done, list[0].received_bytes, list[0].total_bytes), ("dev.big", 2, 0, 4, 10));
+        assert!(inbox.list().is_empty(), "not in the finished list");
+        inbox.remove("dev.big").unwrap();
+        assert!(inbox.incoming().is_empty());
+        assert_eq!(inbox.receiving(), 0);
+        assert!(!d.0.join("files").join("dev.big").exists(), "its space is freed");
+        // The phone still sending it: the chunk says so, and it starts again.
+        assert_eq!(chunk(&inbox, "big", 0, 4, b"ef").unwrap_err(), "unknown upload");
+    }
+
+    #[test]
+    fn stale_uploads_are_swept_while_running() {
+        let d = temp("sweep");
+        let inbox = std::sync::Arc::new(Inbox::open(d.0.clone()));
+        let old = now_ms() - PARTIAL_TTL_MS - 1_000;
+        inbox.upload_start("dev", "Pixel", &json!({ "itemId": "old", "itemType": "memo", "fileIndex": 0, "fileCount": 1, "name": "a.m4a", "size": 4 }), old).unwrap();
+        start(&inbox, "fresh", "memo", 0, 1, "b.m4a", 4).unwrap();
+        assert_eq!(inbox.receiving(), 2);
+        let (tx, rx) = std::sync::mpsc::channel();
+        sweep_every(&inbox, std::time::Duration::from_millis(20), move || {
+            let _ = tx.send(());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5)).expect("the sweep ran");
+        assert_eq!(inbox.receiving(), 1, "only the stale one");
+        assert!(!d.0.join("files").join("dev.old").exists());
+        assert_eq!(inbox.incoming()[0].id, "dev.fresh");
+    }
+
     #[test]
     fn attaches_a_memo_to_a_song_folder() {
         let d = temp("memo");
@@ -989,7 +1354,10 @@ mod tests {
         fs::create_dir_all(&song).unwrap();
         let out = inbox.attach_to_song_folder("dev.m1", &song).unwrap();
         assert_eq!(PathBuf::from(&out[0]), song.join(MEMOS_DIR).join("Night run.m4a"));
-        // Again (refiled): never over the first copy.
+        // A retry: the same copy, not a second one.
+        assert_eq!(inbox.attach_to_song_folder("dev.m1", &song).unwrap(), out);
+        // Back to new ("File elsewhere") and attached again: never over the first copy.
+        inbox.mark("dev.m1", Status::New, None).unwrap();
         let out2 = inbox.attach_to_song_folder("dev.m1", &song).unwrap();
         assert_ne!(out2[0], out[0]);
         assert_eq!(fs::read(&out[0]).unwrap(), b"take");
@@ -1020,8 +1388,9 @@ mod tests {
         let inbox = Inbox::open(d.0.clone());
         start(&inbox, "old", "memo", 0, 1, "a.m4a", 4).unwrap();
         assert_eq!(inbox.receiving(), 1);
-        inbox.drop_stale(now_ms() + PARTIAL_TTL_MS + 1);
+        assert!(inbox.drop_stale(now_ms() + PARTIAL_TTL_MS + 1));
         assert_eq!(inbox.receiving(), 0);
+        assert!(!inbox.drop_stale(now_ms() + PARTIAL_TTL_MS + 1), "nothing left to drop");
         assert!(!d.0.join("files").join("dev.old").exists());
     }
 

@@ -779,6 +779,8 @@ export interface PhoneDevice {
   appVersion: string | null;
   pairedAtMs: number;
   lastSeenMs: number | null;
+  /** Paired on another port than the one open now: it needs a new QR (Re-pair). */
+  needsNewQr: boolean;
 }
 
 export interface PhoneSyncStatus {
@@ -837,13 +839,46 @@ export interface InboxItem {
   /** Where it went: a sketch's BandLab folder, a memo's copy, or `<kind>:<id>`. */
   filedTo: string | null;
   filedAt: number | null;
+  /** "song" (a new sketch song), "folder" (copied into a song's folder),
+   * "link" (a memo linked to a beat/prod, copied into `_memos`); null when
+   * filed before this was recorded. */
+  filedAs: "song" | "folder" | "link" | null;
+  /** The durable copy of a memo linked to a beat or a prod. */
+  copiedTo: string | null;
   files: InboxFile[];
+}
+
+/** An item still arriving from the phone (it holds space in the inbox). */
+export interface IncomingItem {
+  id: string;
+  itemType: InboxItemType;
+  title: string;
+  phoneName: string;
+  fileCount: number;
+  filesDone: number;
+  receivedBytes: number;
+  /** Declared sizes of the files started so far. */
+  totalBytes: number;
+  updatedAt: number;
 }
 
 export interface InboxList {
   items: InboxItem[];
-  /** Still arriving (not listed yet). */
+  /** Still arriving (not in `items`). */
   receiving: number;
+  incoming: IncomingItem[];
+}
+
+/** What filing a sketch as a new song made (src-tauri/src/phone_inbox.rs). */
+export interface FiledSketch {
+  /** The song's key: its BandLab folder. */
+  key: string;
+  /** Audio copied as it came (the mixdown when stems came with it). */
+  audio: number;
+  /** Audio unpacked from zips. */
+  stems: number;
+  /** The stems went to `BandLab/Stems/`, apart from the mixdown. */
+  stemsApart: boolean;
 }
 
 export interface PhoneSyncRequest {

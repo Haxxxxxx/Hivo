@@ -21,7 +21,10 @@ voice memos, files, ideas inbox, session view (step 4), mDNS discovery.
   to decrypt gets a bare 401 with no detail.
 - Replay protection: each decrypted request carries `ts` (ms since epoch) and
   `nonce`; the desktop rejects `|now - ts| > 120 000` and any nonce seen in the
-  last 10 minutes (bounded in-memory set).
+  last 10 minutes (bounded in-memory set). Since 2026-11-01 a request whose
+  envelope opened but whose `ts` is outside the window gets a **sealed**
+  `{"ok": false, "error": "clock"}` (the phone's clock is off), not a bare
+  401; a replayed nonce still gets the bare 401.
 - Limits: request body ≤ 1 MB, note text ≤ 20 000 chars (MAX_NOTE_CHARS), at
   most 500 note changes per push, simple rate limit (e.g. 10 req/s per device).
 - Listens on all interfaces (the phone is another device), but only paired
@@ -73,10 +76,22 @@ songs = visible projects (not archived, not templates). Notes: prods →
 
 ### `/v1/notes` — payload `{"changes": [{"kind","id","text","baseHash"}]}`
 For each change: if the desktop's current note hash == `baseHash`, the note
-becomes `text`. Otherwise it's a **conflict**: the desktop keeps both,
-`current + "\n\n--- from <phoneName> ---\n" + text`, and reports it. Unknown
-ids (deleted since) → `"missing"`.
-→ `{"results": [{"kind","id","status":"applied"|"conflict"|"missing","note":"<final text>","noteHash":"<hash>"}]}`
+becomes `text`. Otherwise it's a **conflict**: the desktop keeps both and
+reports it. Since 2026-11-01 the merge is **by line** (the phone's text
+usually starts from the same note, so appending all of it doubled the
+note): the desktop's note, then only the phone's lines it doesn't hold yet
+(compared trimmed; blank lines between them kept, collapsed to one) under
+`"\n\n--- from <phoneName> ---\n"`. When the phone adds no new line, the
+note stays the desktop's (still `"conflict"`). Unknown ids (deleted since) →
+`"missing"`.
+→ `{"results": [{"kind","id","status":"applied"|"conflict"|"missing"|"too long","note":"<final text>","noteHash":"<hash>"}]}`
+
+`"too long"` (2026-11-01): the text, or the merge, would pass 20 000
+characters (UTF-16 units, as the desktop stores them). Nothing is cut and
+nothing is written: `note`/`noteHash` are the desktop's current note, and
+**the phone keeps its own edit** (as for `"missing"`), telling the user to
+shorten the note on one side. Phones that don't know the status skip it,
+which keeps the edit pending too.
 
 Two cases are `"applied"` without a merge even when the hash differs (added
 2026-10-25 by the desktop build; the wire format is unchanged): the desktop
@@ -84,7 +99,7 @@ already holds exactly `text` (a retried push whose answer was lost would
 otherwise duplicate the note), and the desktop's note is empty. Changes are
 applied in order, so a second change to the same item sees the first.
 The phone should always replace its cached note with `note`/`noteHash` from
-the result, and keep its own text when the status is `"missing"`.
+the result, and keep its own text when the status is `"missing"` or `"too long"`.
 
 ## Who does what on the desktop
 - **Rust** (`src-tauri/src/phone_sync.rs`): listener (tiny_http on a thread),
@@ -137,15 +152,22 @@ Precisions the phone can rely on (nothing here changes the formats above):
   (`fnv1a32` in `src/lib/digger.ts`). `leadHash` trims the url first, so it is
   the same function only for already-trimmed input; the vectors above hold.
   Notes are stored as typed, capped at 20 000 chars; a blank note is `""`.
-- **Bare statuses** (no body, no envelope): 401 anything that doesn't open
-  (unknown device, bad envelope, wrong key/AAD/path, stale `ts`, replayed
-  nonce), 413 body over 1 MB, 429 more than 10 requests per second for a
-  device, 503 more than 16 requests in flight, 404 unknown path or method.
+- **Bare statuses** (no body, no envelope): 401 only for what can't be
+  authenticated (unknown device, bad envelope, wrong key/AAD/path) and a
+  replayed nonce, 413 body over 1 MB, 429 more than 10 requests per second
+  for a device, 503 more than 16 requests in flight, 404 unknown path or
+  method. **Once the envelope opened, every error is sealed** (2026-11-01):
+  a bare 401 means "this computer doesn't know this phone's key", nothing else.
 - **Errors inside the envelope** (`ok: false`): `"demo"` (sample data),
-  `"busy"` (no window, no answer within 10 s, workspace not loaded yet, or a
-  project scan running), `"bad request"` (payload shape), `"too many changes
-  (500 max)"` and `"note too long (20000 characters max)"` (the whole push is
-  refused before anything is written).
+  `"busy"` (no window, no answer within 10 s, workspace not loaded yet, the
+  very first project scan still running, or the replay set full), `"clock"`
+  (`ts` more than 120 s from the desktop's clock: the phone says "the phone's
+  clock is off"), `"bad request"` (the plaintext isn't `{ts, nonce, body}`,
+  an empty or over-long nonce, or a payload of the wrong shape), `"too many
+  changes (500 max)"` and `"note too long (20000 characters max)"` (the whole
+  push is refused before anything is written). A scan running when a request
+  comes in is waited for (up to 5 s), then the desktop answers from the last
+  finished scan.
 - `nonce` (inside the plaintext) is 1 to 64 characters; the 16 random bytes
   b64url (22 chars) fit.
 - `phoneName` is trimmed, control characters removed, ≤ 60 chars; an empty
@@ -158,7 +180,14 @@ Precisions the phone can rely on (nothing here changes the formats above):
   the project tempo rounded to 2 decimals, beat `bpm`/`key` are null (beats
   carry no analysis), prod `subtitle` is `producer · year` without empty parts.
 - **Port:** chosen by the OS on first start, saved in `phone-sync.json` and
-  reused while free. The QR always carries the current one.
+  reused while free. The QR always carries the current one. Each paired phone
+  records the port its QR carried; when the saved port was taken and the
+  listener opened another, Settings → Phone sync says which phones need the
+  new QR, and **Re-pair this phone** shows one for the same `deviceId` with a
+  new key (the device is replaced in place: its name and what it sent stay,
+  the old key stops working). The same button helps when the computer's
+  address changed. A phone scanning a QR with a `d` it already holds should
+  keep its data.
 
 ## v1.1: phase B step 4 (ideas, voice memos, BandLab exports, session view)
 
@@ -215,8 +244,14 @@ ordinary encrypted request (≤ 1 MB body), so every byte is authenticated.
 Limits (paired constants, Rust `phone_inbox.rs` ↔ phone `src/lib/outbox.ts`):
 `MAX_FILE_BYTES` 500 MB, `MAX_ITEM_FILES` 20, `MAX_CHUNK_BYTES` 393 216,
 `MAX_INBOX_BYTES` 4 GB (everything in the inbox, filed items included until
-removed), `MAX_IDEAS_PER_PUSH` 200, `MAX_TITLE_CHARS` 200, `MAX_MEMO_MS` 15 min.
-Unfinished uploads are dropped after 7 days.
+removed, unfinished uploads by their declared size), `MAX_IDEAS_PER_PUSH`
+200, `MAX_TITLE_CHARS` 200, `MAX_MEMO_MS` 15 min. Unfinished uploads that
+haven't moved for 7 days are dropped, at start and every hour while the app
+runs. The desktop lists them under "Still arriving" with their progress
+(`phone-inbox-changed` fires on upload start/chunk/finish, at most once a
+second, and always when an item is complete), and **Remove** frees their
+space at once (a phone still sending one gets `unknown upload` and starts it
+again).
 
 ### Error states, decided up front
 Inside the envelope (`ok: false`), on top of v1's:
@@ -230,12 +265,12 @@ Inside the envelope (`ok: false`), on top of v1's:
 | `offset:<n>` | chunk out of order (lost reply, resume) | silently re-sends from `n` |
 | `unknown upload` | chunk/finish without a start, or dropped after 7 days | silently starts that file again from 0 |
 | `size` | finish with fewer/more bytes than declared | starts that file again from 0 (once), then failed |
-| `bad request` | malformed payload | `outdated` for notes and ideas; for an upload, that one item fails ("refused") and the others still go |
-| `clock` | the request opened but its `ts` is more than 2 minutes off | "This phone's clock is off: set it to automatic" (nothing sent until it's fixed) |
+| `bad request` | malformed payload (also: the envelope opened but the plaintext isn't a request) | `outdated` for notes and ideas; for an upload, that one item fails ("refused") and the others still go (never "forgotten") |
+| `clock` | the request opened but its `ts` is outside the 120 s window (2026-11-01; was a bare 401) | "This phone's clock is off: set it to automatic" (nothing sent until it's fixed) |
 
 On the phone (2026-11 review, B20/W13): only `offline`, `off`, `busy`, `forgotten`, `clock`, `demo` and `outdated` stop the uploads; any other sealed error fails just that item with its reason. `inbox full` holds that item and bigger ones (smaller ones still go); `disk full` holds all. A bare 401 on a phone that synced before says "forgotten, or this phone's clock is off" (older desktops answer a wrong clock that way).
 
-Bare statuses as v1 (401 `forgotten`, 413, 429/503 `busy`: the uploader waits and goes on).
+Bare statuses as v1 (401 `forgotten`, only when the key isn't known; 413, 429/503 `busy`: the uploader waits and goes on).
 
 On the phone, before anything is sent:
 - **Share**: not audio/zip/text → "Hivo takes audio, .zip stems or text"; more than 20 files → the first 20 + a warning; a file the phone can't read (revoked permission, cloud file not downloaded) → that file is skipped and named; a file over 500 MB → refused with its size; the phone's storage full while copying → "Not enough space on the phone"; not paired yet → kept in the outbox, "Pair with your computer to send it".
@@ -244,8 +279,10 @@ On the phone, before anything is sent:
 - **Outbox**: every item shows its state: waiting (not on the same Wi-Fi), sending n %, on the computer, filed, failed (reason, Retry / Remove). Nothing is deleted from the phone until the desktop said `stored`.
 
 On the desktop:
-- **File a sketch** → `<project folder>/<name>/BandLab/` (zip stems are unpacked there: audio entries only, flat, no paths kept, 2 GB unpacked max): name empty/invalid → refused; name taken → "already exists, pick another"; no linked project folder → "Link a project folder in Settings first"; folder not writable / disk full → the half-made folder is removed and the error shown; a zip without audio → "No audio in this zip".
-- **Attach a memo to a song** → copied into `<song folder>/Voice memos/` (never over a file); the song's folder gone → "This song's folder isn't there any more". To a beat or a prod: the memo stays in the inbox, marked filed to it.
+- **File a sketch** → `<project folder>/<name>/BandLab/` (zip stems are unpacked there: audio entries only, flat, no paths kept, 2 GB unpacked max; when a mixdown came with the zip, the stems go to `BandLab/Stems/` so "Continue in FL Studio" lays out the stems and leaves the mixdown, still the song's render, off the playlist, and the inbox says so): name empty/invalid → refused; name taken → "already exists, pick another"; no linked project folder → "Link a project folder in Settings first"; the workspace not loaded yet → refused before anything is made; folder not writable / disk full → the half-made folder is removed and the error shown; a zip without audio → "No audio in this zip"; more than 20 audio files → filed, and the inbox and "Continue in FL Studio" say only the first 20 go on the playlist.
+- **Attach to a song** → a memo is copied into `<song folder>/Voice memos/` (named after its title); a sketch's audio into `<song folder>/BandLab/` under the phone's names, zips unpacked (stems in `BandLab/Stems/` with a mixdown). Never over a file. The song's folder gone → "This song's folder isn't there any more". To a beat or a prod: the memo is copied into that beats folder's `_memos/` (a beat: the beats folder holding it; a prod: the one holding its lead) and marked filed to it, so Remove never deletes the only copy. Memos linked before this have no copy: their Remove asks "Delete the only copy?".
+- **Filing is all or nothing**: the item is marked filed first, then copied; a copy that fails puts it back to new and removes what was half made. A retry of a filing that went through (its answer lost) answers the same, without a second copy. An idea already in the target note isn't appended twice.
+- **Filed items**: "Show in folder" (a sketch's BandLab folder, a memo's copy) and, for ideas and memos, "File elsewhere" (back to new; what was already filed stays where it went).
 - **File an idea** → appended to the target's note under a `--- idea from <phone> ---` marker; target gone → pick another; the note would pass 20 000 characters → refused, "the note is full".
 - **Inbox file missing** (deleted by hand) → the item says "file missing" and can only be removed.
-- **Session view**: no lyrics → "Nothing written yet" + a button to the note; the song removed while open → the window keeps the last text and says so.
+- **Session view**: no lyrics → "Nothing written yet" + a button to the note; the song removed while open → the window keeps the last text and says so; a song renamed or relinked (or continued in FL Studio) → the window follows it; the main window closed → the session window closes too.

@@ -25,7 +25,9 @@ export function PhoneMemos({ memos }: { memos: InboxItem[] }) {
         <Mic size={12} /> {t.title}
       </div>
       {memos.map((m) => {
-        const file = m.files.find((f) => isSketchAudioName(f.name));
+        const inInbox = m.files.find((f) => isSketchAudioName(f.name));
+        // The inbox's file, else the durable copy of a memo linked to a beat/prod.
+        const file = inInbox && !inInbox.missing ? inInbox : m.copiedTo ? { path: m.copiedTo, name: inInbox?.name ?? "", missing: false } : inInbox;
         return (
           <div key={m.id} className="flex flex-col gap-1 rounded border border-rule bg-chassis px-2.5 py-2">
             <div className="flex items-baseline gap-2 text-sm">

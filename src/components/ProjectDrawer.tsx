@@ -151,6 +151,8 @@ const T = dict(
     continueHint: "Hivo makes a new FL project from this template, with each BandLab file on its own playlist track from bar 1. Your existing projects are never changed.",
     continueNote: (name: string, clips: number, note: string | null) =>
       clips > 0 ? `${name}: ${clips} BandLab file${clips === 1 ? "" : "s"} on the playlist.${note ? ` ${note}.` : ""}` : `${name} is created. ${note ?? ""}.`,
+    continueSkipped: (n: number) => ` ${n} more file${n === 1 ? " isn't" : "s aren't"} on it (20 at most): drag ${n === 1 ? "it" : "them"} in from the BandLab folder.`,
+    continueMixdown: (names: string) => ` The mixdown (${names}) stays off the playlist, so it doesn't play over the stems.`,
     continueOpenFailed: (name: string, err: string) => `Created ${name}, but FL Studio didn't open: ${err}. Open it from the song panel.`,
   },
   {
@@ -260,6 +262,8 @@ const T = dict(
     continueHint: "Hivo crée un nouveau projet FL à partir de ce modèle, avec chaque fichier BandLab sur sa propre piste de la playlist dès la mesure 1. Tes projets existants ne sont jamais modifiés.",
     continueNote: (name: string, clips: number, note: string | null) =>
       clips > 0 ? `${name} : ${clips} fichier${clips === 1 ? "" : "s"} BandLab sur la playlist.${note ? ` ${note}.` : ""}` : `${name} est créé. ${note ?? ""}.`,
+    continueSkipped: (n: number) => ` ${n} autre${n === 1 ? " fichier n'y est" : "s fichiers n'y sont"} pas (20 au maximum) : glisse-${n === 1 ? "le" : "les"} depuis le dossier BandLab.`,
+    continueMixdown: (names: string) => ` Le mix (${names}) reste hors de la playlist, pour ne pas jouer par-dessus les stems.`,
     continueOpenFailed: (name: string, err: string) => `${name} est créé, mais FL Studio ne s'est pas ouvert : ${err}. Ouvre-le depuis le panneau du son.`,
   },
 );
@@ -914,8 +918,12 @@ function SketchPanel({ project }: { project: ProjectInfo }) {
       // The drawer moves to the new .flp once this returns, so an open
       // failure is reported in the app's error banner.
       const done = await continueSketch(project.path, templatePath);
-      // Only a real problem goes in the (red) banner: the audio not in the project.
-      if (done.clips === 0) useAppStore.setState({ actionError: t.continueNote(project.name, done.clips, done.note) });
+      // Only what needs a hand goes in the (red) banner: the audio not in the
+      // project, files left off past 20, the mixdown left off for the stems.
+      if (done.clips === 0 || done.skipped > 0 || done.mixdown.length > 0) {
+        const extra = (done.skipped > 0 ? t.continueSkipped(done.skipped) : "") + (done.mixdown.length > 0 ? t.continueMixdown(done.mixdown.join(", ")) : "");
+        useAppStore.setState({ actionError: t.continueNote(project.name, done.clips, done.note) + extra });
+      }
       await openInFlStudio(done.flp).catch((e) =>
         useAppStore.setState({ actionError: t.continueOpenFailed(project.name, e instanceof Error ? e.message : String(e)) }),
       );
