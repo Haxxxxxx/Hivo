@@ -44,7 +44,7 @@ beforeEach(() => {
   applyLang("en");
   mocked.saveWorkspace.mockResolvedValue(undefined);
   mocked.workspaceFiles.mockResolvedValue({ hasBackup: false, backupSavedAtMs: null });
-  mocked.scanProjects.mockResolvedValue([]);
+  mocked.scanProjects.mockResolvedValue({ projects: [], unreachable: [] });
   useAppStore.setState(initial, true);
 });
 
