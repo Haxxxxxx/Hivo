@@ -22,7 +22,7 @@ export function PairScreen() {
 
   async function submit(input: string) {
     if (busy) return;
-    const r = parsePairingUrl(input);
+    const r = parsePairingUrl(input, { loopback: Platform.OS === "ios" });
     if (!r.ok) {
       setError(pairErrorText(r.error));
       handled.current = false;

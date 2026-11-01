@@ -2,12 +2,13 @@ import { useFonts } from "expo-font";
 import { getLocales } from "expo-localization";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, AppState, BackHandler, Linking, View } from "react-native";
+import { ActivityIndicator, Alert, AppState, BackHandler, Linking, Platform, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { onShare, takeShared, type Shared } from "./modules/hivo-share";
-import { setLang } from "./src/lib/i18n";
+import { setLang, tr } from "./src/lib/i18n";
 import type { IdeaTarget } from "./src/lib/ideas";
 import { parsePairingUrl } from "./src/lib/pairing";
+import { T } from "./src/strings";
 import type { Kind } from "./src/lib/sync";
 import { UpdateBanner } from "./src/components/UpdateBanner";
 import { pickFiles } from "./src/files";
@@ -23,14 +24,25 @@ import { C } from "./src/theme";
 
 setLang(getLocales()[0]?.languageCode);
 
-/** A hivo://pair link opened from the system camera (or `simctl openurl`)
- * pairs right away, but only when no computer is paired yet. */
-async function pairFromLink(url: string | null | undefined): Promise<void> {
+/** A hivo://pair link opened from the system camera (or `simctl openurl`):
+ * only when no computer is paired yet, and only after the user says yes
+ * (any app or page can open a link; pairing sends notes to that address). */
+function pairFromLink(url: string | null | undefined): void {
   if (!url || getState().pairing) return;
-  const r = parsePairingUrl(url);
+  const r = parsePairingUrl(url, { loopback: Platform.OS === "ios" });
   if (!r.ok) return;
-  await pair(r.pairing);
-  void sync();
+  const t = tr(T);
+  const { desktopName, hosts, port } = r.pairing;
+  Alert.alert(t.linkPairTitle, t.linkPairBody(desktopName, `${hosts[0]}:${port}`), [
+    { text: t.cancel, style: "cancel" },
+    {
+      text: t.linkPairYes,
+      onPress: () => {
+        if (getState().pairing) return;
+        void pair(r.pairing).then(() => void sync());
+      },
+    },
+  ]);
 }
 
 type Route =
@@ -53,27 +65,39 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("prod");
   const routeRef = useRef(route);
   routeRef.current = route;
+  // A share that arrived while recording waits until the take is saved or dropped.
+  const [queuedShare, setQueuedShare] = useState<Shared | null>(null);
+  const showShare = (s: Shared) => {
+    if (routeRef.current.name === "record") setQueuedShare(s);
+    else setRoute({ name: "share", share: fromNative(s), at: Date.now() });
+  };
+  useEffect(() => {
+    if (queuedShare && route.name !== "record") {
+      setRoute({ name: "share", share: fromNative(queuedShare), at: Date.now() });
+      setQueuedShare(null);
+    }
+  }, [queuedShare, route.name]);
 
   useEffect(() => {
     void load().then(async () => {
       if (getState().pairing) void sync();
-      else await pairFromLink(await Linking.getInitialURL());
+      else pairFromLink(await Linking.getInitialURL());
       // Started by "Share to Hivo".
       const shared = await takeShared().catch(() => null);
-      if (shared) setRoute({ name: "share", share: fromNative(shared), at: Date.now() });
+      if (shared) showShare(shared);
     });
     const link = Linking.addEventListener("url", ({ url }) => {
-      if (getState().loaded) void pairFromLink(url);
+      if (getState().loaded) pairFromLink(url);
     });
     // Shared while Hivo is open.
-    const share = onShare((s) => setRoute({ name: "share", share: fromNative(s), at: Date.now() }));
+    const share = onShare(showShare);
     // Sync when the app comes back; save the cache when it leaves.
     const sub = AppState.addEventListener("change", (s) => {
       if (s === "active") {
         if (getState().pairing) void sync();
         // Shared while Hivo was in the background (the intent is waiting).
         void takeShared()
-          .then((shared) => shared && setRoute({ name: "share", share: fromNative(shared), at: Date.now() }))
+          .then((shared) => shared && showShare(shared))
           .catch(() => {});
       } else if (s === "background" || s === "inactive") {
         void flush();

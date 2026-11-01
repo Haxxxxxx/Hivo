@@ -8,6 +8,12 @@ const url = (q: string) => `hivo://pair?${q}`;
 const good = `v=1&d=${d}&k=${k}&h=192.168.1.20,10.0.0.5&p=51234&n=${encodeURIComponent("Studio Mac")}`;
 
 describe("parsePairingUrl", () => {
+  it("refuses loopback on a phone (127.x is the phone itself), allows it when asked (iOS Simulator)", () => {
+    const q = (h: string) => url(`v=1&d=${d}&k=${k}&h=${h}&p=80`);
+    expect(parsePairingUrl(q("127.0.0.1"))).toEqual({ ok: false, error: "hosts" });
+    expect(parsePairingUrl(q("127.0.0.1"), { loopback: true }).ok).toBe(true);
+  });
+
   it("parses a full pairing URL", () => {
     const r = parsePairingUrl(url(good));
     expect(r).toEqual({ ok: true, pairing: { deviceId: d, key: k, hosts: ["192.168.1.20", "10.0.0.5"], port: 51234, desktopName: "Studio Mac" } });

@@ -48,13 +48,20 @@ export function RecordScreen({ target: initialTarget, onDone }: { target: IdeaTa
   }, []);
 
   // Stopped without the Stop button: the 15-minute cap, a call, another app.
+  // Judged by "it did start", not by the clock: a call in the first second
+  // left the screen stuck on "recording" at 0:00.
+  const started = useRef(false);
   useEffect(() => {
-    if (phase.kind !== "recording" || rec.isRecording || stoppingByUser.current) return;
-    if (rec.durationMillis === 0) return; // not started yet
+    if (rec.isRecording) {
+      started.current = true;
+      return;
+    }
+    if (phase.kind !== "recording" || stoppingByUser.current || !started.current) return;
     void finish(rec.durationMillis >= MAX_MEMO_MS - 1000 ? s().recMaxReached : s().recStopped);
   }, [rec.isRecording]);
 
   async function start() {
+    started.current = false;
     setMessage(null);
     const p = await requestRecordingPermissionsAsync();
     if (!p.granted) {

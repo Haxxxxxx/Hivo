@@ -4,6 +4,7 @@
 // transitions; the store persists them and does the I/O.
 
 import type { Kind } from "./sync";
+import { clip } from "./text";
 
 /** Paired with src-tauri/src/phone_inbox.rs. */
 export const MAX_IDEAS_PER_PUSH = 200;
@@ -40,8 +41,8 @@ export function newId(random: (n: number) => Uint8Array): string {
 export function createIdea(id: string, now: number, init: Partial<Pick<Idea, "title" | "text" | "target">> = {}): Idea {
   return {
     id,
-    title: (init.title ?? "").slice(0, MAX_TITLE_CHARS),
-    text: (init.text ?? "").slice(0, MAX_IDEA_CHARS),
+    title: clip(init.title ?? "", MAX_TITLE_CHARS),
+    text: clip(init.text ?? "", MAX_IDEA_CHARS),
     target: init.target ?? null,
     createdAt: now,
     updatedAt: now,
@@ -59,8 +60,8 @@ export function editIdea(ideas: Idea[], id: string, patch: Partial<Pick<Idea, "t
     const next = {
       ...i,
       ...patch,
-      title: (patch.title ?? i.title).slice(0, MAX_TITLE_CHARS),
-      text: (patch.text ?? i.text).slice(0, MAX_IDEA_CHARS),
+      title: clip(patch.title ?? i.title, MAX_TITLE_CHARS),
+      text: clip(patch.text ?? i.text, MAX_IDEA_CHARS),
     };
     const same = next.title === i.title && next.text === i.text && next.target?.id === i.target?.id && next.target?.kind === i.target?.kind;
     return same ? i : { ...next, updatedAt: Math.max(now, i.updatedAt + 1) };

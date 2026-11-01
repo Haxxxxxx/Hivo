@@ -43,10 +43,14 @@ class HivoShareModule : Module() {
       shared
     }
 
-    // A share while Hivo is open (singleTask activity).
+    // A share while Hivo is open (singleTask activity). Copying can take a
+    // while (up to 20 big files): off the main thread, or Android shows
+    // "not responding".
     OnNewIntent { intent ->
-      val shared = read(intent) ?: return@OnNewIntent
-      sendEvent("onShare", shared)
+      Thread {
+        val shared = read(intent) ?: return@Thread
+        sendEvent("onShare", shared)
+      }.start()
     }
 
     // Removes the copies once JS has moved them into the outbox.
@@ -56,7 +60,11 @@ class HivoShareModule : Module() {
     }
   }
 
-  private fun streams(intent: Intent): List<Uri> {
+  /** Only content:// shares: a file:// path from another app could point
+   * inside Hivo's own storage (the activity is exported, it has to be). */
+  private fun streams(intent: Intent): List<Uri> = rawStreams(intent).filter { it.scheme == "content" }
+
+  private fun rawStreams(intent: Intent): List<Uri> {
     return when (intent.action) {
       Intent.ACTION_SEND -> {
         val uri = if (Build.VERSION.SDK_INT >= 33) {

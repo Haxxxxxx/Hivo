@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
 import { ago, tr } from "../lib/i18n";
 import { sync, unpair, useApp } from "../store";
 import { errorText, pairAgainText, T } from "../strings";
@@ -46,7 +46,19 @@ export function SyncHeader({ onSettings }: { onSettings: () => void }) {
         <View style={styles.error}>
           <Led color={C.missing} size={7} />
           <Text style={styles.errorText}>{errorText(error)}</Text>
-          {error === "forgotten" ? <Button label={pairAgainText()} onPress={() => void unpair()} style={{ marginLeft: 8, paddingVertical: 5 }} /> : null}
+          {error === "forgotten" ? (
+            <Button
+              label={pairAgainText()}
+              // Same warning as Settings: unpairing drops note edits the computer never got.
+              onPress={() =>
+                Alert.alert(t.forgetTitle, pending > 0 ? `${t.forgetBody}\n\n${t.forgetBodyPending(pending)}` : t.forgetBody, [
+                  { text: t.cancel, style: "cancel" },
+                  { text: t.confirmForget, style: "destructive", onPress: () => void unpair() },
+                ])
+              }
+              style={{ marginLeft: 8, paddingVertical: 5 }}
+            />
+          ) : null}
         </View>
       ) : null}
     </View>

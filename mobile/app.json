@@ -21,6 +21,7 @@
     },
     "android": {
       "package": "fr.hivo.mobile",
+      "allowBackup": false,
       "adaptiveIcon": {
         "backgroundColor": "#0d0d0c",
         "foregroundImage": "./assets/android-icon-foreground.png",
