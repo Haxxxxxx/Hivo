@@ -53,7 +53,7 @@ fn render_one(
     output_folder: &Path,
     format: &str,
     output_name: Option<&str>,
-) -> Result<PathBuf, String> {
+) -> Result<(PathBuf, Option<String>), String> {
     let src = Path::new(project_path);
     let file_name = src
         .file_name()
@@ -78,14 +78,19 @@ fn render_one(
         let _ = fs::remove_dir_all(dir);
     };
 
-    let staged_flp = temp_dir.join(file_name);
-    if let Err(e) = fs::copy(src, &staged_flp) {
+    // The samples the project stores relative to its folder go along, or
+    // FL would render without them. The original .flp is never touched.
+    let raw_samples = crate::daws::read_project(crate::daws::Daw::FlStudio, src).map(|m| m.samples).unwrap_or_default();
+    let project_dir = src.parent().unwrap_or(Path::new("."));
+    let staged = stage_samples(project_dir, &temp_dir, &raw_samples);
+    let staged_flp = staged.dir.join(file_name);
+    if let Err(e) = fs::create_dir_all(&staged.dir).and_then(|_| fs::copy(src, &staged_flp)) {
         cleanup(&temp_dir);
         return Err(format!("could not stage project file: {e}"));
     }
 
     let mut child = match Command::new(fl_studio_path)
-        .args(render_args(SWITCH, format, &temp_dir))
+        .args(render_args(SWITCH, format, &staged.dir))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -121,14 +126,14 @@ fn render_one(
     // Give the renderer a brief grace period to flush the file to disk after exit.
     std::thread::sleep(Duration::from_millis(250));
 
-    let rendered_file = match find_rendered_file(&temp_dir, &base_name, format) {
+    let rendered_file = match find_rendered_file(&staged.dir, &base_name, format) {
         Some(f) => f,
         None => {
             cleanup(&temp_dir);
             let reason = if timed_out {
                 "render timed out and no output was produced"
             } else {
-                "FL Studio exited but no rendered output was found (check the FL Studio path and format in Settings)"
+                "FL Studio exited but no mixdown was written. If FL Studio is already open, close it and render again (it can't render from the command line while it runs); otherwise check the FL Studio path and format in Settings"
             };
             return Err(reason.to_string());
         }
@@ -143,7 +148,79 @@ fn render_one(
     cleanup(&temp_dir);
     copy_result.map_err(|e| format!("could not move rendered file: {e}"))?;
 
-    Ok(dest)
+    let warning = (!staged.missing.is_empty()).then(|| {
+        let shown: Vec<&str> = staged.missing.iter().take(3).map(String::as_str).collect();
+        let more = staged.missing.len().saturating_sub(3);
+        format!(
+            "Rendered, but {} sample(s) stored next to the project weren't found, so they're silent in this mixdown: {}{}",
+            staged.missing.len(),
+            shown.join(", "),
+            if more > 0 { format!(" (+{more})") } else { String::new() }
+        )
+    });
+    Ok((dest, warning))
+}
+
+/// How many folders up a project-relative sample may point (`..\..\Kick.wav`).
+const MAX_UP: usize = 4;
+
+/// Where the project is staged, and which project-relative samples
+/// couldn't be put next to it.
+struct Staged {
+    /// The folder the .flp goes in (FL renders every project in it).
+    dir: PathBuf,
+    /// Stored paths that weren't found next to the project (or climb too far).
+    missing: Vec<String>,
+}
+
+/// Rebuilds, inside `temp_root`, the part of the project's folder its
+/// relative samples live in (`Audio/take.wav`, `../Kick.wav`), so FL finds
+/// them when it renders the staged copy. The staged .flp sits `MAX_UP`
+/// folders deep at most, so `..` stays inside `temp_root`. Files are
+/// hard-linked when the volume allows it, else copied; nothing outside
+/// `temp_root` is written. Absolute and `%FLStudio…%` paths need nothing.
+fn stage_samples(project_dir: &Path, temp_root: &Path, raw: &[String]) -> Staged {
+    let mut missing = Vec::new();
+    // (stored path, how many folders up, the rest)
+    let mut relative: Vec<(&str, usize, Vec<String>)> = Vec::new();
+    for r in raw {
+        let native = crate::resolve::native(r);
+        if !crate::resolve::is_project_relative(&native) {
+            continue;
+        }
+        let parts: Vec<&str> = r.split(['/', '\\']).filter(|p| !p.is_empty() && *p != ".").collect();
+        let up = parts.iter().take_while(|p| **p == "..").count();
+        let rest: Vec<String> = parts[up..].iter().map(|p| p.to_string()).collect();
+        if up > MAX_UP || rest.is_empty() || rest.iter().any(|p| p == "..") {
+            missing.push(r.clone());
+            continue;
+        }
+        relative.push((r.as_str(), up, rest));
+    }
+    let depth = relative.iter().map(|(_, up, _)| *up).max().unwrap_or(0);
+    let mut dir = temp_root.to_path_buf();
+    for i in 0..depth {
+        dir.push(format!("p{i}"));
+    }
+    for (stored, up, rest) in relative {
+        let mut from = project_dir.to_path_buf();
+        let mut to = dir.clone();
+        for _ in 0..up {
+            from.pop();
+            to.pop();
+        }
+        for part in &rest {
+            from.push(part);
+            to.push(part);
+        }
+        let ok = from.is_file()
+            && to.parent().is_some_and(|p| fs::create_dir_all(p).is_ok())
+            && (to.exists() || fs::hard_link(&from, &to).is_ok() || fs::copy(&from, &to).is_ok());
+        if !ok {
+            missing.push(stored.to_string());
+        }
+    }
+    Staged { dir, missing }
 }
 
 fn find_rendered_file(dir: &Path, base_name: &str, format: &str) -> Option<PathBuf> {
@@ -230,13 +307,13 @@ fn render_all(
         );
 
         match render_one(fl_studio_path, &project_path, &output_folder, format, output_name) {
-            Ok(dest) => emit(
+            Ok((dest, warning)) => emit(
                 app,
                 RenderEvent {
                     project_path: project_path.clone(),
                     project_name: project_name.clone(),
                     status: RenderStatus::Done,
-                    message: None,
+                    message: warning,
                     output_path: Some(dest.to_string_lossy().to_string()),
                 },
             ),
@@ -270,6 +347,37 @@ mod tests {
         // Already ends with a separator: not doubled.
         let with_sep = PathBuf::from(format!("{}{sep}", dir.display()));
         assert_eq!(render_args('-', "wav", &with_sep)[2], format!("-F{}{sep}", dir.display()));
+    }
+
+    #[test]
+    fn relative_samples_are_staged_next_to_the_copy() {
+        let root = std::env::temp_dir().join(format!("flsm-stage-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let project = root.join("Projects").join("Envy");
+        fs::create_dir_all(project.join("Audio")).unwrap();
+        fs::write(project.join("Envy.flp"), b"flp").unwrap();
+        fs::write(project.join("Audio").join("take.wav"), b"take").unwrap();
+        fs::write(root.join("Projects").join("Kick.wav"), b"kick").unwrap();
+        let temp = root.join("stage");
+        fs::create_dir_all(&temp).unwrap();
+        let raw = vec![
+            r"Audio\take.wav".to_string(),
+            "../Kick.wav".to_string(),
+            "Audio/gone.wav".to_string(),
+            "../../../../../../too far.wav".to_string(),
+            "/abs/elsewhere.wav".to_string(),
+            "%FLStudioUserData%/Audio/x.wav".to_string(),
+        ];
+        let staged = stage_samples(&project, &temp, &raw);
+        // One level up is needed, so the copy sits one folder deep.
+        assert_eq!(staged.dir, temp.join("p0"));
+        assert_eq!(fs::read(staged.dir.join("Audio").join("take.wav")).unwrap(), b"take");
+        assert_eq!(fs::read(temp.join("Kick.wav")).unwrap(), b"kick");
+        assert_eq!(staged.missing, vec!["../../../../../../too far.wav".to_string(), "Audio/gone.wav".to_string()]);
+        // The originals are untouched.
+        assert_eq!(fs::read(project.join("Audio").join("take.wav")).unwrap(), b"take");
+        assert_eq!(fs::read(project.join("Envy.flp")).unwrap(), b"flp");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[cfg(target_os = "macos")]

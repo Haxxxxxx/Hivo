@@ -94,17 +94,31 @@ function names(artists: string): string[] {
     .filter((n) => n.length >= 2);
 }
 
+/** A whole-word pattern for `phrase` that ignores case and accents ("Été"
+ * also catches "ete" and "ÉTÉ"), for text in NFD form. `\b` is ASCII-only in
+ * JS, so it never matched a word starting or ending with an accent. */
+function loosePattern(phrase: string): RegExp {
+  const base = phrase.normalize("NFD").replace(/\p{M}/gu, "").trim();
+  const body = [...base].map((c) => (/[\p{L}]/u.test(c) ? `${escapeRegExp(c)}\\p{M}*` : escapeRegExp(c))).join("");
+  return new RegExp(`(?<![\\p{L}\\p{N}_])${body}(?![\\p{L}\\p{N}_])`, "giu");
+}
+
+/** Whether `phrase` appears in `text` as a word, ignoring case and accents. */
+export function mentions(text: string, phrase: string): boolean {
+  return phrase.trim().length >= 2 && loosePattern(phrase).test(text.normalize("NFD"));
+}
+
 /** Drops lettering talk, quotes and the title; people's names become an
  * anonymous figure (no likeness). */
 export function scrub(text: string, banned: string[], people: string[] = []): string {
   const sentences = text
     .split(/(?<=[.;!?])\s+/)
     .filter((s) => !TEXT_TALK.test(s));
-  let out = sentences.join(" ");
+  let out = sentences.join(" ").normalize("NFD");
   const swap = (list: string[], by: string) => {
     for (const b of list) {
       if (b.trim().length < 2) continue;
-      out = out.replace(new RegExp(`\\b${escapeRegExp(b.trim())}\\b`, "gi"), by);
+      out = out.replace(loosePattern(b), by);
     }
   };
   swap(people, "an anonymous figure");
@@ -115,7 +129,8 @@ export function scrub(text: string, banned: string[], people: string[] = []): st
     .replace(/([,;]\s*){2,}/g, ", ")
     .replace(/\s{2,}/g, " ")
     .replace(/^[\s,.;:-]+|[\s,;:-]+$/g, "")
-    .trim();
+    .trim()
+    .normalize("NFC");
 }
 
 function sentence(s: string): string {
@@ -129,10 +144,26 @@ export interface CoverPromptInput {
   artists: string;
   /** Index into COVER_VARIANTS (wraps). */
   variant: number;
+  /** The kit's release type ("Single", "EP", "Album", "Mixtape"). */
+  releaseType?: string;
+}
+
+/** "a rap single", "a rap EP"…: what the cover is for. */
+function releaseWording(releaseType: string | undefined): string {
+  switch ((releaseType ?? "").trim().toLowerCase()) {
+    case "ep":
+      return "a rap EP";
+    case "album":
+      return "a rap album";
+    case "mixtape":
+      return "a rap mixtape";
+    default:
+      return "a rap single";
+  }
 }
 
 /** The FLUX prompt for one concept. Deterministic. */
-export function buildCoverPrompt({ brief, title, artists, variant }: CoverPromptInput): string {
+export function buildCoverPrompt({ brief, title, artists, variant, releaseType }: CoverPromptInput): string {
   const p = parseCoverBrief(brief);
   const people = names(artists);
   const clean = (s: string | undefined) => (s ? scrub(s, [title], people) : "");
@@ -144,7 +175,7 @@ export function buildCoverPrompt({ brief, title, artists, variant }: CoverPrompt
   const palette = clean(p.palette);
   const composition = COVER_VARIANTS[((variant % COVER_VARIANTS.length) + COVER_VARIANTS.length) % COVER_VARIANTS.length];
 
-  const head = "Square album cover artwork for a rap single, 1:1 composition.";
+  const head = `Square cover artwork for ${releaseWording(releaseType)}, 1:1 composition.`;
   const tail = [
     sentence(composition),
     palette ? sentence(`Color palette: ${palette}`) : "",
@@ -160,7 +191,11 @@ export function buildCoverPrompt({ brief, title, artists, variant }: CoverPrompt
   const room = MAX_PROMPT - head.length - tail.length - 2;
   let body = sentence(subject || "A bold, moody visual metaphor for a modern hip-hop track");
   if (body.length > room) body = sentence(body.slice(0, Math.max(0, room - 1)).replace(/\s+\S*$/, ""));
-  return [head, body, tail].filter(Boolean).join(" ");
+  const prompt = [head, body, tail].filter(Boolean).join(" ");
+  // Last guard: the title never reaches Cloudflare, whatever slipped past
+  // the scrub above (a title like "Night" or "Single" can be a common word).
+  if (!mentions(prompt, title)) return prompt;
+  return prompt.normalize("NFD").replace(loosePattern(title), "").replace(/\s{2,}/g, " ").replace(/\s+([,.;])/g, "$1").normalize("NFC");
 }
 
 /** Positive 31-bit seeds, distinct. `rand` is injectable for tests. */

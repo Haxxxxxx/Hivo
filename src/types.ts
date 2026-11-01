@@ -67,6 +67,17 @@ export interface ProjectInfo {
   samples: SampleInfo[];
   /** Named mixer tracks + recorded-take labels ("Lead Voices - Nova"). */
   trackNames: string[];
+  /** Mixdowns in the export folder named after this song that weren't
+   * counted: another linked song has the same name, and the file name can't
+   * say which one it came from. */
+  ambiguousExports?: number;
+}
+
+/** What `scan_projects` returns: the projects, and the linked folders that
+ * couldn't be read right now (their songs are missing, not moved). */
+export interface ScanResult {
+  projects: ProjectInfo[];
+  unreachable: string[];
 }
 
 export interface PluginInfo {
@@ -243,6 +254,22 @@ export interface LaunchKitMeta {
   snippetLengths?: Record<string, number>;
   /** Set by "Accept all"; cleared by any later edit. */
   acceptedAtMs?: number;
+  /** What the kit was accepted against (master file, credits, release:
+   * `acceptFingerprint`): a change outside the kit undoes "Accepted". */
+  acceptedFingerprint?: string;
+  /** Where `edits.releaseDate` came from: kept from a suggestion (accept or
+   * export pins it) or typed. A suggestion never beats the release's date. */
+  releaseDatePin?: "suggested" | "typed";
+  /** The mixdown picked as the master (a path among the song's renders);
+   * unset = the newest lossless render, else the newest. */
+  master?: string;
+  /** The last export: when, what (`exportFingerprint`) and the folder name
+   * it went to (so a re-export after a rename cleans up the old one). */
+  exported?: { atMs: number; fingerprint: string; folder: string };
+  /** The user marked the final 3000 × 3000 cover as ready. */
+  finalCoverDone?: boolean;
+  /** A pre-save link (https). Captions mention a pre-save only when set. */
+  preSaveUrl?: string;
   /** Opt-in: the credited people's platform IDs (Spotify artist ID…) go
    * into the exported kit (artist-ids.md, distributor sheet, metadata). */
   includeArtistIds?: boolean;
@@ -513,6 +540,9 @@ export interface Workspace {
   /** Saved prod (lead hash) → the beat file that is it (path), set by hand
    * ("This is…"); null = "not in your prods", overriding the name match. */
   leadBeats?: Record<string, string | null>;
+  /** Set only on generated sample data (src/lib/sampleData.ts): a workspace
+   * carrying it is never written to disk. */
+  sample?: true;
 }
 
 /** A pipeline column. Columns sit on the fixed lifecycle stages: putting a

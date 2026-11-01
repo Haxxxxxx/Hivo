@@ -14,7 +14,23 @@ pub(crate) fn validate_name(name: &str) -> Result<&str, String> {
     {
         return Err(r#"name can't contain / \ : * ? " < > |"#.to_string());
     }
+    // Windows drops a trailing dot or space from a file name (so "Envy."
+    // would become another file than the one asked for), and refuses its
+    // device names ("CON", "nul.flp") in any folder.
+    if name.ends_with('.') || name.chars().any(char::is_control) {
+        return Err("name can't end with a dot or contain control characters".to_string());
+    }
+    if is_reserved_on_windows(name) {
+        return Err(format!("\"{name}\" is a name Windows reserves; pick another"));
+    }
     Ok(name)
+}
+
+/// CON, PRN, AUX, NUL, COM1-9, LPT1-9, alone or before an extension.
+fn is_reserved_on_windows(name: &str) -> bool {
+    let head = name.split('.').next().unwrap_or(name).trim_end().to_ascii_uppercase();
+    matches!(head.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((head.starts_with("COM") || head.starts_with("LPT")) && head.len() == 4 && head.as_bytes()[3].is_ascii_digit() && head.as_bytes()[3] != b'0')
 }
 
 /// `<dir>/<base>.<ext>`, or `<base> (2).<ext>`, `(3)`… if taken.
@@ -368,6 +384,12 @@ mod tests {
         assert!(validate_name("a/b").is_err());
         assert!(validate_name("..").is_err());
         assert_eq!(validate_name("  Envy v2 ").unwrap(), "Envy v2");
+        for bad in ["Envy.", "Envy. ", "CON", "con", "nul.flp", "Com1", "LPT9", "AUX .x", "Tab\there"] {
+            assert!(validate_name(bad).is_err(), "{bad}");
+        }
+        for ok in ["Console", "COM0", "COM10", "Envy v2.1", "Lpt", "Nulle part"] {
+            assert!(validate_name(ok).is_ok(), "{ok}");
+        }
     }
 
     #[test]
