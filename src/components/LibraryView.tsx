@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { useAppStore, type SortKey, type StatusFilter } from "../store/useAppStore";
 import { useCrewStore } from "../store/useCrewStore";
+import { shareLimitNote } from "../lib/crewSync";
 import { useCanShare } from "./CrewPanel";
 import { detectKey } from "../lib/people";
 import { dawOf } from "../lib/daws";
@@ -481,8 +482,8 @@ export function LibraryView() {
                 { value: "unshare", label: t.stopSharing },
               ]}
               onPick={(v) => {
-                const skipped = setShared(selectedPaths, v === "share");
-                setShareNote(skipped ? t.sharedElsewhere(skipped) : null);
+                const r = setShared(selectedPaths, v === "share");
+                setShareNote([r.elsewhere ? t.sharedElsewhere(r.elsewhere) : null, shareLimitNote(r.overLimit)].filter(Boolean).join(" ") || null);
               }}
             />
           )}
