@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { Sparkles } from "lucide-react";
 import { digIsStale, useDigger } from "../store/useDigger";
 import { useAppStore } from "../store/useAppStore";
-import { beatFactsLine, beatQuery } from "../lib/digger";
+import { beatFactsLine, nameQueries } from "../lib/digger";
 import { currentLang, dict, tr } from "../i18n";
 import type { YoutubeStatus } from "../types";
 import { chip, label, secondary } from "./DigResults";
@@ -38,6 +38,9 @@ const T = dict(
     ideas: "Searches from your picks",
     noKey: "Add a YouTube key in Settings to see results in the app. Without one, searches open in your browser.",
     setUp: "Settings",
+    failed: (n: number) => `${n} beat${n > 1 ? "s" : ""} couldn't be read, the dig went on without ${n > 1 ? "them" : "it"}:`,
+    tryAgain: "Try again",
+    tryAgainTitle: "Tries Gemini's web search again now (for example after a new key) as a new round.",
   },
   {
     title: "Choisies",
@@ -63,6 +66,9 @@ const T = dict(
     ideas: "Recherches tirées de tes choix",
     noKey: "Ajoute une clé YouTube dans les Réglages pour voir les résultats dans l'app. Sans clé, les recherches s'ouvrent dans ton navigateur.",
     setUp: "Réglages",
+    failed: (n: number) => `${n} prod${n > 1 ? "s" : ""} illisible${n > 1 ? "s" : ""}, la recherche a continué sans${NB}:`,
+    tryAgain: "Réessayer",
+    tryAgainTitle: "Relance la recherche web de Gemini maintenant (par exemple après une nouvelle clé), dans un nouveau tour.",
   },
 );
 
@@ -81,10 +87,7 @@ export function DigPanel({ yt, round }: Props) {
   const sendAudio = useAppStore((s) => !!s.settings.digSendAudio);
   const updateSettings = useAppStore((s) => s.updateSettings);
   const byPath = useMemo(() => new Map(beats.map((b) => [b.path, b])), [beats]);
-  const ideas = useMemo(() => {
-    const qs = picked.map((p) => beatQuery(byPath.get(p)?.name ?? "")).filter(Boolean);
-    return [...new Set(qs.map((q) => q.toLowerCase()))].map((l) => qs.find((q) => q.toLowerCase() === l)!);
-  }, [picked, byPath]);
+  const ideas = useMemo(() => nameQueries(picked.map((p) => byPath.get(p)?.name ?? "")), [picked, byPath]);
 
   const q = webQuery.trim();
   const run = (query: string) => {
@@ -165,6 +168,18 @@ export function DigPanel({ yt, round }: Props) {
               </li>
             ))}
           </ul>
+          {(dig.failed ?? []).length > 0 && (
+            <div role="status" className="flex flex-col gap-0.5 text-[11px] text-warn">
+              <span>{t.failed(dig.failed.length)}</span>
+              <ul className="flex flex-col gap-0.5">
+                {dig.failed.map((f, i) => (
+                  <li key={i} className="truncate text-engrave" title={f.error}>
+                    {f.name}: {f.error}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {dig.audioSent && dig.analysis.heard ? (
             <div className="flex flex-col gap-1">
               <h3 className={label}>{t.heardTitle}</h3>
@@ -197,7 +212,14 @@ export function DigPanel({ yt, round }: Props) {
               </div>
             </div>
           )}
-          {dig.webError && <p className="text-[11px] text-engrave">{dig.webError}</p>}
+          {dig.webError && (
+            <p className="text-[11px] text-engrave">
+              {dig.webError}{" "}
+              <button onClick={() => void d.retryWeb(currentLang(), !!yt?.configured)} disabled={d.diggingDeeper || d.digging} title={t.tryAgainTitle} className="underline hover:text-cream disabled:opacity-40">
+                {t.tryAgain}
+              </button>
+            </p>
+          )}
           {d.deeperError && <p className="text-[11px] text-engrave">{d.deeperError}</p>}
           <button onClick={() => void d.runDeeper(currentLang(), !!yt?.configured)} disabled={d.diggingDeeper || d.digging} className={`${secondary} self-start`}>
             {d.diggingDeeper ? t.deeperRunning : d.liked.length > 0 ? t.deeperSeeded(d.liked.length) : t.deeper}

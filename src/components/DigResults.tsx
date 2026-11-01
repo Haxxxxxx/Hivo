@@ -3,7 +3,7 @@ import { ExternalLink, Play, Search, X } from "lucide-react";
 import { useDigger, type Playing } from "../store/useDigger";
 import { useAppStore } from "../store/useAppStore";
 import * as api from "../lib/tauri";
-import { MAX_LIKED, MAX_QUERY_CHARS, converterLink, converterNeedsPaste, embedUrl, googleSearchUrl, leadFacts, leadHash, seedList, youtubeId, youtubeSearchUrl } from "../lib/digger";
+import { MAX_LIKED, MAX_QUERY_CHARS, canonicalUrl, converterLink, converterNeedsPaste, embedUrl, googleSearchUrl, leadFacts, leadHash, seedList, youtubeId, youtubeSearchUrl } from "../lib/digger";
 import { dict, tr } from "../i18n";
 import type { Lead, WebLink, YoutubeStatus } from "../types";
 
@@ -52,6 +52,7 @@ const T = dict(
     convertPasteTitle: "Opens your converter page in the browser and copies this video's address: paste it there. Hivo never downloads audio.",
     copied: "Address copied. Paste it on the page.",
     copyFailed: (url: string) => `Couldn't copy. Paste this on the page: ${url}`,
+    unresolved: "Google's link couldn't be followed to the page: open it to see where it goes. It can't be saved or converted.",
     hint: "Opens in your browser. Leasing a beat stays between you and the producer: the Digger downloads nothing.",
   },
   {
@@ -87,6 +88,7 @@ const T = dict(
     convertPasteTitle: `Ouvre ta page de conversion dans le navigateur et copie l'adresse de cette vidéo${NB}: colle-la là-bas. Hivo ne télécharge jamais d'audio.`,
     copied: "Adresse copiée. Colle-la sur la page.",
     copyFailed: (url: string) => `Copie impossible. Colle ça sur la page${NB}: ${url}`,
+    unresolved: `Le lien de Google n'a pas pu être suivi jusqu'à la page${NB}: ouvre-le pour voir où il mène. Il ne peut pas être enregistré ni converti.`,
     hint: `S'ouvre dans ton navigateur. La licence d'une prod se règle entre toi et le beatmaker${NB}: le Digger ne télécharge rien.`,
   },
 );
@@ -134,13 +136,16 @@ export function ConvertButton({ url, className = "" }: { url: string; className?
   );
 }
 
-/** The "Use for next dig" toggle on a card or a link (`id`: video id or url). */
+/** The "Use for next dig" toggle on a card or a link (`id`: video id or
+ * url). Only with a dig: the picks steer its "Go deeper" rounds. */
 export function LikeChip({ id, title }: { id: string; title: string }) {
   const t = tr(T);
   const liked = useDigger((s) => s.liked);
   const toggleLiked = useDigger((s) => s.toggleLiked);
+  const hasDig = useDigger((s) => !!s.dig);
   const on = liked.some((l) => l.id === id);
   const full = !on && liked.length >= MAX_LIKED;
+  if (!hasDig) return null;
   return (
     <button
       type="button"
@@ -155,17 +160,18 @@ export function LikeChip({ id, title }: { id: string; title: string }) {
   );
 }
 
-/** The dig's facts every lead on screen carries (the rounds share one dig). */
+/** The facts a lead saved from this card carries: the dig's summary and
+ * traits, and the bpm/key its own title says (never the picked beats'). */
 function useLeadFacts() {
   const dig = useDigger((s) => s.dig);
-  return useMemo(() => leadFacts(dig), [dig]);
+  return useMemo(() => (title: string) => leadFacts(dig, title), [dig]);
 }
 
 /** "Save to Prods" on a card or a link; "Saved" (click: show the file) once
  * its url's hash is among the lead files. */
 function SaveChip({ lead }: { lead: Lead }) {
   const t = tr(T);
-  const hash = leadHash(lead.url);
+  const hash = leadHash(canonicalUrl(lead.url));
   const path = useDigger((s) => s.savedLeads.get(hash));
   const saveLead = useDigger((s) => s.saveLead);
   const [busy, setBusy] = useState(false);
@@ -192,10 +198,10 @@ function WebLinks({ links, label: name, onPlay }: { links: WebLink[]; label: str
   return (
     <ul className="flex flex-col gap-1" aria-label={name}>
       {links.map((l) => {
-        const id = youtubeId(l.url);
+        const id = l.resolved ? youtubeId(l.url) : null;
         const title = l.text || l.site;
         return (
-          <li key={l.url} className="flex items-center gap-1">
+          <li key={l.url} className="flex flex-wrap items-center gap-1" title={l.resolved ? undefined : t.unresolved}>
             {id && (
               <button onClick={() => onPlay({ id, title })} aria-label={t.play(title)} className={playBtn}>
                 <Play size={12} />
@@ -208,8 +214,9 @@ function WebLinks({ links, label: name, onPlay }: { links: WebLink[]; label: str
                 <span className="block truncate font-mono text-[10.5px] text-engrave">{l.site}</span>
               </span>
             </button>
-            <LikeChip id={l.url} title={title} />
-            <SaveChip lead={{ url: l.url, title, producer: l.site, year: "", source: "web", ...facts }} />
+            {l.resolved && id && <ConvertButton url={l.url} className="font-normal text-body" />}
+            <LikeChip id={id ?? l.url} title={title} />
+            {l.resolved && <SaveChip lead={{ url: l.url, title, producer: l.site, year: "", source: id ? "youtube" : "web", ...facts(title) }} />}
           </li>
         );
       })}
@@ -320,7 +327,8 @@ export function DigResults({ yt, round, setRound, fill }: Props) {
             <iframe
               key={playing.id}
               src={embedUrl(playing.id) ?? undefined}
-              allow="autoplay; encrypted-media"
+              allow="autoplay; encrypted-media; fullscreen"
+              allowFullScreen
               title={playing.title}
               className="aspect-video w-full max-w-2xl rounded bg-chassis"
             />
@@ -361,7 +369,7 @@ export function DigResults({ yt, round, setRound, fill }: Props) {
                     </button>
                     <ConvertButton url={v.url} className="font-normal text-body" />
                     <LikeChip id={v.id} title={v.title} />
-                    <SaveChip lead={{ url: v.url, title: v.title, producer: v.channel, year: v.publishedAt.slice(0, 4), source: "youtube", ...facts }} />
+                    <SaveChip lead={{ url: v.url, title: v.title, producer: v.channel, year: v.publishedAt.slice(0, 4), source: "youtube", ...facts(v.title) }} />
                   </div>
                 </li>
               );

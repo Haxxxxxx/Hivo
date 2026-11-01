@@ -6,7 +6,7 @@
 //! in a URL, so it can't leak through error text.
 //!
 //! API (developers.google.com/youtube/v3/docs/search/list):
-//! `GET {API_BASE}/search?part=snippet&type=video&videoCategoryId=10&q=…`
+//! `GET {API_BASE}/search?part=snippet&type=video&videoEmbeddable=true&videoCategoryId=10&q=…` (embeddable only: the Digger plays results in an embed)
 //! answers `{ "items": [{ "id": { "videoId" }, "snippet": { "title",
 //! "channelTitle", "publishedAt" } }] }`. Links and thumbnails are rebuilt
 //! here from a checked video ID: nothing from the answer is used as a URL.
@@ -246,7 +246,7 @@ async fn search_at(client: &reqwest::Client, base: &str, key: &str, query: &str)
     let max = MAX_RESULTS.to_string();
     let url = reqwest::Url::parse_with_params(
         &format!("{base}/search"),
-        [("part", "snippet"), ("type", "video"), ("videoCategoryId", MUSIC_CATEGORY), ("maxResults", max.as_str()), ("q", query)],
+        [("part", "snippet"), ("type", "video"), ("videoEmbeddable", "true"), ("videoCategoryId", MUSIC_CATEGORY), ("maxResults", max.as_str()), ("q", query)],
     )
     .map_err(|e| format!("Couldn't build the YouTube search: {e}"))?;
     let res = client
@@ -381,7 +381,7 @@ mod tests {
         assert_eq!(run(&base, KEY, "dark trap").unwrap().len(), 1);
         let req = seen.lock().unwrap()[0].clone();
         let line = req.lines().next().unwrap();
-        assert!(line.starts_with("GET /search?part=snippet&type=video&videoCategoryId=10&maxResults=12&q=dark+trap "), "{line}");
+        assert!(line.starts_with("GET /search?part=snippet&type=video&videoEmbeddable=true&videoCategoryId=10&maxResults=12&q=dark+trap "), "{line}");
         assert!(!line.contains(KEY));
         assert!(req.to_lowercase().contains(&format!("x-goog-api-key: {}", KEY.to_lowercase())));
     }
