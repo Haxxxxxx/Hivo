@@ -23,13 +23,14 @@ function isIPv4(s: string): number[] | null {
   return parts.every((p) => p <= 255) ? parts : null;
 }
 
-/** 10/8, 172.16/12, 192.168/16 (the contract's list), plus loopback for the
- * iOS Simulator running on the desktop's own Mac. */
-export function isPrivateIPv4(s: string): boolean {
+/** 10/8, 172.16/12, 192.168/16 (the contract's list). Loopback only when
+ * asked (the iOS Simulator runs on the desktop's own Mac); on a phone,
+ * 127.x is the phone itself, never the computer. */
+export function isPrivateIPv4(s: string, loopback = false): boolean {
   const p = isIPv4(s);
   if (!p) return false;
   const [a, b] = p;
-  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a === 127;
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (loopback && a === 127);
 }
 
 function decodeParam(raw: string): string | null {
@@ -42,7 +43,7 @@ function decodeParam(raw: string): string | null {
 
 /** Parses `hivo://pair?v=1&d=…&k=…&h=…&p=…&n=…` (pasted text may carry spaces
  * or a trailing newline). Never throws. */
-export function parsePairingUrl(input: string): { ok: true; pairing: Pairing } | { ok: false; error: PairingError } {
+export function parsePairingUrl(input: string, opts: { loopback?: boolean } = {}): { ok: true; pairing: Pairing } | { ok: false; error: PairingError } {
   const text = input.trim();
   const m = /^hivo:\/\/pair\/?\?(.*)$/i.exec(text);
   if (!m) return { ok: false, error: "not-hivo" };
@@ -65,7 +66,7 @@ export function parsePairingUrl(input: string): { ok: true; pairing: Pairing } |
   const keyBytes = fromB64url(key);
   if (!keyBytes || keyBytes.length !== 32 || !/^[A-Za-z0-9_-]+$/.test(key)) return { ok: false, error: "key" };
 
-  const hosts = [...new Set((params.get("h") ?? "").split(",").map((h) => h.trim()).filter(isPrivateIPv4))].slice(0, MAX_HOSTS);
+  const hosts = [...new Set((params.get("h") ?? "").split(",").map((h) => h.trim()).filter((h) => isPrivateIPv4(h, opts.loopback)))].slice(0, MAX_HOSTS);
   if (hosts.length === 0) return { ok: false, error: "hosts" };
 
   const portText = params.get("p") ?? "";

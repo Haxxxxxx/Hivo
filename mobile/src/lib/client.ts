@@ -49,7 +49,8 @@ export function createClient(opts: ClientOptions) {
     for (const host of hosts) {
       const body = JSON.stringify(sealRequest(key, deviceId, path, payload, opts.random, opts.now()));
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+      // A chunk is ~700 KB sealed: on weak Wi-Fi 5 s would cut every one at the same point.
+      const timer = setTimeout(() => ctrl.abort(), path === "/v1/upload/chunk" ? Math.max(timeoutMs, 30_000) : timeoutMs);
       const started = opts.now();
       let res: HttpResponse;
       let text: string;

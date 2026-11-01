@@ -1,6 +1,7 @@
 // Offline-first note sync (PHONE-SYNC contract, /v1/snapshot and /v1/notes).
 // Pure state transitions: the app persists the state and does the I/O.
 import { fnv1a, utf8 } from "./bytes";
+import { clip } from "./text";
 
 export type Kind = "prod" | "beat" | "song";
 export const KINDS: Kind[] = ["prod", "beat", "song"];
@@ -122,7 +123,7 @@ export function forgetGone(state: SyncState, kind: Kind, id: string): SyncState 
  * from, so it stays the same across several edits until a push lands. */
 export function editNote(state: SyncState, kind: Kind, id: string, text: string, now: number): SyncState {
   const k = itemKey(kind, id);
-  const clipped = text.slice(0, MAX_NOTE_CHARS);
+  const clipped = clip(text, MAX_NOTE_CHARS);
   const goneItem = state.gone[k];
   if (goneItem) {
     // Nothing to push to: the text only lives on the phone.

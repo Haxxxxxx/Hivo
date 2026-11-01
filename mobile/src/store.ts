@@ -9,6 +9,7 @@ import * as SecureStore from "expo-secure-store";
 import { useSyncExternalStore } from "react";
 import { createClient, SyncError, type SyncErrorCode } from "./lib/client";
 import type { Pairing } from "./lib/pairing";
+import { clip } from "./lib/text";
 import { dismissConflict, editNote, emptyState, forgetGone, runSync, type Kind, type SyncState } from "./lib/sync";
 import {
   applyIdeaResults,
@@ -180,8 +181,8 @@ export function addOutItem(id: string, type: OutType, files: OutFile[], init: { 
   const item: OutItem = {
     id,
     type,
-    title: (init.title ?? "").slice(0, 200),
-    ...(init.text ? { text: init.text.slice(0, 2000) } : {}),
+    title: clip(init.title ?? "", 200),
+    ...(init.text ? { text: clip(init.text, 2000) } : {}),
     target: init.target ?? null,
     createdAt: Date.now(),
     durationMs: init.durationMs ?? null,
@@ -206,10 +207,6 @@ export function retryOut(id: string): void {
 export function removeOut(id: string): void {
   removeItemFiles(id);
   setOutbox(state.outbox.filter((i) => i.id !== id));
-}
-
-export function renameOut(id: string, title: string): void {
-  setOutbox(state.outbox.map((i) => (i.id === id && i.state !== "sent" ? { ...i, title: title.slice(0, 200) } : i)));
 }
 
 function isPairing(v: unknown): v is Pairing {
@@ -304,9 +301,14 @@ async function runExtras(call: (path: string, payload: unknown) => Promise<unkno
     setOutbox(resetOut(state.outbox));
   }
   try {
+    let lastPush = "";
     for (let round = 0; round < 20; round++) {
       const push = ideasToPush(state.ideas);
       if (push.length === 0) break;
+      // The computer left the same ones unmarked: don't send them again and again.
+      const key = push.map((i) => `${i.id}:${i.updatedAt}`).join(",");
+      if (key === lastPush) break;
+      lastPush = key;
       const results = parseIdeaResults(await call("/v1/ideas", { ideas: push.map(ideaPayload) }));
       if (!results) throw new SyncError("outdated", "bad ideas response");
       setIdeas(applyIdeaResults(state.ideas, push, results));
@@ -345,7 +347,13 @@ export async function sync(): Promise<boolean> {
   setState({ syncing: true, error: null, errorDetail: null });
   try {
     const call = createClient({ pairing, transport: (url, init) => fetch(url, init), random: getRandomBytes, now: Date.now });
-    const res = await runSync(call, () => state.sync, setSync, { phoneName: phoneName(), appVersion: appVersion() }, Date.now);
+    // Unpaired (or paired elsewhere) while this ran: its results belong to the old computer.
+    const stillPaired = () => state.pairing?.deviceId === pairing.deviceId;
+    const res = await runSync(call, () => state.sync, (s) => stillPaired() && setSync(s), { phoneName: phoneName(), appVersion: appVersion() }, Date.now);
+    if (!stillPaired()) {
+      setState({ syncing: false });
+      return false;
+    }
     await runExtras(call, pairing.deviceId);
     if (res.desktopName && state.pairing && res.desktopName !== state.pairing.desktopName) {
       const updated = { ...state.pairing, desktopName: res.desktopName };
