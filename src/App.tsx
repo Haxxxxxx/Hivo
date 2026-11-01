@@ -29,6 +29,7 @@ import { startPhoneSyncBridge } from "./store/phoneSyncBridge";
 import { startSessionBridge } from "./store/sessionBridge";
 import { useCrewStore, useInCrew } from "./store/useCrewStore";
 import { StatusDot, btnPrimary, btnQuiet } from "./ui";
+import { RemovedNotice } from "./components/CrewPanel";
 
 const fileName = (p: string) => p.split(/[/\\]/).pop() ?? p;
 
@@ -352,6 +353,7 @@ export default function App() {
       {/* Bottom-right notices share one column so they never overlap. */}
       <div className="pointer-events-none absolute bottom-3 right-3 z-40 flex flex-col items-end gap-2 [&>*]:pointer-events-auto">
         <RelinkNotice />
+        <RemovedNotice floating />
         <RenderPanel />
       </div>
       {(startupError || saveError) && (

@@ -42,3 +42,41 @@ export function isMissingOnServer(e: unknown): boolean {
   // 42P01: undefined table; 42883: undefined function; PGRST202/205: not in the API's schema cache.
   return err.code === "42P01" || err.code === "42883" || err.code === "PGRST202" || err.code === "PGRST205";
 }
+
+type Rpc = (fn: string, args: Record<string, unknown>) => PromiseLike<{ data: unknown; error: unknown }>;
+
+/** A card's place after place_crew_cards. */
+export interface PlacedCard {
+  id: string;
+  column_id: string | null;
+  board_order: number | null;
+}
+
+/** Place a column's other cards (same stage) in one request. A crew server
+ * without place_crew_cards gets the old way: one move_crew_card per card
+ * (`expectedAt`: the card's stage version; unknown cards are skipped). */
+export async function placeCards(rpc: Rpc, columnId: string, cards: { songId: string; order: number }[], expectedAt: (songId: string) => string | undefined): Promise<PlacedCard[]> {
+  if (!cards.length) return [];
+  const { data, error } = await rpc("place_crew_cards", { p_column: columnId, p_cards: cards.map((c) => ({ id: c.songId, order: c.order })) });
+  if (!error) return (data ?? []) as PlacedCard[];
+  if (!isMissingOnServer(error)) throw error;
+  const out: PlacedCard[] = [];
+  for (const c of cards) {
+    const at = expectedAt(c.songId);
+    if (at === undefined) continue;
+    const r = await rpc("move_crew_card", { p_song: c.songId, p_column: columnId, p_order: c.order, p_expected_at: at });
+    if (r.error) throw r.error;
+    const row = (Array.isArray(r.data) ? r.data[0] : r.data) as { column_id: string | null; board_order: number | null };
+    out.push({ id: c.songId, column_id: row.column_id, board_order: row.board_order });
+  }
+  return out;
+}
+
+/** Cards back from placeCards, applied to the board. */
+export function applyPlaced<T extends { id: string; column_id?: string | null; board_order?: number | null }>(songs: T[], placed: PlacedCard[]): T[] {
+  const byId = new Map(placed.map((p) => [p.id, p]));
+  return songs.map((s) => {
+    const p = byId.get(s.id);
+    return p ? { ...s, column_id: p.column_id, board_order: p.board_order } : s;
+  });
+}

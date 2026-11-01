@@ -380,7 +380,7 @@ const sameList = (a: string[], b: string[]) => a.length === b.length && a.every(
 /** The server already has these details (the stage is never compared: it
  * moves through move_song_stage). Unchanged rows aren't sent again, so a
  * restart doesn't rewrite every shared song. */
-export function songRowMatches(p: SharedSongPayload, row: CrewSongRow): boolean {
+export function songRowMatches(p: Omit<SharedSongPayload, "stage">, row: CrewSongRow): boolean {
   return (
     p.title === row.title &&
     (p.bpm ?? null) === (row.bpm == null ? null : Number(row.bpm)) &&
@@ -463,4 +463,30 @@ export function syncFingerprint(projects: ProjectInfo[], ws: Workspace, scope: S
     .map((m) => [m.shareId, m.shared ?? null, m.status ?? null, m.stagePending ?? null, m.stageBaseAt ?? null, m.stageConflict?.at ?? null]);
   const albums = ws.albums.filter((a) => a.shareId).map((a) => [a.shareId, a.shared ?? null, a.shareCrewId ?? null, a.shareUserId ?? null]);
   return JSON.stringify([sharedPayloads(projects, ws, scope), releasePayloads(ws, scope), stages, albums, ws.deletedReleaseShares ?? []]);
+}
+
+const T_LIMIT = dict(
+  {
+    share: (n: number) =>
+      `${n} song${n === 1 ? " wasn't" : "s weren't"} shared: a crew takes up to ${SONGS_PER_CREW} songs from each person. Stop sharing some first (Settings → Crew lists what's on the server).`,
+    pushSongs: (n: number) => ` · ${n} new song${n === 1 ? "" : "s"} not shared (share limit reached: stop sharing some to make room)`,
+    pushReleases: (n: number) => ` · ${n} release${n === 1 ? "" : "s"} not shared (the crew has ${RELEASES_PER_CREW}, the most allowed)`,
+  },
+  {
+    share: (n: number) =>
+      `${n} son${n === 1 ? " n'a pas été partagé" : "s n'ont pas été partagés"} : un crew prend jusqu'à ${SONGS_PER_CREW} sons par personne. Arrête d'en partager d'abord (Réglages → Crew liste ce qui est sur le serveur).`,
+    pushSongs: (n: number) => ` · ${n} nouveau${n === 1 ? " son non partagé" : "x sons non partagés"} (limite de partage atteinte : arrête d'en partager pour faire de la place)`,
+    pushReleases: (n: number) => ` · ${n} sortie${n === 1 ? " non partagée" : "s non partagées"} (le crew en a ${RELEASES_PER_CREW}, le maximum)`,
+  },
+);
+
+/** Said after a share that hit the limit (null when nothing was left out). */
+export function shareLimitNote(overLimit: number): string | null {
+  return overLimit > 0 ? tr(T_LIMIT).share(overLimit) : null;
+}
+
+/** Appended to the sync line when the limits left new shares out. */
+export function pushLimitNote(songs: number, releases: number): string {
+  const t = tr(T_LIMIT);
+  return (songs > 0 ? t.pushSongs(songs) : "") + (releases > 0 ? t.pushReleases(releases) : "");
 }

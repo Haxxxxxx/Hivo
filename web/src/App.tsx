@@ -14,7 +14,7 @@ import { SIGN_IN } from "./landingCopy";
 import { cleanCode, isCodeComplete } from "@shared/lib/signInCode";
 import { pageLang, type Lang } from "./lang";
 import { W } from "./dashboardCopy";
-import { LeaveCrew, OwnerTools, RemoveMember } from "./OwnerTools";
+import { LeaveCrew, MakeOwner, OwnerTools, RemoveMember } from "./OwnerTools";
 import { locale, tr } from "@shared/i18n";
 
 const input =
@@ -583,7 +583,8 @@ function Crew() {
                 {m.role === "owner" && <span className="text-xs text-engrave">{tr(W).owner}</span>}
                 {m.user_id === userId && <span className="text-xs text-engrave">{tr(W).youLower}</span>}
                 {isOwner && m.user_id !== userId && (
-                  <span className="ml-auto">
+                  <span className="ml-auto flex items-start gap-3">
+                    <MakeOwner userId={m.user_id} name={m.display_name} />
                     <RemoveMember userId={m.user_id} name={m.display_name} />
                   </span>
                 )}
