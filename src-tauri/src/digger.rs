@@ -623,11 +623,59 @@ pub fn title_from_url(url: &str) -> String {
     clip(&format!("{host}{path}"), 200)
 }
 
+/// An IPv4 address inside the user's machine or LAN (or otherwise not a
+/// public host): private, loopback, link-local, CGNAT, "this network",
+/// broadcast.
+fn local_v4(ip: std::net::Ipv4Addr) -> bool {
+    let o = ip.octets();
+    ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() || ip.is_broadcast() || o[0] == 0 || (o[0] == 100 && (o[1] & 0xc0) == 64)
+}
+
+/// The same for IPv6: loopback, unspecified, unique-local (fc00::/7),
+/// link-local (fe80::/10), and IPv4-mapped forms of the v4 ranges.
+fn local_v6(ip: std::net::Ipv6Addr) -> bool {
+    let s0 = ip.segments()[0];
+    ip.is_loopback() || ip.is_unspecified() || (s0 & 0xfe00) == 0xfc00 || (s0 & 0xffc0) == 0xfe80 || ip.to_ipv4_mapped().is_some_and(local_v4)
+}
+
+/// A hop a redirect chain may take: https, no credentials, and a public
+/// host (no LAN or loopback IP literal, no "localhost", ".local" or
+/// ".internal" name). A search result must never make the desktop send
+/// requests into the user's network.
+pub fn public_https(url: &reqwest::Url) -> bool {
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    // `host_str` is already normalised by the parser (IPv4 in dotted form,
+    // even when written "2130706433" or "0x7f.1"; IPv6 in brackets).
+    let Some(host) = url.host_str() else { return false };
+    if let Some(v6) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        return v6.parse::<std::net::Ipv6Addr>().is_ok_and(|ip| !local_v6(ip));
+    }
+    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+        return !local_v4(ip);
+    }
+    let d = host.trim_end_matches('.').to_ascii_lowercase();
+    !(d.is_empty() || d == "localhost" || d.ends_with(".localhost") || d.ends_with(".local") || d.ends_with(".internal"))
+}
+
 /// Follows `start`'s redirects (HEAD requests, no body ever read; GET
 /// headers only when HEAD is refused) and returns the last address, or None
-/// when a hop fails or there are too many.
+/// when a hop fails, leaves the public https web (`public_https`, checked
+/// on the start and on every hop), or there are too many.
 pub async fn follow_redirects(client: &reqwest::Client, start: &str, max_hops: usize) -> Option<String> {
-    let mut current = reqwest::Url::parse(start).ok()?;
+    let first = reqwest::Url::parse(start).ok()?;
+    if !public_https(&first) {
+        return None;
+    }
+    follow_checked(client, first, max_hops, &public_https).await
+}
+
+/// The redirect loop; `hop_ok` vets every address after the first. Only
+/// `follow_redirects` (with `public_https`) is used outside tests: tests
+/// start on a local mock server, which the production check refuses.
+async fn follow_checked(client: &reqwest::Client, first: reqwest::Url, max_hops: usize, hop_ok: &(dyn Fn(&reqwest::Url) -> bool + Sync)) -> Option<String> {
+    let mut current = first;
     for _ in 0..=max_hops {
         let mut res = client.head(current.clone()).send().await.ok()?;
         if matches!(res.status().as_u16(), 405 | 501) {
@@ -639,6 +687,9 @@ pub async fn follow_redirects(client: &reqwest::Client, start: &str, max_hops: u
         }
         let next = res.headers().get(reqwest::header::LOCATION)?.to_str().ok()?;
         current = current.join(next).ok()?;
+        if !hop_ok(&current) {
+            return None;
+        }
     }
     None
 }
@@ -1383,7 +1434,8 @@ mod tests {
     }
 
     /// A local server: `/start` → 302 `/mid` (relative), `/mid` refuses HEAD
-    /// and redirects on GET to `/end`, `/end` answers 200; `/loop` loops.
+    /// and redirects on GET to `/end`, `/end` answers 200; `/loop` loops;
+    /// `/to-loopback` and `/to-lan` send the chain into the user's network.
     fn redirect_server() -> String {
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let base = format!("http://{}", server.server_addr().to_ip().unwrap());
@@ -1396,6 +1448,8 @@ mod tests {
                     "/mid" => (301, Some("/end")),
                     "/end" => (200, None),
                     "/loop" => (302, Some("/loop")),
+                    "/to-loopback" => (302, Some("http://127.0.0.1/admin")),
+                    "/to-lan" => (302, Some("https://192.168.1.1/admin")),
                     _ => (404, None),
                 };
                 let mut res = tiny_http::Response::from_string("a body nobody reads").with_status_code(status);
@@ -1408,16 +1462,67 @@ mod tests {
         base
     }
 
+    /// The mock's own origin, and nothing else: what the tests allow on top
+    /// of a start the production check would refuse.
+    fn follow_local(client: &reqwest::Client, base: &str, path: &str) -> Option<String> {
+        let start = reqwest::Url::parse(&format!("{base}{path}")).unwrap();
+        let origin = start.origin();
+        tauri::async_runtime::block_on(follow_checked(client, start, MAX_HOPS, &move |u: &reqwest::Url| u.origin() == origin))
+    }
+
     #[test]
     fn follows_redirects_without_reading_bodies() {
         let base = redirect_server();
         let client = resolver();
-        let got = tauri::async_runtime::block_on(follow_redirects(&client, &format!("{base}/start"), MAX_HOPS));
-        assert_eq!(got, Some(format!("{base}/end")));
+        assert_eq!(follow_local(&client, &base, "/start"), Some(format!("{base}/end")));
         // Too many hops: unresolved.
-        assert_eq!(tauri::async_runtime::block_on(follow_redirects(&client, &format!("{base}/loop"), MAX_HOPS)), None);
+        assert_eq!(follow_local(&client, &base, "/loop"), None);
         // Nothing listening: unresolved, quickly.
-        assert_eq!(tauri::async_runtime::block_on(follow_redirects(&client, "http://127.0.0.1:9/x", MAX_HOPS)), None);
+        assert_eq!(follow_local(&client, "http://127.0.0.1:9", "/x"), None);
+    }
+
+    #[test]
+    fn redirects_never_lead_into_the_lan() {
+        let base = redirect_server();
+        let client = resolver();
+        // The chain starts on the mock (allowed here only), every next hop
+        // gets the production check: both stop before any request is sent.
+        for path in ["/to-loopback", "/to-lan"] {
+            let start = reqwest::Url::parse(&format!("{base}{path}")).unwrap();
+            assert_eq!(tauri::async_runtime::block_on(follow_checked(&client, start, MAX_HOPS, &public_https)), None, "{path}");
+        }
+        // The production entry refuses a local start outright.
+        assert_eq!(tauri::async_runtime::block_on(follow_redirects(&client, &format!("{base}/start"), MAX_HOPS)), None);
+
+        let ok = |s: &str| public_https(&reqwest::Url::parse(s).unwrap());
+        assert!(ok("https://www.youtube.com/watch?v=dQw4w9WgXcQ") && ok("https://8.8.8.8/") && ok("https://[2001:4860::8888]/"));
+        for bad in [
+            "http://www.youtube.com/",
+            "https://user:pw@example.com/",
+            "https://10.0.0.1/",
+            "https://172.16.0.1/",
+            "https://172.31.255.255/",
+            "https://192.168.1.1/",
+            "https://127.0.0.1/",
+            "https://169.254.169.254/latest/meta-data",
+            "https://100.64.0.1/",
+            "https://0.0.0.0/",
+            "https://2130706433/",
+            "https://[::1]/",
+            "https://[fc00::1]/",
+            "https://[fd12:3456::1]/",
+            "https://[fe80::1]/",
+            "https://[::ffff:192.168.1.1]/",
+            "https://[::ffff:127.0.0.1]/",
+            "https://localhost/",
+            "https://LOCALHOST./",
+            "https://printer.local/",
+            "https://db.corp.internal/",
+        ] {
+            assert!(!ok(bad), "{bad}");
+        }
+        // Neighbours of the ranges stay public.
+        assert!(ok("https://172.32.0.1/") && ok("https://100.128.0.1/") && ok("https://11.0.0.1/"));
     }
 
     #[test]
