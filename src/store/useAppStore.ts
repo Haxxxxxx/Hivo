@@ -9,6 +9,7 @@ import { addColumn, moveCard, moveColumn, removeColumn, renameColumn } from "../
 import type { DashboardLayout } from "../lib/dashboardLayout";
 import { applyRelinks, findRelinks, type Relink } from "../lib/relink";
 import { setNote } from "../lib/notes";
+import { relinkBeatNotes } from "../lib/digger";
 import { canRenderInApp, dawOf, splitRenderable } from "../lib/daws";
 import type {
   DetectedFolder,
@@ -277,6 +278,10 @@ interface AppState {
   /** Notes on a saved prod (by lead hash) or a beat (by file path); empty removes. */
   setLeadNote: (hash: string, text: string) => void;
   setBeatNote: (path: string, text: string) => void;
+  /** After a beats scan: notes follow renamed/moved beats, noted beats' sizes are remembered. */
+  syncBeatNotes: (beats: { path: string; name: string; sizeBytes: number }[]) => void;
+  /** A saved prod's beat set by hand: a path, null ("not in your prods"), or undefined (back to the name match). */
+  setLeadBeat: (hash: string, path: string | null | undefined) => void;
   /** Also removes their credits and pitches. */
   deletePerson: (id: string) => void;
   addPitch: (path: string, pitch: Omit<Pitch, "id">) => void;
@@ -1009,6 +1014,28 @@ export const useAppStore = create<AppState>((set, get) => {
 
     setLeadNote: (hash, text) => mutateWorkspace((ws) => ({ ...ws, leadNotes: setNote(ws.leadNotes, hash, text) })),
     setBeatNote: (path, text) => mutateWorkspace((ws) => ({ ...ws, beatNotes: setNote(ws.beatNotes, path, text) })),
+    syncBeatNotes: (beats) => {
+      const ws = get().workspace;
+      if (!ws.beatNotes || Object.keys(ws.beatNotes).length === 0) return;
+      const moved = relinkBeatNotes(ws.beatNotes, ws.beatNoteSizes, beats);
+      const notes = moved?.notes ?? ws.beatNotes;
+      const sizes: Record<string, number> = {};
+      const byPath = new Map(beats.map((b) => [b.path, b.sizeBytes]));
+      // Sizes of noted beats only; a noted beat missing from this scan keeps its last size.
+      for (const p of Object.keys(notes)) {
+        const s = byPath.get(p) ?? moved?.sizes[p] ?? ws.beatNoteSizes?.[p];
+        if (s !== undefined) sizes[p] = s;
+      }
+      const same = !moved && JSON.stringify(sizes) === JSON.stringify(ws.beatNoteSizes ?? {});
+      if (!same) mutateWorkspace((w) => ({ ...w, beatNotes: notes, beatNoteSizes: sizes }));
+    },
+    setLeadBeat: (hash, path) =>
+      mutateWorkspace((ws) => {
+        const next = { ...(ws.leadBeats ?? {}) };
+        if (path === undefined) delete next[hash];
+        else next[hash] = path;
+        return { ...ws, leadBeats: next };
+      }),
 
     updatePerson: (id, patch) =>
       mutateWorkspace((ws) => ({ ...ws, people: ws.people.map((p) => (p.id === id ? { ...p, ...patch } : p)) })),

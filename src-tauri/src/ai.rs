@@ -69,6 +69,8 @@ pub fn ai_status(app: AppHandle) -> AiStatus {
 pub fn set_ai_key(app: AppHandle, key: Option<String>) -> Result<(), String> {
     let path = secrets_path(&app)?;
     let key = key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
+    // Another key may have Google Search: the Digger tries it again.
+    crate::digger::reset_web_pause();
     if key.is_none() {
         return match fs::remove_file(&path) {
             Ok(()) => Ok(()),

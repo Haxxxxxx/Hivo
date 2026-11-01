@@ -2,6 +2,7 @@ import type { AiFieldReview, Album, AudioAnalysis, CaptionLang, KitFieldId, Mast
 import { detectKey, detectedPeople } from "./people";
 import { KEYS, renderFreshness } from "./songs";
 import { dawOf, isSketch } from "./daws";
+import { linkVerified } from "./profiles";
 import { applyLang, currentLang, dict, tr } from "../i18n";
 
 // On-screen text only (field labels, provenance notes, check messages).
@@ -922,7 +923,8 @@ export function kitArtists(meta: SongMeta, people: Person[]): KitArtist[] {
     out.push({
       name: person.name,
       roles: credit.role,
-      profiles: (person.links ?? []).filter((l) => l.id).map((l) => ({ label: l.label, id: l.id!, url: l.url })),
+      // Only ids that count: a by-name guess (Deezer, Apple Music) needs confirming first.
+      profiles: (person.links ?? []).filter((l) => l.id && linkVerified(l)).map((l) => ({ label: l.label, id: l.id!, url: l.url })),
     });
   }
   return out;

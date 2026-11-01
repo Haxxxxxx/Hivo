@@ -11,7 +11,12 @@
 //!    YouTube-style search queries.
 //! 4. A second Gemini call with Google Search grounding looks for beats on
 //!    the web. It may fail (free quota): the result then says so and keeps
-//!    the rest.
+//!    the rest. Grounded links are Google redirects: each is followed here
+//!    (HEAD requests, no body read, short timeout) to the page it leads
+//!    to; one that can't be followed is sent `resolved: false`.
+//!
+//! A beat that can't be analysed is reported in `failed`; the dig goes on
+//! with the others.
 //!
 //! 5. "Go deeper" (`dig_deeper`): one more grounded search, seeded by the
 //!    first dig's analysis and told which links were already found. When
@@ -64,12 +69,16 @@ const MAX_LIKED: usize = 20;
 // ------------------------------------------------------------------ analysis
 
 /// What the model (and the UI) learns about one beat.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BeatFacts {
     /// File name without extension (the uploader's title, usually).
     pub name: String,
     pub duration_sec: f64,
+    /// Decoding stopped at MAX_DECODE_SEC: the beat is at least that long
+    /// (the UI shows "10:00+").
+    #[serde(default)]
+    pub duration_capped: bool,
     pub bpm: Option<f64>,
     /// "name" (written in the file name) or "audio" (estimated; may be half
     /// or double the real tempo).
@@ -196,6 +205,7 @@ pub fn analyze_beat(path: &Path, want_excerpt: bool) -> Result<(BeatFacts, Optio
     }
     let low_rate = LOW_RATE.min(rate) as usize;
     let duration_sec = frames as f64 / rate as f64;
+    let duration_capped = duration_sec >= MAX_DECODE_SEC;
     let rms = (power / frames as f64).sqrt();
 
     // Onset envelope: positive change of log energy, FPS frames a second.
@@ -223,6 +233,7 @@ pub fn analyze_beat(path: &Path, want_excerpt: bool) -> Result<(BeatFacts, Optio
     let facts = BeatFacts {
         name: clip(&name, 120),
         duration_sec: (duration_sec * 10.0).round() / 10.0,
+        duration_capped,
         bpm,
         bpm_source,
         key: chroma.estimate().filter(|k| k.confidence >= 0.3).map(|k| k.key),
@@ -523,16 +534,17 @@ fn sanitize_analysis(v: &Value) -> Result<Analysis, String> {
     Ok(Analysis { summary, traits, tempo, queries, heard })
 }
 
-/// The seed sent back by the webview, cut to the same sizes as a fresh
-/// analysis, and the already-found urls (https only, deduplicated, capped).
-/// How a found beat is remembered between rounds: "title | site", lowercased.
-/// Not the url: Google Search grounding hands out a fresh redirect link for
-/// the same page every time, so urls never match across rounds. The webview
-/// builds the same key (`foundKey` in src/lib/digger.ts).
+/// How a found beat is remembered between rounds: "title | site", lowercased;
+/// "url | site" when the link has no text, so two untitled links never share
+/// one key (links are resolved to their final address first, which is stable
+/// across rounds, unlike Google's redirect links). The webview builds the
+/// same key (`foundKey` in src/lib/digger.ts).
 const MAX_KEY_CHARS: usize = 120;
 
 pub fn found_key(link: &WebLink) -> String {
-    clip(&format!("{} | {}", link.text.trim(), link.site.trim()), MAX_KEY_CHARS).to_lowercase()
+    let text = link.text.trim();
+    let head = if text.is_empty() { link.url.trim() } else { text };
+    clip(&format!("{} | {}", head, link.site.trim()), MAX_KEY_CHARS).to_lowercase()
 }
 
 /// `items` clipped to `max_chars`, blanks and repeats dropped, at most `max`.
@@ -583,8 +595,106 @@ pub struct WebLink {
     pub url: String,
     /// The site, as Google names it ("youtube.com").
     pub site: String,
-    /// What the answer said about it (grounded text), may be empty.
+    /// What the answer said about it (grounded text); once resolved, the
+    /// page's domain + path when the answer said nothing.
     pub text: String,
+    /// The url is the page itself, not a Google grounding redirect that
+    /// couldn't be followed: only resolved links can be saved or converted.
+    pub resolved: bool,
+}
+
+/// Where Google Search grounding sends its links through.
+const REDIRECT_HOST: &str = "vertexaisearch.cloud.google.com";
+/// Redirect hops followed at most, and how long each may take.
+const MAX_HOPS: usize = 5;
+const RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
+
+fn is_grounding_redirect(url: &str) -> bool {
+    reqwest::Url::parse(url).ok().is_some_and(|u| u.host_str() == Some(REDIRECT_HOST))
+}
+
+/// The page's domain and path ("beatstars.com/beat/night-123"): a title for
+/// a link the answer said nothing about.
+pub fn title_from_url(url: &str) -> String {
+    let Ok(u) = reqwest::Url::parse(url) else { return String::new() };
+    let host = u.host_str().unwrap_or_default();
+    let host = host.strip_prefix("www.").or_else(|| host.strip_prefix("m.")).unwrap_or(host);
+    let path = u.path().trim_end_matches('/');
+    clip(&format!("{host}{path}"), 200)
+}
+
+/// Follows `start`'s redirects (HEAD requests, no body ever read; GET
+/// headers only when HEAD is refused) and returns the last address, or None
+/// when a hop fails or there are too many.
+pub async fn follow_redirects(client: &reqwest::Client, start: &str, max_hops: usize) -> Option<String> {
+    let mut current = reqwest::Url::parse(start).ok()?;
+    for _ in 0..=max_hops {
+        let mut res = client.head(current.clone()).send().await.ok()?;
+        if matches!(res.status().as_u16(), 405 | 501) {
+            res = client.get(current.clone()).send().await.ok()?;
+        }
+        if !res.status().is_redirection() {
+            // Dropped without reading: no body is downloaded.
+            return Some(current.to_string());
+        }
+        let next = res.headers().get(reqwest::header::LOCATION)?.to_str().ok()?;
+        current = current.join(next).ok()?;
+    }
+    None
+}
+
+fn resolver() -> reqwest::Client {
+    reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(RESOLVE_TIMEOUT).build().unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// `link` with a grounding redirect replaced by the page it leads to (https
+/// only), titled from the page when the answer gave no text. A link that
+/// can't be followed stays as it is, `resolved: false`.
+fn settle(mut link: WebLink, target: Option<String>) -> WebLink {
+    if let Some(url) = target.as_deref().and_then(safe_url) {
+        if link.site.is_empty() || link.site.contains(REDIRECT_HOST) {
+            link.site = title_from_url(&url).split('/').next().unwrap_or_default().to_string();
+        }
+        if link.text.is_empty() {
+            link.text = title_from_url(&url);
+        }
+        link.url = url;
+        link.resolved = true;
+    }
+    link
+}
+
+/// Every grounding redirect followed to its page, in parallel; links that
+/// end on the same page are kept once.
+pub async fn resolve_links(links: Vec<WebLink>) -> Vec<WebLink> {
+    resolve_links_with(&resolver(), links, is_grounding_redirect).await
+}
+
+async fn resolve_links_with(client: &reqwest::Client, links: Vec<WebLink>, needs: fn(&str) -> bool) -> Vec<WebLink> {
+    let jobs: Vec<_> = links
+        .into_iter()
+        .map(|link| {
+            let client = client.clone();
+            tauri::async_runtime::spawn(async move {
+                if link.resolved || !needs(&link.url) {
+                    // Already the page itself: only the title may be missing.
+                    let url = link.url.clone();
+                    return settle(link, Some(url));
+                }
+                let target = follow_redirects(&client, &link.url, MAX_HOPS).await;
+                settle(link, target)
+            })
+        })
+        .collect();
+    let mut out: Vec<WebLink> = Vec::new();
+    for job in jobs {
+        if let Ok(link) = job.await {
+            if !out.iter().any(|l| l.url == link.url) {
+                out.push(link);
+            }
+        }
+    }
+    out
 }
 
 /// https only, no credentials, a host, a sane length.
@@ -612,7 +722,8 @@ fn parse_grounding(v: &Value) -> (Vec<WebLink>, Vec<String>) {
             .and_then(|s| s.pointer("/segment/text").and_then(Value::as_str))
             .map(|t| clip(t.trim_start_matches(['*', '-', ' ']), 200))
             .unwrap_or_default();
-        links.push(WebLink { url, site: clip(chunk.pointer("/web/title").and_then(Value::as_str).unwrap_or_default(), 60), text });
+        let resolved = !is_grounding_redirect(&url);
+        links.push(WebLink { url, site: clip(chunk.pointer("/web/title").and_then(Value::as_str).unwrap_or_default(), 60), text, resolved });
         if links.len() >= MAX_LINKS {
             break;
         }
@@ -638,6 +749,8 @@ pub struct DigResult {
     /// Whether excerpts went to Gemini (the setting at the time).
     pub audio_sent: bool,
     pub beats: Vec<BeatFacts>,
+    /// Picked beats that couldn't be analysed (the dig went on without them).
+    pub failed: Vec<FailedBeat>,
     pub analysis: Analysis,
     pub web: Vec<WebLink>,
     /// The Google searches behind `web` (shown as search links).
@@ -664,6 +777,101 @@ fn pause_web_search() {
     }
 }
 
+/// Lifts the pause: a new AI key (ai.rs `set_ai_key`) or "Try again".
+pub fn reset_web_pause() {
+    if let Ok(mut g) = WEB_PAUSED_UNTIL.lock() {
+        *g = None;
+    }
+}
+
+/// "Try again" on the "web search isn't available" line.
+#[tauri::command]
+pub fn reset_web_search() {
+    reset_web_pause();
+}
+
+/// The last dig as the webview keeps it (result, rounds, per-round
+/// results, picks), so a restart doesn't lose it. The file is the app's own
+/// (`last-dig.json` in the config dir, path decided here); the webview
+/// checks every field again when it reads it back (`restoreDig`).
+const LAST_DIG_FILE: &str = "last-dig.json";
+/// A dig with its rounds is a few dozen KB; anything bigger isn't one.
+pub const MAX_LAST_DIG_BYTES: usize = 1024 * 1024;
+
+fn last_dig_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    use tauri::Manager;
+    let dir = app.path().app_config_dir().map_err(|e| format!("could not resolve app config dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create config dir: {e}"))?;
+    Ok(dir.join(LAST_DIG_FILE))
+}
+
+/// The JSON written for `state`: an object under the size cap, else an error.
+/// `null` means "forget the last dig".
+pub fn last_dig_bytes(state: &Value) -> Result<Option<Vec<u8>>, String> {
+    if state.is_null() {
+        return Ok(None);
+    }
+    if !state.is_object() {
+        return Err("not a dig".to_string());
+    }
+    let raw = serde_json::to_vec(state).map_err(|e| e.to_string())?;
+    if raw.len() > MAX_LAST_DIG_BYTES {
+        return Err("The dig is too big to keep.".to_string());
+    }
+    Ok(Some(raw))
+}
+
+#[tauri::command]
+pub fn save_last_dig(app: AppHandle, state: Value) -> Result<(), String> {
+    let path = last_dig_path(&app)?;
+    match last_dig_bytes(&state)? {
+        None => match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("could not forget the dig: {e}")),
+            _ => Ok(()),
+        },
+        Some(raw) => {
+            let tmp = path.with_extension("json.tmp");
+            std::fs::write(&tmp, raw).map_err(|e| format!("could not keep the dig: {e}"))?;
+            std::fs::rename(&tmp, &path).map_err(|e| format!("could not keep the dig: {e}"))
+        }
+    }
+}
+
+/// The kept dig, or null (none, unreadable, or too big).
+#[tauri::command]
+pub fn load_last_dig(app: AppHandle) -> Value {
+    let Ok(path) = last_dig_path(&app) else { return Value::Null };
+    match std::fs::metadata(&path) {
+        Ok(m) if m.len() as usize <= MAX_LAST_DIG_BYTES => {}
+        _ => return Value::Null,
+    }
+    std::fs::read(&path).ok().and_then(|raw| serde_json::from_slice::<Value>(&raw).ok()).filter(Value::is_object).unwrap_or(Value::Null)
+}
+
+/// A picked beat that couldn't be analysed, and why.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailedBeat {
+    pub name: String,
+    pub error: String,
+}
+
+/// The analysis of one beat, and its excerpt when asked for.
+type Analysed = (BeatFacts, Option<(Vec<f32>, u32)>);
+
+/// Every beat analysed on its own: one unreadable file is reported, not fatal.
+pub fn analyse_all(paths: &[std::path::PathBuf], want_excerpt: bool) -> (Vec<Analysed>, Vec<FailedBeat>) {
+    let mut ok = Vec::new();
+    let mut failed = Vec::new();
+    for p in paths {
+        match analyze_beat(p, want_excerpt) {
+            Ok(a) => ok.push(a),
+            Err(error) => failed.push(FailedBeat { name: clip(&p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(), 120), error: clip(&error, 300) }),
+        }
+    }
+    (ok, failed)
+}
+
 #[tauri::command]
 pub async fn dig_beats(app: AppHandle, request: DigRequest) -> Result<DigResult, String> {
     if request.beats.is_empty() {
@@ -680,9 +888,11 @@ pub async fn dig_beats(app: AppHandle, request: DigRequest) -> Result<DigResult,
     let paths = request.beats.iter().map(|p| scope.beat(p)).collect::<Result<Vec<_>, _>>()?;
     let model = crate::settings::load(&app)?.ai_model;
 
-    let analysed = tauri::async_runtime::spawn_blocking(move || paths.iter().map(|p| analyze_beat(p, send_audio)).collect::<Result<Vec<_>, String>>())
-        .await
-        .map_err(|e| format!("beat analysis stopped: {e}"))??;
+    let (analysed, failed) = tauri::async_runtime::spawn_blocking(move || analyse_all(&paths, send_audio)).await.map_err(|e| format!("beat analysis stopped: {e}"))?;
+    if analysed.is_empty() {
+        let why = failed.iter().map(|f| format!("{}: {}", f.name, f.error)).collect::<Vec<_>>().join("; ");
+        return Err(format!("None of the picked beats could be read. {why}"));
+    }
     let facts: Vec<BeatFacts> = analysed.iter().map(|(f, _)| f.clone()).collect();
     let excerpts: Vec<Vec<u8>> = analysed.iter().filter_map(|(_, e)| e.as_ref().map(|(s, rate)| wav_bytes(s, *rate))).collect();
     if excerpts.iter().map(Vec::len).sum::<usize>() > MAX_AUDIO_BYTES {
@@ -696,10 +906,10 @@ pub async fn dig_beats(app: AppHandle, request: DigRequest) -> Result<DigResult,
     let analysis = sanitize_analysis(&raw)?;
 
     let (web, web_searches, web_error) = match web_search(&app, model, &web_body(&analysis)).await {
-        WebSearch::Done(web, searches, error) => (web, searches, error),
+        WebSearch::Done(web, searches, error) => (resolve_links(web).await, searches, error),
         WebSearch::Off => (Vec::new(), Vec::new(), Some(WEB_OFF.to_string())),
     };
-    Ok(DigResult { model: used, audio_sent: !excerpts.is_empty(), beats: facts, analysis, web, web_searches, web_error })
+    Ok(DigResult { model: used, audio_sent: !excerpts.is_empty(), beats: facts, failed, analysis, web, web_searches, web_error })
 }
 
 /// What one grounded search came to.
@@ -773,7 +983,8 @@ pub async fn dig_deeper(app: AppHandle, request: DigDeeperRequest) -> Result<Dig
     let model = crate::settings::load(&app)?.ai_model;
     match web_search(&app, model.clone(), &deeper_body(&analysis, &exclude, &liked, language_name(&request.language))).await {
         WebSearch::Done(web, web_searches, web_error) => {
-            let web = drop_found(web, &exclude);
+            // Final addresses first: the exclusion keys of untitled links use them.
+            let web = drop_found(resolve_links(web).await, &exclude);
             let web_error = web_error.or_else(|| web.is_empty().then(|| "Nothing new this time. Try again later or use the searches above.".to_string()));
             Ok(DigDeeperResult { web, web_searches, web_error, queries: Vec::new() })
         }
@@ -874,7 +1085,7 @@ mod tests {
     }
 
     fn facts() -> Vec<BeatFacts> {
-        vec![BeatFacts { name: "Dark Trap Type Beat".into(), duration_sec: 180.0, bpm: Some(140.0), bpm_source: Some("name".into()), key: Some("Am".into()), loudness_db: Some(-12.0), hits_per_sec: Some(4.2) }]
+        vec![BeatFacts { name: "Dark Trap Type Beat".into(), duration_sec: 180.0, duration_capped: false, bpm: Some(140.0), bpm_source: Some("name".into()), key: Some("Am".into()), loudness_db: Some(-12.0), hits_per_sec: Some(4.2) }]
     }
 
     #[test]
@@ -967,6 +1178,8 @@ mod tests {
         assert_eq!(links.len(), 2);
         assert_eq!(links[0].site, "youtube.com");
         assert_eq!(links[0].text, "");
+        // A grounding redirect isn't the page yet; a direct link is.
+        assert!(!links[0].resolved && links[1].resolved);
         assert_eq!(links[1].url, "https://www.beatstars.com/beat/night-123");
         assert_eq!(links[1].text, "\"Night\" - Some Producer - BeatStars");
         assert_eq!(searches, ["dark trap type beat 140 bpm"]);
@@ -1147,11 +1360,117 @@ mod tests {
     #[test]
     fn drops_links_already_found() {
         // A fresh redirect url each round: only the title + site can match.
-        let link = |i: usize| WebLink { url: format!("https://redirect.example/{i}"), site: "BeatStars".into(), text: format!("Beat {i}") };
+        let link = |i: usize| WebLink { url: format!("https://redirect.example/{i}"), site: "BeatStars".into(), text: format!("Beat {i}"), resolved: true };
         let links: Vec<WebLink> = (0..MAX_LINKS).map(link).collect();
-        let kept = drop_found(links, &[found_key(&WebLink { url: "https://other.example/x".into(), site: "beatstars".into(), text: " Beat 0 ".into() })]);
+        let kept = drop_found(links, &[found_key(&WebLink { url: "https://other.example/x".into(), site: "beatstars".into(), text: " Beat 0 ".into(), resolved: true })]);
         assert_eq!(kept.len(), MAX_DEEPER_LINKS);
         assert_eq!(kept[0].text, "Beat 1");
+    }
+
+    #[test]
+    fn untitled_links_never_share_a_key() {
+        // Two links without text on the same site: the url tells them apart,
+        // so excluding one keeps the other (it used to say "Nothing new").
+        let untitled = |u: &str| WebLink { url: u.into(), site: "youtube.com".into(), text: "  ".into(), resolved: true };
+        let (a, b) = (untitled("https://www.youtube.com/watch?v=aaaaaaaaaaa"), untitled("https://www.youtube.com/watch?v=bbbbbbbbbbb"));
+        assert_ne!(found_key(&a), found_key(&b));
+        assert_eq!(found_key(&a), "https://www.youtube.com/watch?v=aaaaaaaaaaa | youtube.com");
+        let kept = drop_found(vec![a.clone(), b.clone()], &[found_key(&a)]);
+        assert_eq!(kept, vec![b]);
+        // A titled link still keys on its title, whatever its url.
+        let titled = WebLink { url: "https://x.example/1".into(), site: "BeatStars".into(), text: "Night".into(), resolved: true };
+        assert_eq!(found_key(&titled), "night | beatstars");
+    }
+
+    /// A local server: `/start` → 302 `/mid` (relative), `/mid` refuses HEAD
+    /// and redirects on GET to `/end`, `/end` answers 200; `/loop` loops.
+    fn redirect_server() -> String {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", server.server_addr().to_ip().unwrap());
+        std::thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let head = *req.method() == tiny_http::Method::Head;
+                let (status, location) = match req.url() {
+                    "/start" => (302, Some("/mid")),
+                    "/mid" if head => (405, None),
+                    "/mid" => (301, Some("/end")),
+                    "/end" => (200, None),
+                    "/loop" => (302, Some("/loop")),
+                    _ => (404, None),
+                };
+                let mut res = tiny_http::Response::from_string("a body nobody reads").with_status_code(status);
+                if let Some(l) = location {
+                    res = res.with_header(tiny_http::Header::from_bytes("Location", l).unwrap());
+                }
+                let _ = req.respond(res);
+            }
+        });
+        base
+    }
+
+    #[test]
+    fn follows_redirects_without_reading_bodies() {
+        let base = redirect_server();
+        let client = resolver();
+        let got = tauri::async_runtime::block_on(follow_redirects(&client, &format!("{base}/start"), MAX_HOPS));
+        assert_eq!(got, Some(format!("{base}/end")));
+        // Too many hops: unresolved.
+        assert_eq!(tauri::async_runtime::block_on(follow_redirects(&client, &format!("{base}/loop"), MAX_HOPS)), None);
+        // Nothing listening: unresolved, quickly.
+        assert_eq!(tauri::async_runtime::block_on(follow_redirects(&client, "http://127.0.0.1:9/x", MAX_HOPS)), None);
+    }
+
+    #[test]
+    fn settles_links_on_their_page() {
+        let redirect = WebLink { url: format!("https://{REDIRECT_HOST}/grounding-api-redirect/abc"), site: "beatstars.com".into(), text: String::new(), resolved: false };
+        let got = settle(redirect.clone(), Some("https://www.beatstars.com/beat/night-123/".into()));
+        assert_eq!((got.url.as_str(), got.text.as_str(), got.site.as_str(), got.resolved), ("https://www.beatstars.com/beat/night-123/", "beatstars.com/beat/night-123", "beatstars.com", true));
+        // Couldn't follow it, or it ended on plain http: unresolved, unchanged.
+        assert_eq!(settle(redirect.clone(), None), redirect);
+        assert_eq!(settle(redirect.clone(), Some("http://plain.example/x".into())), redirect);
+        // A text from the answer is kept.
+        let titled = WebLink { text: "Night - X - BeatStars".into(), ..redirect };
+        assert_eq!(settle(titled, Some("https://youtu.be/dQw4w9WgXcQ".into())).text, "Night - X - BeatStars");
+        assert_eq!(title_from_url("https://m.youtube.com/watch?v=dQw4w9WgXcQ"), "youtube.com/watch");
+        // Links that don't need resolving are titled and kept once.
+        let direct = |u: &str| WebLink { url: u.into(), site: "beatstars.com".into(), text: String::new(), resolved: true };
+        let out = tauri::async_runtime::block_on(resolve_links_with(&resolver(), vec![direct("https://www.beatstars.com/a"), direct("https://www.beatstars.com/a")], is_grounding_redirect));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].text, "beatstars.com/a");
+    }
+
+    #[test]
+    fn one_bad_beat_does_not_fail_the_dig() {
+        let dir = std::env::temp_dir().join(format!("hivo-dig-some-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("Good 120bpm.wav");
+        crate::audio::write_wav(&good, &click_track(120.0, 12.0), 1, LOW_RATE).unwrap();
+        let bad = dir.join("Broken.mp3");
+        std::fs::write(&bad, b"not audio at all").unwrap();
+        let (ok, failed) = analyse_all(&[good, bad.clone(), dir.join("Gone.wav")], false);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(ok.len(), 1);
+        assert_eq!(ok[0].0.name, "Good 120bpm");
+        assert!(!ok[0].0.duration_capped);
+        assert_eq!(failed.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["Broken", "Gone"]);
+        assert!(failed.iter().all(|f| !f.error.is_empty()));
+    }
+
+    #[test]
+    fn keeps_the_last_dig_within_bounds() {
+        assert_eq!(last_dig_bytes(&Value::Null), Ok(None));
+        assert!(last_dig_bytes(&json!([1, 2])).is_err());
+        assert!(last_dig_bytes(&json!("x")).is_err());
+        assert!(last_dig_bytes(&json!({ "dig": { "beats": [] } })).unwrap().is_some());
+        assert!(last_dig_bytes(&json!({ "x": "y".repeat(MAX_LAST_DIG_BYTES) })).is_err());
+    }
+
+    #[test]
+    fn the_web_pause_lifts_on_reset() {
+        pause_web_search();
+        assert!(web_search_paused());
+        reset_web_pause();
+        assert!(!web_search_paused());
     }
 
     #[test]

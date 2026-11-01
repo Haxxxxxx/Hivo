@@ -5,7 +5,7 @@ import { MAX_PICKS, filterBeats, useDigger } from "../store/useDigger";
 import * as api from "../lib/tauri";
 import { audioSrc } from "../lib/tauri";
 import { formatBytes, formatRelative } from "../lib/format";
-import { matchBeat } from "../lib/digger";
+import { matchBeat, sortBeats, type BeatSort } from "../lib/digger";
 import { isFileDrag } from "../lib/dropGuard";
 import { dict, tr } from "../i18n";
 import type { BeatFile, YoutubeStatus } from "../types";
@@ -32,7 +32,16 @@ const T = dict(
     sub: "Your raw beats. Pick up to 5 and dig for similar ones to start a new song.",
     noFolder: "No beats folder yet. Add the folder where you keep your downloaded beats.",
     addFolder: "Add a beats folder",
-    empty: "No beats found in your beats folders (mp3, wav, ogg or flac).",
+    empty: "No beats found in your beats folders (mp3, wav, ogg, flac or m4a).",
+    shownOf: (n: number, total: number, more: boolean) => `${n} of ${total}${more ? "+" : ""} beats shown`,
+    ignored: (n: number) => `${n} audio file${n > 1 ? "s" : ""} in other formats (opus, aac…) can't be read`,
+    sort: "Sort",
+    sortNewest: "Newest",
+    sortName: "Name",
+    sortBpm: "BPM",
+    sortKey: "Key",
+    analysing: "Measuring tempo and key…",
+    estimated: "Estimated from the audio (may be half or double)",
     filter: "Search beats",
     rescan: "Look again",
     picked: (n: number) => `${n}/${MAX_PICKS} picked`,
@@ -54,7 +63,16 @@ const T = dict(
     sub: "Tes prods brutes. Choisis-en jusqu'à 5 et pars à la recherche de prods dans le même esprit pour un nouveau son.",
     noFolder: "Pas encore de dossier de prods. Ajoute le dossier où tu ranges les prods que tu télécharges.",
     addFolder: "Ajouter un dossier de prods",
-    empty: "Aucune prod trouvée dans tes dossiers de prods (mp3, wav, ogg ou flac).",
+    empty: "Aucune prod trouvée dans tes dossiers de prods (mp3, wav, ogg, flac ou m4a).",
+    shownOf: (n: number, total: number, more: boolean) => `${n} prods affichées sur ${total}${more ? "+" : ""}`,
+    ignored: (n: number) => `${n} fichier${n > 1 ? "s" : ""} audio dans d'autres formats (opus, aac…) illisible${n > 1 ? "s" : ""}`,
+    sort: "Trier",
+    sortNewest: "Récentes",
+    sortName: "Nom",
+    sortBpm: "BPM",
+    sortKey: "Tonalité",
+    analysing: "Mesure du tempo et de la tonalité…",
+    estimated: "Estimé à partir de l'audio (peut être la moitié ou le double)",
     filter: "Chercher une prod",
     rescan: "Relancer",
     picked: (n: number) => `${n}/${MAX_PICKS} choisies`,
@@ -80,7 +98,9 @@ export function DiggerView() {
   const t = tr(T);
   const folders = useAppStore((s) => s.settings.beatFolders ?? NO_FOLDERS);
   const addBeatFolder = useAppStore((s) => s.addBeatFolder);
-  const { beats, loading, error, picked, query, load, loadLeads, toggle, clearPicks, setQuery, dig, webQuery, searchedFor, searching, clearUnseen, shownRound, setShownRound } = useDigger();
+  const { beats, loading, error, picked, query, load, loadLeads, toggle, clearPicks, setQuery, dig, webQuery, searchedFor, searching, clearUnseen, shownRound, setShownRound, restoreLastDig, scanInfo, facts, analysing } = useDigger();
+  const leadBeats = useAppStore((s) => s.workspace.leadBeats);
+  const [sort, setSort] = useState<BeatSort>("newest");
   const [playing, setPlaying] = useState<string | null>(null);
   // The beat in the <audio> element (playing or paused) and where it is.
   const [loaded, setLoaded] = useState<string | null>(null);
@@ -98,7 +118,7 @@ export function DiggerView() {
   // search YouTube); it takes its share of the height once it has something.
   const showResults = !!dig || searchedFor !== null || searching || webQuery.trim() !== "";
   const audio = useRef<HTMLAudioElement>(null);
-  const shown = useMemo(() => filterBeats(beats, query), [beats, query]);
+  const shown = useMemo(() => sortBeats(filterBeats(beats, query), facts, sort), [beats, query, facts, sort]);
   const full = picked.length >= MAX_PICKS;
   const folderKey = folders.join("|");
   const [dropHint, setDropHint] = useState(false);
@@ -122,6 +142,11 @@ export function DiggerView() {
   useEffect(() => {
     clearUnseen();
   }, [clearUnseen]);
+
+  // The last dig, kept across restarts.
+  useEffect(() => {
+    void restoreLastDig();
+  }, [restoreLastDig]);
 
   useEffect(() => {
     let live = true;
@@ -150,8 +175,8 @@ export function DiggerView() {
       return beat ? { kind: "beat", beat } : null;
     }
     const lead = leads.find((l) => l.hash === selected.hash);
-    return lead ? { kind: "lead", lead, beat: matchBeat(lead, beats) } : null;
-  }, [selected, beats, leads]);
+    return lead ? { kind: "lead", lead, beat: matchBeat(lead, beats, leadBeats?.[lead.hash]) } : null;
+  }, [selected, beats, leads, leadBeats]);
 
   const playToggle = (b: BeatFile) => {
     const el = audio.current;
@@ -266,6 +291,18 @@ export function DiggerView() {
                       </button>
                     )}
                     {full && <span className="text-engrave">{t.full}</span>}
+                    {scanInfo?.capped && <span className="text-warn">{t.shownOf(beats.length, scanInfo.total, scanInfo.capped)}</span>}
+                    {!!scanInfo?.ignored && <span className="text-engrave">{t.ignored(scanInfo.ignored)}</span>}
+                    {analysing && <span className="text-engrave">{t.analysing}</span>}
+                    <label className="ml-auto flex items-center gap-1 text-engrave">
+                      {t.sort}
+                      <select value={sort} onChange={(e) => setSort(e.target.value as BeatSort)} className="rounded border border-rule bg-chassis px-1 py-0.5 text-cream">
+                        <option value="newest">{t.sortNewest}</option>
+                        <option value="name">{t.sortName}</option>
+                        <option value="bpm">{t.sortBpm}</option>
+                        <option value="key">{t.sortKey}</option>
+                      </select>
+                    </label>
                   </>
                 )}
               </div>
@@ -290,6 +327,7 @@ export function DiggerView() {
                       const disabled = !on && full;
                       const sel = selected?.kind === "beat" && selected.path === b.path;
                       const hasNote = !!beatNotes?.[b.path];
+                      const f = facts[b.path];
                       return (
                         <li
                           key={b.path}
@@ -326,6 +364,10 @@ export function DiggerView() {
                               <NotebookPen size={12} aria-label={t.hasNotes} />
                             </span>
                           )}
+                          <span className="w-16 shrink-0 text-right font-mono text-[11px] text-body" title={f?.bpmSource === "audio" ? t.estimated : undefined}>
+                            {f?.bpm ? `${f.bpmSource === "audio" ? "≈" : ""}${Math.round(f.bpm)} BPM` : ""}
+                          </span>
+                          <span className="w-10 shrink-0 font-mono text-[11px] text-body">{f?.key ?? ""}</span>
                           <span className="hidden shrink-0 text-xs text-engrave lg:inline">{formatRelative(b.modifiedAtMs)}</span>
                           <span className="w-16 shrink-0 text-right font-mono text-[11px] text-engrave">{formatBytes(b.sizeBytes)}</span>
                           {on && <Check size={14} className="shrink-0 text-hot" aria-hidden />}

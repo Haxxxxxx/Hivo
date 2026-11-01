@@ -17,7 +17,10 @@ import type {
   Snippet,
   TemplateInfo,
   Workspace,
+  BeatAnalysis,
   BeatFile,
+  BeatScan,
+  PlatformLink,
   YoutubeStatus,
   YoutubeVideo,
   DigResult,
@@ -62,7 +65,11 @@ export const removeBeatFolder = (folder: string): Promise<Settings> => invoke("r
 /** Sample libraries: where moved packs are looked up by file name. */
 export const pickSampleFolder = (): Promise<Settings> => invoke("pick_sample_folder");
 export const removeSampleFolder = (folder: string): Promise<Settings> => invoke("remove_sample_folder", { folder });
-export const scanBeats = (): Promise<BeatFile[]> => invoke("scan_beats");
+/** The beats and what the scan didn't show (capped, unreadable formats). */
+export const scanBeatsFull = (): Promise<BeatScan> => invoke("scan_beats");
+export const scanBeats = (): Promise<BeatFile[]> => scanBeatsFull().then((s) => s.beats);
+/** Tempo, key, loudness and length, offline (no AI key), cached per file in Rust; at most MAX_ANALYZE paths. */
+export const analyzeBeats = (paths: string[]): Promise<BeatAnalysis[]> => invoke("analyze_beats", { paths });
 /** Whether a YouTube Data API key is set (the key itself never comes back). */
 export const youtubeStatus = (): Promise<YoutubeStatus> => invoke("youtube_status");
 /** Whether the app runs from a read-only place on macOS ("dmg", "translocated") or null. */
@@ -85,6 +92,12 @@ export const digDeeper = (
   language: "fr" | "en",
 ): Promise<DigDeeperResult> =>
   invoke("dig_deeper", { request: { analysis: { summary, traits, tempo, queries }, exclude, foundTitles, searchesDone, likedTitles, language } });
+/** Lifts the "web search isn't available" pause ("Try again"). */
+export const resetWebSearch = (): Promise<void> => invoke("reset_web_search");
+/** Keeps the last dig in the config dir (null forgets it). */
+export const saveLastDig = (state: unknown): Promise<void> => invoke("save_last_dig", { state });
+/** The kept dig, or null; checked again by `restoreDig`. */
+export const loadLastDig = (): Promise<unknown> => invoke("load_last_dig");
 /** Writes `<first beats folder>/_leads/<slug>-<hash>.md` (text only, never
  * audio); returns the file's path. Saving the same url again overwrites it. */
 export const saveLead = (lead: Lead): Promise<string> => invoke("save_lead", { lead });
@@ -97,6 +110,8 @@ export const deleteLead = (path: string): Promise<void> => invoke("delete_lead",
 export const lookupArtists = (query: string): Promise<LookupCandidate[]> => invoke("lookup_artists", { query });
 export const lookupProfile = (source: LookupSource, id: string): Promise<LookupProfile> => invoke("lookup_profile", { source, id });
 export const spotifyStatus = (): Promise<SpotifyStatus> => invoke("spotify_status");
+/** A profile link typed by hand, classified like MusicBrainz's (Rust rebuilds known platforms' links). */
+export const classifyProfileLink = (url: string): Promise<PlatformLink> => invoke("classify_profile_link", { url });
 export const setSpotifyCredentials = (clientId: string | null, clientSecret: string | null): Promise<void> =>
   invoke("set_spotify_credentials", { clientId, clientSecret });
 export const pickFlStudio = (): Promise<Settings> => invoke("pick_fl_studio");

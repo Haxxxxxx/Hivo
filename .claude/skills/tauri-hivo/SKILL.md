@@ -57,7 +57,8 @@ Use the generic `tauri-v2` skill for the framework; this is what's decided here.
 ## Paired constants (keep both sides equal)
 - `WAVE_*` in `src/lib/shorts.ts` ↔ `src-tauri/src/shorts.rs`.
 - `MAX_QUERY_CHARS`, `MAX_EXCLUDE`, `MAX_KEY_CHARS`, `MAX_FOUND_TITLES`, `MAX_TITLE_CHARS`, `MAX_LIKED` in `src/lib/digger.ts` ↔ `digger.rs`/`youtube.rs`.
-- `found_key` (Rust) ↔ `foundKey` (TS).
+- `found_key` (Rust) ↔ `foundKey` (TS): "text | site", or "url | site" when the text is empty.
+- `MAX_ANALYZE` in `src/store/useDigger.ts` ↔ `beats.rs`.
 - `lead_hash` (Rust, `leads.rs`) ↔ `leadHash` (TS, `digger.ts`): FNV-1a 32-bit
   over the trimmed url's UTF-8 bytes, 8 lowercase hex digits; both tests use
   the vector `"https://youtu.be/dQw4w9WgXcQ"` → `8fd69810`.

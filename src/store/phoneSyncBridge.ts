@@ -14,7 +14,7 @@ type Reply = { body: unknown } | { error: string };
 
 async function sources(): Promise<SyncSources | Reply> {
   // Fresh lists: the Digger may never have been opened. No beats folder = none.
-  const [leads, beats] = await Promise.all([api.listLeads().catch(() => []), api.scanBeats().catch(() => [])]);
+  const [leads, beats] = await Promise.all([api.listLeads().then((ls) => ls.filter((l) => !l.unrecognised)).catch(() => []), api.scanBeats().catch(() => [])]);
   const s = useAppStore.getState();
   if (s.demoMode) return { error: "demo" };
   // Not loaded yet, read-only, or a scan in flight (songs could look deleted).

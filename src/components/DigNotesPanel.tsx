@@ -85,14 +85,15 @@ export function DigNotesPanel({ target, player, onClose }: { target: NotesTarget
   const setBeatNote = useAppStore((s) => s.setBeatNote);
   const setLeadNote = useAppStore((s) => s.setLeadNote);
   const inboxItems = usePhoneInbox((s) => s.items);
+  const measured = useDigger((s) => (target.kind === "beat" ? s.facts[target.beat.path] : undefined));
 
   let title: string;
   let facts: string[];
   let key: string;
   if (target.kind === "beat") {
     const b = target.beat;
-    // Tempo and key are only known for a beat the dig analysed.
-    const f = dig?.beats.find((x) => x.name === b.name);
+    // Measured offline (analyze_beats), or by the dig.
+    const f = measured ?? dig?.beats.find((x) => x.name === b.name);
     title = b.name;
     facts = [f?.bpm ? `${f.bpmSource === "audio" ? "≈" : ""}${t.bpm(f.bpm)}` : "", f?.key ?? "", b.folder].filter(Boolean);
     key = `beat:${b.path}`;
