@@ -5,7 +5,7 @@ import { SyncHeader } from "../components/SyncHeader";
 import { s } from "../inboxStrings";
 import { Engrave, Led } from "../components/ui";
 import { tr } from "../lib/i18n";
-import { allItems, filterItems, isGone, itemKey, KINDS, noteFor, type Item, type Kind } from "../lib/sync";
+import { allItems, filterItems, isGone, itemKey, KINDS, type Item, type Kind } from "../lib/sync";
 import { useApp } from "../store";
 import { T } from "../strings";
 import { C, FONT, RADIUS, STAGE_COLOR, UNSORTED_COLOR } from "../theme";
@@ -39,7 +39,7 @@ export function LibraryScreen({ tab, onTab, onOpen, onSettings, onIdea, onRecord
       <View style={styles.tabs}>
         {[...KINDS, "inbox" as const].map((k) => (
           <Pressable key={k} onPress={() => onTab(k)} style={[styles.tab, tab === k && styles.tabOn]} accessibilityRole="tab" accessibilityState={{ selected: tab === k }}>
-            <Text style={[styles.tabText, tab === k && { color: C.chassis }]} numberOfLines={1}>
+            <Text style={[styles.tabText, tab === k && { color: C.chassis }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
               {k === "inbox" ? (pending > 0 ? `${s().tabInbox} ${pending}` : s().tabInbox) : label[k]}
             </Text>
           </Pressable>
@@ -53,6 +53,7 @@ export function LibraryScreen({ tab, onTab, onOpen, onSettings, onIdea, onRecord
         onChangeText={setQuery}
         placeholder={t.search}
         placeholderTextColor={C.engrave}
+        accessibilityLabel={t.searchLabel}
         style={styles.search}
         autoCorrect={false}
         clearButtonMode="while-editing"
@@ -63,7 +64,7 @@ export function LibraryScreen({ tab, onTab, onOpen, onSettings, onIdea, onRecord
         keyboardShouldPersistTaps="handled"
         ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: C.rule }} />}
         ListEmptyComponent={<Text style={styles.empty}>{total === 0 ? t.emptyTab : t.noMatch}</Text>}
-        renderItem={({ item }) => <Row item={item} hasNote={noteFor(sync, item.kind, item.id).trim().length > 0} pending={!!sync.pending[itemKey(item.kind, item.id)]} gone={isGone(sync, item.kind, item.id)} onPress={() => onOpen(item)} />}
+        renderItem={({ item }) => <Row item={item} hasNote={(sync.pending[itemKey(item.kind, item.id)]?.text ?? sync.gone[itemKey(item.kind, item.id)]?.note ?? item.note).trim().length > 0} pending={!!sync.pending[itemKey(item.kind, item.id)]} gone={isGone(sync, item.kind, item.id)} onPress={() => onOpen(item)} />}
       />
       </>
       ) : null}
@@ -106,7 +107,7 @@ function Row({ item, hasNote, pending, gone, onPress }: { item: Item; hasNote: b
 
 const styles = StyleSheet.create({
   tabs: { flexDirection: "row", marginHorizontal: 16, marginTop: 12, borderWidth: 1, borderColor: C.ruleStrong, borderRadius: RADIUS, overflow: "hidden" },
-  tab: { flex: 1, paddingVertical: 8, alignItems: "center", backgroundColor: C.panel },
+  tab: { flex: 1, paddingVertical: 8, paddingHorizontal: 2, alignItems: "center", backgroundColor: C.panel },
   tabOn: { backgroundColor: C.cream },
   tabText: { fontFamily: FONT.display, fontSize: 15, color: C.body, textTransform: "uppercase", letterSpacing: 0.5 },
   search: { marginHorizontal: 16, marginVertical: 10, paddingHorizontal: 10, paddingVertical: 8, borderWidth: 1, borderColor: C.rule, borderRadius: RADIUS, backgroundColor: C.chassis, color: C.cream, fontSize: 15 },

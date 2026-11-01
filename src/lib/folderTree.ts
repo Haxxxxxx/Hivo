@@ -97,3 +97,12 @@ export function folderPath(tree: FolderNode[], folder: string): FolderNode[] {
   };
   return walk(tree, []) ?? [];
 }
+
+/** Whether `folder` is a node of the tree. A folder filter whose node is gone
+ * (the songs moved, the folder was unlinked, the tree collapsed to nothing)
+ * would leave "No songs match" with nothing to click: the Library clears it. */
+export function hasFolderNode(tree: FolderNode[], folder: string): boolean {
+  const target = norm(folder);
+  const walk = (nodes: FolderNode[]): boolean => nodes.some((n) => n.path === target || (target.startsWith(`${n.path}/`) && walk(n.children)));
+  return walk(tree);
+}

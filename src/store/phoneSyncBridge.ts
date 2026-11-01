@@ -33,7 +33,11 @@ function scanSettled(ms: number): Promise<void> {
 
 async function sources(): Promise<SyncSources | Reply> {
   // Fresh lists: the Digger may never have been opened. No beats folder = none.
-  const [leads, beats] = await Promise.all([api.listLeads().catch(() => []), api.scanBeats().catch(() => []), scanSettled(SCAN_WAIT_MS)]);
+  const [leads, beats] = await Promise.all([
+    api.listLeads().then((ls) => ls.filter((l) => !l.unrecognised)).catch(() => []),
+    api.scanBeats().catch(() => []),
+    scanSettled(SCAN_WAIT_MS),
+  ]);
   const s = useAppStore.getState();
   if (s.demoMode) return { error: "demo" };
   if (!s.workspaceWritable) return { error: "busy" };

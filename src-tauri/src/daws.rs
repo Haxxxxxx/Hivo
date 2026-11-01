@@ -281,10 +281,11 @@ fn io(e: impl std::fmt::Display) -> ReadError {
     ReadError::Io(e.to_string())
 }
 
-/// What can be read from inside a non-FL project. Closed formats yield
-/// empty metadata; a file that can't be read is an error the scan reports.
+/// What can be read from inside a project (FL Studio included). Closed
+/// formats yield empty metadata; a file that can't be read is an error the
+/// scan reports.
 pub fn read_project(daw: Daw, path: &Path) -> Result<FlpMetadata, String> {
-    if !matches!(daw, Daw::Reaper | Daw::Ableton | Daw::StudioOne) {
+    if !matches!(daw, Daw::FlStudio | Daw::Reaper | Daw::Ableton | Daw::StudioOne) {
         return Ok(FlpMetadata::default());
     }
     let stamp: Option<Stamp> = fs::metadata(path).ok().map(|m| (m.len(), m.modified().ok()));
@@ -331,6 +332,7 @@ fn read_uncached(daw: Daw, path: &Path) -> Result<FlpMetadata, ReadError> {
             Ok(meta)
         }
         Daw::StudioOne => read_song(path),
+        Daw::FlStudio => crate::flp_metadata::parse_flp_file(File::open(path).map_err(io)?).map_err(ReadError::Refused),
         _ => Ok(FlpMetadata::default()),
     }
 }

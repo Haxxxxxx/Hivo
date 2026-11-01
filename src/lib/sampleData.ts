@@ -188,6 +188,7 @@ export function generateSampleWorkspace(projects: ProjectInfo[]): Workspace {
 
   return {
     version: 2,
+    sample: true,
     songs,
     people,
     albums: [

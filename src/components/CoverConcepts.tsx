@@ -41,6 +41,12 @@ function useSession(path: string): Session {
   return sessions.get(path) ?? EMPTY;
 }
 
+/** The picked concept's image (base64 JPEG) while it's in memory, for the shorts. */
+export function usePickedConcept(path: string): string | null {
+  const s = useSession(path);
+  return s.picked != null ? (s.concepts[s.picked]?.image?.imageB64 ?? null) : null;
+}
+
 const PER_DAY = Math.floor(FREE_NEURONS_PER_DAY / NEURONS_PER_IMAGE);
 
 const T = dict(
@@ -104,7 +110,7 @@ const T = dict(
 
 /** FLUX cover concepts (Cloudflare Workers AI, free tier) for the brief
  * above. Drafts at 1024 px; the final cover is a designer's job. */
-export function CoverConcepts({ path, title, artists, brief }: { path: string; title: string; artists: string; brief: string }) {
+export function CoverConcepts({ path, title, artists, brief, releaseType }: { path: string; title: string; artists: string; brief: string; releaseType?: string }) {
   const coverStatus = useAppStore((s) => s.coverStatus);
   const settings = useAppStore((s) => s.settings);
   const demoMode = useAppStore((s) => s.demoMode);
@@ -151,7 +157,7 @@ export function CoverConcepts({ path, title, artists, brief }: { path: string; t
   }
 
   function generateFour() {
-    generate(COVER_VARIANTS.map((_, variant) => ({ prompt: buildCoverPrompt({ brief, title, artists, variant }), variant })));
+    generate(COVER_VARIANTS.map((_, variant) => ({ prompt: buildCoverPrompt({ brief, title, artists, variant, releaseType }), variant })));
   }
 
   function moreLikeThis() {

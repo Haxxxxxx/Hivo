@@ -177,7 +177,7 @@ export function InboxView() {
     void refresh();
     let live = true;
     // Targets for ideas and memos: beats and saved prods are read fresh.
-    void Promise.all([api.scanBeats().catch(() => []), api.listLeads().catch(() => [])]).then(([b, l]) => {
+    void Promise.all([api.scanBeats().catch(() => []), api.listLeads().then((ls) => ls.filter((l) => !l.unrecognised)).catch(() => [])]).then(([b, l]) => {
       if (live) {
         setBeats(b);
         setLeads(l);

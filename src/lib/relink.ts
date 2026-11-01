@@ -7,8 +7,10 @@ import type { ProjectInfo, Workspace } from "../types";
 // - moved: the same file name turns up somewhere else in the linked folders;
 // - renamed: the folder lost one song and gained one new .flp.
 // Only records whose file vanished from a folder that's still linked are
-// considered (an unlinked folder or unplugged drive isn't a move), and only
-// onto new files with no record of their own. Anything ambiguous is left alone.
+// considered (an unlinked folder or unplugged drive isn't a move: the scan
+// reports the linked folders it couldn't reach, and nothing under them is an
+// orphan), and only onto new files with no record of their own. Anything
+// ambiguous is left alone.
 
 export interface Relink {
   from: string;
@@ -34,10 +36,15 @@ function underWatched(path: string, watched: string[]): boolean {
   });
 }
 
-export function findRelinks(projects: ProjectInfo[], ws: Workspace, watched: string[]): Relink[] {
+/** `unreachable`: linked folders the scan couldn't read right now (unplugged
+ * drive, unmounted share). Songs under them are missing, not moved. */
+export function findRelinks(projects: ProjectInfo[], ws: Workspace, watched: string[], unreachable: string[] = []): Relink[] {
   const present = new Set(projects.map((p) => p.path));
   const orphans = Object.entries(ws.songs)
-    .filter(([path, meta]) => !present.has(path) && Object.keys(meta).length > 0 && underWatched(path, watched))
+    .filter(
+      ([path, meta]) =>
+        !present.has(path) && Object.keys(meta).length > 0 && underWatched(path, watched) && !underWatched(path, unreachable),
+    )
     .map(([path]) => path);
   const fresh = projects.filter((p) => !p.isTemplate && !ws.songs[p.path]).map((p) => p.path);
   if (!orphans.length || !fresh.length) return [];
@@ -89,4 +96,22 @@ export function applyRelinks(ws: Workspace, relinks: Relink[]): Workspace {
     songs,
     albums: ws.albums.map((a) => (a.trackPaths.some((p) => map.has(p)) ? { ...a, trackPaths: a.trackPaths.map((p) => map.get(p) ?? p) } : a)),
   };
+}
+
+/** Whether `path` sits under `root` (any separators, any case). */
+export function isUnder(path: string, root: string): boolean {
+  return underWatched(path, [root]);
+}
+
+/** A linked folder moved (drive letter changed, remounted elsewhere): every
+ * record under `from` goes to the same place under `to` (apply them with
+ * `applyRelinks`, album slots follow). A record already at the new path is
+ * kept as it is. */
+export function rootRelinks(ws: Workspace, from: string, to: string): Relink[] {
+  const fromLen = from.replace(/[\\/]+$/, "").length;
+  const toRoot = to.replace(/[\\/]+$/, "");
+  return Object.keys(ws.songs)
+    .filter((p) => isUnder(p, from))
+    .map((p) => ({ from: p, to: toRoot + p.slice(fromLen), reason: "moved" as const }))
+    .filter((r) => r.from !== r.to && !ws.songs[r.to]);
 }

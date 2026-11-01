@@ -67,6 +67,17 @@ export interface ProjectInfo {
   samples: SampleInfo[];
   /** Named mixer tracks + recorded-take labels ("Lead Voices - Nova"). */
   trackNames: string[];
+  /** Mixdowns in the export folder named after this song that weren't
+   * counted: another linked song has the same name, and the file name can't
+   * say which one it came from. */
+  ambiguousExports?: number;
+}
+
+/** What `scan_projects` returns: the projects, and the linked folders that
+ * couldn't be read right now (their songs are missing, not moved). */
+export interface ScanResult {
+  projects: ProjectInfo[];
+  unreachable: string[];
 }
 
 export interface PluginInfo {
@@ -243,6 +254,22 @@ export interface LaunchKitMeta {
   snippetLengths?: Record<string, number>;
   /** Set by "Accept all"; cleared by any later edit. */
   acceptedAtMs?: number;
+  /** What the kit was accepted against (master file, credits, release:
+   * `acceptFingerprint`): a change outside the kit undoes "Accepted". */
+  acceptedFingerprint?: string;
+  /** Where `edits.releaseDate` came from: kept from a suggestion (accept or
+   * export pins it) or typed. A suggestion never beats the release's date. */
+  releaseDatePin?: "suggested" | "typed";
+  /** The mixdown picked as the master (a path among the song's renders);
+   * unset = the newest lossless render, else the newest. */
+  master?: string;
+  /** The last export: when, what (`exportFingerprint`) and the folder name
+   * it went to (so a re-export after a rename cleans up the old one). */
+  exported?: { atMs: number; fingerprint: string; folder: string };
+  /** The user marked the final 3000 × 3000 cover as ready. */
+  finalCoverDone?: boolean;
+  /** A pre-save link (https). Captions mention a pre-save only when set. */
+  preSaveUrl?: string;
   /** Opt-in: the credited people's platform IDs (Spotify artist ID…) go
    * into the exported kit (artist-ids.md, distributor sheet, metadata). */
   includeArtistIds?: boolean;
@@ -362,6 +389,15 @@ export interface Person {
   lookedUpAt?: string;
 }
 
+/** What a by-name match (Deezer, Apple Music) says about the artist it
+ * found, so two artists with the same name can be told apart. */
+export interface MatchInfo {
+  fans: number | null;
+  albums: number | null;
+  genre: string | null;
+  topTrack: string | null;
+}
+
 /** A profile on one platform (Rust: lookup.rs): the link, rebuilt from the
  * id for known platforms, and the id distributors ask for. */
 export interface PlatformLink {
@@ -370,7 +406,12 @@ export interface PlatformLink {
   category: "streaming" | "social" | "other";
   url: string;
   id: string | null;
-  source: "musicbrainz" | "deezer" | "itunes";
+  source: "musicbrainz" | "deezer" | "itunes" | "manual";
+  /** false: found by name only (Deezer, Apple Music), the user hasn't
+   * confirmed it's the same artist; its id doesn't count yet. Missing on
+   * links stored before 0.6.3 (see `linkVerified` in src/lib/profiles.ts). */
+  verified?: boolean;
+  matchInfo?: MatchInfo;
 }
 
 export interface SpotifyDetails {
@@ -493,6 +534,15 @@ export interface Workspace {
   leadNotes?: Record<string, string>;
   /** Notes on beats (Settings → Beats folders), by file path. */
   beatNotes?: Record<string, string>;
+  /** The size of each noted beat, so a renamed or moved file finds its
+   * notes again on the next scan (`relinkBeatNotes`). */
+  beatNoteSizes?: Record<string, number>;
+  /** Saved prod (lead hash) → the beat file that is it (path), set by hand
+   * ("This is…"); null = "not in your prods", overriding the name match. */
+  leadBeats?: Record<string, string | null>;
+  /** Set only on generated sample data (src/lib/sampleData.ts): a workspace
+   * carrying it is never written to disk. */
+  sample?: true;
 }
 
 /** A pipeline column. Columns sit on the fixed lifecycle stages: putting a
@@ -604,6 +654,24 @@ export interface BeatFile {
   modifiedAtMs: number;
 }
 
+/** The beats scan (src-tauri/src/beats.rs BeatScan). */
+export interface BeatScan {
+  beats: BeatFile[];
+  /** Beats found, including those past the cap. */
+  total: number;
+  /** The scan stopped early: `total` is a floor. */
+  capped: boolean;
+  /** Audio files in formats the Digger can't read (opus, aac…). */
+  ignored: number;
+}
+
+/** One beat's offline analysis (src-tauri/src/beats.rs analyze_beats). */
+export interface BeatAnalysis {
+  path: string;
+  facts: BeatFacts | null;
+  error: string | null;
+}
+
 export interface YoutubeStatus {
   configured: boolean;
   source: "env" | "settings" | null;
@@ -623,6 +691,8 @@ export interface YoutubeVideo {
 export interface BeatFacts {
   name: string;
   durationSec: number;
+  /** Decoding stopped at 10 minutes: shown as "10:00+". */
+  durationCapped?: boolean;
   bpm: number | null;
   /** "name" = written in the file name, "audio" = estimated (may be half or double). */
   bpmSource: "name" | "audio" | null;
@@ -635,6 +705,15 @@ export interface WebLink {
   url: string;
   site: string;
   text: string;
+  /** The url is the page itself, not a Google redirect that couldn't be
+   * followed: only resolved links can be saved or converted. */
+  resolved: boolean;
+}
+
+/** A picked beat the dig couldn't analyse. */
+export interface FailedBeat {
+  name: string;
+  error: string;
 }
 
 /** The dig: what the picked beats share, searches, and beats found on the web. */
@@ -642,6 +721,8 @@ export interface DigResult {
   model: string;
   audioSent: boolean;
   beats: BeatFacts[];
+  /** Picked beats that couldn't be analysed (the dig went on without them). */
+  failed: FailedBeat[];
   /** `heard`: what Gemini heard in the excerpts, only when they were sent. */
   analysis: { summary: string; traits: string[]; tempo: string; queries: string[]; heard?: string };
   web: WebLink[];
@@ -674,6 +755,9 @@ export interface SavedLead extends Lead {
   modifiedAtMs: number;
   /** "YYYY-MM-DD" as written when saved, or "". */
   savedOn: string;
+  /** A `.md` in `_leads` that doesn't read as a lead (no hash): shown so it
+   * can be revealed or deleted. */
+  unrecognised?: boolean;
 }
 
 /** One "Go deeper" round: more web links, seeded by the dig's analysis, or

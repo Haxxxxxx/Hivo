@@ -1,14 +1,26 @@
 import { create } from "zustand";
 import * as api from "../lib/tauri";
-import { deeperExclude, foundTitles, leadHash, likedTitles, searchesDone, toggleLiked, type Liked } from "../lib/digger";
+import { canonicalUrl, deeperExclude, foundTitles, leadHash, likedTitles, restoreDig, searchesDone, toggleLiked, withFallbackQueries, type KeptDig, type Liked } from "../lib/digger";
 import { useAppStore } from "./useAppStore";
-import type { BeatFile, DigResult, Lead, SavedLead, WebLink, YoutubeVideo } from "../types";
+import type { BeatFacts, BeatFile, DigResult, Lead, SavedLead, WebLink, YoutubeVideo } from "../types";
 
 // The Digger: raw beats from the beats folders, up to 5 picked to dig for
 // similar ones (docs/GUARDRAILS.md: a deliberate addition for the Creation
-// stage). Nothing here is saved: the beats live in their folders.
+// stage). The beats live in their folders; the last dig (result, rounds,
+// results, picks) is kept by Rust in the config dir (`save_last_dig`) and
+// restored on the next launch; each beat's offline analysis is cached by
+// Rust per file (`analyze_beats`).
 
 export const MAX_PICKS = 5;
+/** Same as `MAX_ANALYZE` in src-tauri/src/beats.rs: paths per analysis call. */
+export const MAX_ANALYZE = 20;
+
+/** What the beats scan didn't show. */
+export interface ScanInfo {
+  total: number;
+  capped: boolean;
+  ignored: number;
+}
 
 /** One "Go deeper" round: web links (Google Search) or new YouTube searches (without it). */
 export interface DeeperRound {
@@ -34,6 +46,16 @@ function withRound(list: RoundResults[], round: number, entry: RoundResults): Ro
 
 interface DiggerState {
   beats: BeatFile[];
+  scanInfo: ScanInfo | null;
+  /** Offline analysis per beat path: facts, null (couldn't be read), missing (not yet). */
+  facts: Record<string, BeatFacts | null>;
+  analysing: boolean;
+  /** Measures the beats without facts yet, a batch at a time (no AI key needed). */
+  analyseBeats: () => Promise<void>;
+  /** Reads the last dig back (once per launch). */
+  restoreLastDig: () => Promise<void>;
+  /** "Try again" on the "web search isn't available" line. */
+  retryWeb: (language: "fr" | "en", youtube: boolean) => Promise<void>;
   loading: boolean;
   error: string | null;
   /** Picked beat paths, in pick order (max MAX_PICKS). */
@@ -110,8 +132,69 @@ function markUnseen(set: (s: Partial<DiggerState>) => void) {
   if (useAppStore.getState().view !== "digger") set({ unseen: true });
 }
 
+/** Bumped by every scan: an analysis loop from an older scan stops. */
+let analysisRun = 0;
+/** The last dig is read back once; nothing is saved before that. */
+let restored = false;
+
 export const useDigger = create<DiggerState>((set, get) => ({
   beats: [],
+  scanInfo: null,
+  facts: {},
+  analysing: false,
+  analyseBeats: async () => {
+    const run = ++analysisRun;
+    set({ analysing: true });
+    try {
+      for (;;) {
+        const { beats, facts } = get();
+        const todo = beats.filter((b) => !(b.path in facts)).slice(0, MAX_ANALYZE).map((b) => b.path);
+        if (!todo.length || run !== analysisRun) break;
+        let got: { path: string; facts: BeatFacts | null }[];
+        try {
+          got = await api.analyzeBeats(todo);
+        } catch {
+          // Scope changed or Rust refused the batch: mark it unreadable, go on.
+          got = todo.map((path) => ({ path, facts: null }));
+        }
+        if (run !== analysisRun) break;
+        const next = { ...get().facts };
+        for (const a of got) next[a.path] = a.facts;
+        set({ facts: next });
+      }
+    } finally {
+      if (run === analysisRun) set({ analysing: false });
+    }
+  },
+  restoreLastDig: async () => {
+    if (restored) return;
+    try {
+      const kept = restoreDig(await api.loadLastDig());
+      // A dig made in this session before the file was read wins.
+      if (kept && !get().dig) {
+        // The picks come back with their dig (so it isn't shown as stale),
+        // unless picks were made meanwhile; beats gone since are dropped.
+        const { picked, beats } = get();
+        const known = new Set(beats.map((b) => b.path));
+        const back = beats.length ? kept.dugFor.filter((p) => known.has(p)) : kept.dugFor;
+        set({ ...kept, picked: picked.length ? picked : back });
+      }
+    } catch {
+      // Nothing kept, or unreadable: start fresh.
+    } finally {
+      restored = true;
+    }
+  },
+  retryWeb: async (language, youtube) => {
+    try {
+      await api.resetWebSearch();
+    } catch {
+      // The round below says what's wrong if the web search still fails.
+    }
+    const dig = get().dig;
+    if (dig) set({ dig: { ...dig, webError: null } });
+    await get().runDeeper(language, youtube);
+  },
   loading: false,
   error: null,
   picked: [],
@@ -119,9 +202,13 @@ export const useDigger = create<DiggerState>((set, get) => ({
   load: async () => {
     set({ loading: true, error: null });
     try {
-      const beats = await api.scanBeats();
+      const scan = await api.scanBeatsFull();
+      const beats = scan.beats;
       const known = new Set(beats.map((b) => b.path));
-      set({ beats, picked: get().picked.filter((p) => known.has(p)) });
+      set({ beats, scanInfo: { total: scan.total, capped: scan.capped, ignored: scan.ignored }, picked: get().picked.filter((p) => known.has(p)) });
+      // Notes follow a renamed or moved beat.
+      useAppStore.getState().syncBeatNotes(beats);
+      void get().analyseBeats();
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -171,9 +258,19 @@ export const useDigger = create<DiggerState>((set, get) => ({
     if (!picks.length || get().digging) return;
     set({ digging: true, digError: null });
     try {
-      const dig = await api.digBeats(picks, language);
-      // A fresh dig: no rounds, no per-round results, no picks, back to round 0.
-      set({ dig, dugFor: picks, rounds: [], roundResults: [], liked: [], shownRound: 0, deeperError: null });
+      const names = picks.map((p) => get().beats.find((b) => b.path === p)?.name ?? "");
+      // No searches from the model: the beat names' own searches stand in.
+      const dig = withFallbackQueries(await api.digBeats(picks, language), names);
+      // Measured again by the dig: the list shows them too.
+      const facts = { ...get().facts };
+      for (const p of picks) {
+        const name = get().beats.find((b) => b.path === p)?.name;
+        const f = dig.beats.find((b) => b.name === name);
+        if (f) facts[p] = f;
+      }
+      // A fresh dig: no rounds, no per-round results, back to round 0. The
+      // results picked for "Use for next dig" stay: they steer the next round.
+      set({ dig, facts, dugFor: picks, rounds: [], roundResults: [], shownRound: 0, deeperError: null });
       markUnseen(set);
       // Start the first AI search right away (round 0's results); the others are one click.
       const first = dig.analysis.queries[0];
@@ -231,7 +328,15 @@ export const useDigger = create<DiggerState>((set, get) => ({
   loadLeads: async () => {
     try {
       const saved = await api.listLeads();
-      set({ savedLeads: new Map(saved.map((l) => [l.hash, l.path])), leads: saved });
+      // Keyed by the canonical address too: a lead saved as youtu.be/… is
+      // "Saved" on the watch?v=… card of the same video.
+      const map = new Map<string, string>();
+      for (const l of saved) {
+        if (l.unrecognised) continue;
+        map.set(l.hash, l.path);
+        if (l.url) map.set(leadHash(canonicalUrl(l.url)), l.path);
+      }
+      set({ savedLeads: map, leads: saved });
     } catch {
       // No beats folder or nothing readable: nothing is saved, nothing to show.
       set({ savedLeads: NO_LEADS, leads: NO_LEAD_LIST });
@@ -240,8 +345,9 @@ export const useDigger = create<DiggerState>((set, get) => ({
   saveLead: async (lead) => {
     set({ leadError: null });
     try {
-      const path = await api.saveLead(lead);
-      set({ savedLeads: new Map(get().savedLeads).set(leadHash(lead.url), path) });
+      const url = canonicalUrl(lead.url);
+      const path = await api.saveLead({ ...lead, url });
+      set({ savedLeads: new Map(get().savedLeads).set(leadHash(url), path) });
       // The list reads the file back (its date, the clipped facts).
       await get().loadLeads();
     } catch (e) {
@@ -261,6 +367,23 @@ export const useDigger = create<DiggerState>((set, get) => ({
   playing: null,
   setPlaying: (playing) => set({ playing }),
 }));
+
+/** What is kept of the dig, from the store. */
+function kept(s: DiggerState): KeptDig | null {
+  if (!s.dig) return null;
+  return { dig: s.dig, dugFor: s.dugFor, rounds: s.rounds, roundResults: s.roundResults, liked: s.liked, shownRound: s.shownRound, webQuery: s.webQuery };
+}
+
+// Keeps the last dig (Rust writes it), a moment after it changes.
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+useDigger.subscribe((s, prev) => {
+  if (!restored) return;
+  if (s.dig === prev.dig && s.rounds === prev.rounds && s.roundResults === prev.roundResults && s.liked === prev.liked && s.shownRound === prev.shownRound && s.dugFor === prev.dugFor) return;
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    void api.saveLastDig(kept(useDigger.getState())).catch(() => {});
+  }, 800);
+});
 
 /** Whether the picks changed since the last dig. */
 export function digIsStale(picked: string[], dugFor: string[]): boolean {

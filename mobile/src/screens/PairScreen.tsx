@@ -1,4 +1,5 @@
 import { CameraView, useCameraPermissions } from "expo-camera";
+import * as Clipboard from "expo-clipboard";
 import { useEffect, useRef, useState } from "react";
 import { KeyboardAvoidingView, Linking, Platform, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { Button, Engrave } from "../components/ui";
@@ -6,8 +7,9 @@ import { UpdateCheck } from "../components/UpdateCheck";
 import { tr } from "../lib/i18n";
 import { parsePairingUrl } from "../lib/pairing";
 import { CAMERA_APP_INTENT, SCAN_TIMEOUT_MS, scannerFailure } from "../lib/scanner";
-import { pair, sync } from "../store";
-import { pairErrorText, T } from "../strings";
+import { waitingCount } from "../lib/shareQueue";
+import { pair, sync, useApp, verifyPairing } from "../store";
+import { errorText, pairErrorText, T } from "../strings";
 import { C, FONT, RADIUS } from "../theme";
 
 export function PairScreen() {
@@ -19,6 +21,10 @@ export function PairScreen() {
   const [notice, setNotice] = useState<string | null>(null);
   const handled = useRef(false);
   const t = tr(T);
+  const outbox = useApp((st) => st.outbox);
+  const ideas = useApp((st) => st.ideas);
+  const waiting = waitingCount(outbox, ideas);
+  const deniedForever = !!permission && !permission.granted && !permission.canAskAgain;
 
   async function submit(input: string) {
     if (busy) return;
@@ -32,13 +38,28 @@ export function PairScreen() {
     setError(null);
     setScanning(false);
     try {
-      await pair(r.pairing); // the app switches to the Library, which shows sync errors
+      // Only a computer that answers is kept (a wrong or old code saves nothing).
+      const v = await verifyPairing(r.pairing);
+      if (!v.ok) {
+        setError(t.pairCheckFailed(errorText(v.code)));
+        setBusy(false);
+        handled.current = false;
+        return;
+      }
+      await pair({ ...r.pairing, desktopName: v.desktopName }); // the app switches to the Library
       void sync();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setBusy(false);
       handled.current = false;
     }
+  }
+
+  async function pasteLink() {
+    const pasted = (await Clipboard.getStringAsync().catch(() => "")).trim();
+    if (!pasted) return;
+    setText(pasted);
+    void submit(pasted);
   }
 
   async function startScan() {
@@ -108,6 +129,7 @@ export function PairScreen() {
         <Text style={styles.brand}>Hivo</Text>
         <Text style={styles.title}>{t.pairTitle}</Text>
         <Text style={styles.body}>{t.pairIntro}</Text>
+        {waiting > 0 ? <Text style={styles.waiting}>{t.waitingToSend(waiting)}</Text> : null}
 
         {scanning ? (
           <View style={styles.cameraBox}>
@@ -133,6 +155,9 @@ export function PairScreen() {
         {busy ? <Text style={styles.status}>{t.codeRead}</Text> : null}
         {notice && !busy ? <Text style={styles.status}>{notice}</Text> : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
+        {deniedForever && !scanning ? (
+          <Button label={t.openCameraSettings} variant="secondary" onPress={() => void Linking.openSettings()} style={{ marginTop: 10 }} />
+        ) : null}
         {scanning && Platform.OS === "android" ? <Text style={styles.tip}>{t.scanTimeoutHint(SCAN_TIMEOUT_MS / 1000)}</Text> : null}
         {Platform.OS === "android" ? (
           <Button label={t.useCameraApp} variant="secondary" onPress={() => void openCameraApp()} style={{ marginTop: 10 }} />
@@ -148,9 +173,13 @@ export function PairScreen() {
           autoCapitalize="none"
           autoCorrect={false}
           multiline
+          accessibilityLabel={t.pairLinkLabel}
           style={styles.input}
         />
-        <Button label={busy ? t.pairing : t.pair} onPress={() => void submit(text)} disabled={busy || !text.trim()} style={{ marginTop: 10 }} />
+        <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
+          <Button label={t.pasteLink} variant="secondary" onPress={() => void pasteLink()} disabled={busy} style={{ flex: 1 }} />
+          <Button label={busy ? t.pairing : t.pair} onPress={() => void submit(text)} disabled={busy || !text.trim()} style={{ flex: 1 }} />
+        </View>
 
         {/* Here too: an app that can't pair must still be able to update. */}
         <UpdateCheck style={{ marginTop: 32 }} />
@@ -177,6 +206,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     textAlignVertical: "top",
   },
+  waiting: { color: C.warn, fontSize: 14, lineHeight: 20, marginTop: 10 },
   error: { color: C.missing, marginTop: 12, fontSize: 14 },
   status: { color: C.cream, marginTop: 12, fontSize: 14 },
   tip: { color: C.engrave, marginTop: 10, fontSize: 13, lineHeight: 18 },
