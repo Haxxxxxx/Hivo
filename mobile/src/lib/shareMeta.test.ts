@@ -80,4 +80,9 @@ describe("shareText", () => {
     expect(shareText(null, null)).toBe("");
     expect(shareText("x".repeat(5000), null)).toHaveLength(2000);
   });
+  it("never cuts an emoji in half (half a pair breaks the computer's JSON)", () => {
+    const text = `${"x".repeat(1999)}🔥 rest`;
+    expect(JSON.stringify(shareText(text, null))).not.toMatch(/\\ud83d/);
+    expect(JSON.stringify(cleanTitle(`${"a".repeat(119)}🔥`))).not.toMatch(/\\ud83d/);
+  });
 });

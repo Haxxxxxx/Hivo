@@ -1,3 +1,5 @@
+import { clip } from "./text";
+
 // What another app (BandLab first) shared with Hivo, turned into a clean
 // title, its link and file names. Apps send this badly shaped: a file with no
 // display name arrives as the provider's id ("msf:1000032969"), the subject
@@ -46,7 +48,7 @@ export function cleanTitle(raw: string): string {
   t = t.replace(/\s+(?:by|par)\s+[^,]{1,60}$/i, "");
   t = t.replace(/^[\s"'“”«»\-–|:•.]+|[\s"'“”«»\-–|:•]+$/g, "").replace(/\s+/g, " ").trim();
   if (!t || GENERIC.test(t) || isOpaqueName(t)) return "";
-  return t.slice(0, 120).trim();
+  return clip(t, 120).trim();
 }
 
 /** The first BandLab link in the shared text or subject. */
@@ -77,7 +79,7 @@ export function titleFromShare(share: { subject: string | null; text: string | n
 export function fileNameFor(name: string, named: boolean, title: string, index: number, count: number): string {
   if (named && !isOpaqueName(name)) return name;
   const ext = /\.([a-z0-9]{1,5})$/i.exec(name)?.[1]?.toLowerCase();
-  const base = (title.replace(/[/\\:*?"<>|]/g, " ").replace(/\s+/g, " ").trim() || "BandLab export").slice(0, 100).trim();
+  const base = clip((title.replace(/[/\\:*?"<>|]/g, " ").replace(/\s+/g, " ").trim() || "BandLab export"), 100).trim();
   const stem = count > 1 ? `${base} ${index + 1}` : base;
   return ext ? `${stem}.${ext}` : stem;
 }
@@ -87,5 +89,5 @@ export const MAX_SHARE_TEXT = 2000;
 export function shareText(text: string | null, subject: string | null): string {
   const parts = [subject?.trim(), text?.trim()].filter((p): p is string => !!p);
   const joined = parts.length === 2 && parts[1].includes(parts[0]) ? parts[1] : parts.join("\n");
-  return joined.slice(0, MAX_SHARE_TEXT);
+  return clip(joined, MAX_SHARE_TEXT);
 }
