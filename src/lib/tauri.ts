@@ -11,8 +11,8 @@ import type {
   PackageResult,
   InboxList,
   InboxStatus,
-  ProjectInfo,
   RenderEvent,
+  ScanResult,
   Settings,
   Snippet,
   TemplateInfo,
@@ -34,7 +34,7 @@ import type {
 } from "../types";
 
 /** Scans the linked folders and export folder saved in Settings (Rust reads them). */
-export async function scanProjects(): Promise<ProjectInfo[]> {
+export async function scanProjects(): Promise<ScanResult> {
   return invoke("scan_projects");
 }
 
@@ -55,6 +55,10 @@ export const pickWatchedFolder = (): Promise<Settings> => invoke("pick_watched_f
 /** Links a folder detection found (Rust refuses anything it didn't detect). */
 export const linkDetectedFolder = (path: string): Promise<Settings> => invoke("link_detected_folder", { path });
 export const removeWatchedFolder = (folder: string): Promise<Settings> => invoke("remove_watched_folder", { folder });
+/** A linked folder that moved: the user picks its new place (in Rust), which
+ * replaces it. null when the picker was cancelled. */
+export const repointWatchedFolder = (folder: string): Promise<{ settings: Settings; from: string; to: string } | null> =>
+  invoke("repoint_watched_folder", { folder });
 export const pickOutputFolder = (): Promise<Settings> => invoke("pick_output_folder");
 /** Beats folders (the Digger), picked natively like project folders. */
 export const pickBeatFolder = (): Promise<Settings> => invoke("pick_beat_folder");
@@ -111,6 +115,23 @@ export async function getWorkspace(): Promise<Workspace | null> {
 export async function saveWorkspace(workspace: Workspace): Promise<void> {
   return invoke("save_workspace", { workspace });
 }
+
+/** What the "can't read your workspace" strip can offer. */
+export interface WorkspaceFiles {
+  hasBackup: boolean;
+  backupSavedAtMs: number | null;
+}
+export const workspaceFiles = (): Promise<WorkspaceFiles> => invoke("workspace_files");
+/** Puts `workspace.json.bak` back (the unreadable file is kept as `.bad`). */
+export const restoreWorkspaceBackup = (): Promise<Workspace> => invoke("restore_workspace_backup");
+/** "Start fresh": the unreadable workspace is kept as `workspace.json.bad`. */
+export const setAsideWorkspace = (): Promise<void> => invoke("set_aside_workspace");
+/** Shows the app's config folder (workspace.json, settings.json) in Finder / Explorer. */
+export const showConfigFolder = (): Promise<void> => invoke("show_config_folder");
+/** settings.json didn't parse and was reset: where the old file was kept (answers once). */
+export const takeSettingsRecovery = (): Promise<string | null> => invoke("take_settings_recovery");
+/** Saved folders (projects, beats, samples, export) that can't be reached right now. */
+export const unreachableSettingFolders = (): Promise<string[]> => invoke("unreachable_setting_folders");
 
 export async function detectFlStudio(): Promise<string | null> {
   return invoke("detect_fl_studio");

@@ -15,6 +15,7 @@ const T = dict(
     linking: "Linking…",
     link: "Link",
     lookAgain: "Look again",
+    failed: (e: string) => `Couldn't look for DAW folders: ${e}`,
   },
   {
     looking: "Recherche des dossiers de DAW…",
@@ -26,6 +27,7 @@ const T = dict(
     linking: "Liaison…",
     link: "Relier",
     lookAgain: "Chercher encore",
+    failed: (e: string) => `Impossible de chercher les dossiers de DAW : ${e}`,
   },
 );
 
@@ -34,6 +36,7 @@ const T = dict(
 export function DetectedFolders({ compact = false }: { compact?: boolean }) {
   const detected = useAppStore((s) => s.detectedFolders);
   const detectFolders = useAppStore((s) => s.detectFolders);
+  const detectError = useAppStore((s) => s.detectError);
   const linkDetected = useAppStore((s) => s.linkDetected);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -59,7 +62,9 @@ export function DetectedFolders({ compact = false }: { compact?: boolean }) {
 
   return (
     <div className={`flex flex-col gap-2 ${compact ? "text-left" : ""}`}>
-      {detected.length === 0 ? (
+      {detectError ? (
+        <div className="text-xs text-missing">{t.failed(detectError)}</div>
+      ) : detected.length === 0 ? (
         <div className="text-xs text-engrave">{t.none}</div>
       ) : (
         <ul className="flex flex-col gap-1.5" aria-label={t.listLabel}>

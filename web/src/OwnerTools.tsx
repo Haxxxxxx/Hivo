@@ -62,6 +62,18 @@ export function RemoveMember({ userId, name }: { userId: string; name: string })
   );
 }
 
+/** Owner: make a crewmate the owner (you become a member). */
+export function MakeOwner({ userId, name }: { userId: string; name: string }) {
+  const transferOwnership = useWeb((s) => s.transferOwnership);
+  const { busy, error, run } = useRun();
+  return (
+    <span className="flex flex-col items-end gap-1">
+      <TwoClick label={tr(W).makeOwner} armedLabel={tr(W).makeOwnerConfirm(name)} disabled={busy} onConfirm={() => void run(() => transferOwnership(userId))} />
+      {error && <span className="text-xs text-red-300">{error}</span>}
+    </span>
+  );
+}
+
 /** Anyone: leave the active crew. */
 export function LeaveCrew() {
   const leaveCrew = useWeb((s) => s.leaveCrew);

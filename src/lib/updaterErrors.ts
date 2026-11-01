@@ -9,3 +9,16 @@ export function isReadOnlyInstallError(message: string | undefined): boolean {
   if (!message) return false;
   return /read-only file system|os error 30\b|EROFS/i.test(message);
 }
+
+/** What kind of failure the updater reported, to say it in plain words:
+ * "readOnly" (see above), "network" (the update server couldn't be reached:
+ * offline, DNS, timeout, TLS…) or "other" (the raw detail stays available). */
+export type UpdateErrorKind = "readOnly" | "network" | "other";
+
+export function updateErrorKind(message: string | undefined): UpdateErrorKind {
+  if (isReadOnlyInstallError(message)) return "readOnly";
+  if (!message) return "other";
+  return /error sending request|timed? ?out|timeout|dns|resolve|connect|connection|network|offline|unreachable|no route|tls|certificate|fetch|os error (51|60|61|64|65|10051|10060|10061|11001)\b/i.test(message)
+    ? "network"
+    : "other";
+}

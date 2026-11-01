@@ -1116,7 +1116,9 @@ export function Dashboard() {
   const inCrew = useInCrew();
   const crewName = useCrewStore((s) => s.crews.find((c) => c.id === s.activeCrewId)?.name ?? tr(T).crew);
   const hasLocal = useAppStore((s) => s.projects.length > 0 || s.settings.watchedFolders.length > 0);
-  const hasSongs = useAppStore((s) => s.projects.length > 0);
+  // The same songs MyDashboard shows: when it's in its empty state (say, only
+  // templates), there's no layout to edit.
+  const hasSongs = useVisibleSongs().length > 0;
   const demoMode = useAppStore((s) => s.demoMode);
   const resetDashboardLayout = useAppStore((s) => s.resetDashboardLayout);
   const [picked, setPicked] = useState<Scope | null>(null);

@@ -1,5 +1,5 @@
 import { DetectedFolders } from "./DetectedFolders";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   ArrowUpDown,
@@ -21,10 +21,11 @@ import {
 } from "lucide-react";
 import { useAppStore, type SortKey, type StatusFilter } from "../store/useAppStore";
 import { useCrewStore } from "../store/useCrewStore";
+import { shareLimitNote } from "../lib/crewSync";
 import { useCanShare } from "./CrewPanel";
 import { detectKey } from "../lib/people";
 import { dawOf } from "../lib/daws";
-import { buildFolderTree, folderPath, inFolder, type FolderNode } from "../lib/folderTree";
+import { buildFolderTree, folderPath, hasFolderNode, inFolder, type FolderNode } from "../lib/folderTree";
 import { formatDate } from "../lib/format";
 import { dict, tr } from "../i18n";
 import {
@@ -40,7 +41,7 @@ import {
   songLabel,
 } from "../lib/songs";
 import type { ProjectInfo, SongStatus } from "../types";
-import { StatusDot, StatusSelect, btn, btnPrimary } from "./ui";
+import { ConfirmButton, StatusDot, StatusSelect, btn, btnPrimary } from "./ui";
 import { Chip, MixdownBadge, Toggle } from "../ui";
 
 const T = dict(
@@ -78,6 +79,14 @@ const T = dict(
     demoBanner: "Sample data — changes aren't saved and export is disabled until you link a real project folder.",
     scanning: "Scanning your project folders…",
     noMatch: "No songs match",
+    clearFilters: "Clear filters",
+    unreachable: (folder: string) => `${folder} isn't reachable right now (unplugged drive or moved folder). Its songs are hidden until it's back; their stages, notes and credits are kept.`,
+    retry: "Retry",
+    repoint: "It moved: find it",
+    repointTitle: "Pick the folder's new place (a drive with another letter, a renamed folder). Every song's data follows.",
+    unlink: "Unlink",
+    unlinkConfirm: "Unlink it?",
+    hiddenSelected: (n: number) => `(${n} hidden by the filters, left out)`,
     removeFavorite: "Remove from favorites",
     addFavorite: "Add to favorites",
     template: "template",
@@ -135,6 +144,14 @@ const T = dict(
       "Données d'exemple — rien n'est sauvegardé et l'export est désactivé tant que tu n'as pas lié un vrai dossier de projets.",
     scanning: "Scan de tes dossiers de projets…",
     noMatch: "Aucun son ne correspond",
+    clearFilters: "Effacer les filtres",
+    unreachable: (folder: string) => `${folder} est injoignable pour l'instant (disque débranché ou dossier déplacé). Ses sons sont masqués jusqu'à son retour ; leurs étapes, notes et crédits sont gardés.`,
+    retry: "Réessayer",
+    repoint: "Il a bougé : le retrouver",
+    repointTitle: "Choisis le nouvel emplacement du dossier (disque avec une autre lettre, dossier renommé). Les infos de chaque son suivent.",
+    unlink: "Délier",
+    unlinkConfirm: "Le délier ?",
+    hiddenSelected: (n: number) => `(${n} masqué${n === 1 ? "" : "s"} par les filtres, laissé${n === 1 ? "" : "s"} de côté)`,
     removeFavorite: "Retirer des favoris",
     addFavorite: "Ajouter aux favoris",
     template: "template",
@@ -321,12 +338,26 @@ export function LibraryView() {
   const setShared = useCrewStore((s) => s.setShared);
   const [shareNote, setShareNote] = useState<string | null>(null);
   const allSelected = filtered.length > 0 && filtered.every((p) => selected.has(p.path));
-  const selectedPaths = Array.from(selected);
+  // Bulk actions only touch the selected songs that are on screen: a filter
+  // can hide some, and they must not be changed (or rendered) unseen.
+  const selectedPaths = useMemo(() => filtered.filter((p) => selected.has(p.path)).map((p) => p.path), [filtered, selected]);
+  const hiddenSelected = selected.size - selectedPaths.length;
+  const unreachable = useAppStore((s) => s.unreachable);
+  const repointFolder = useAppStore((s) => s.repointFolder);
+  const removeWatchedFolder = useAppStore((s) => s.removeWatchedFolder);
+  const resetLibraryFilters = useAppStore((s) => s.resetLibraryFilters);
+  const filtersOn = !!(search.trim() || statusFilter || tagFilter || pluginFilter || problemsOnly || favoritesOnly || folderFilter || showArchived);
+
+  // A folder filter whose node is gone (songs moved, folder unlinked or
+  // unreachable) would leave "No songs match" with nothing to click.
+  useEffect(() => {
+    if (folderFilter && !scanning && !hasFolderNode(tree, folderFilter)) setFolderFilter(null);
+  }, [folderFilter, scanning, tree, setFolderFilter]);
 
   async function handleRender() {
     setError(null);
     try {
-      await startRender();
+      await startRender(selectedPaths);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -429,7 +460,8 @@ export function LibraryView() {
 
       {selected.size > 0 && (
         <div className="flex items-center gap-2 border-b border-orange-400/20 bg-orange-500/[0.06] px-6 py-2 text-sm">
-          <span className="text-orange-200">{t.selected(selected.size)}</span>
+          <span className="text-orange-200">{t.selected(selectedPaths.length)}</span>
+          {hiddenSelected > 0 && <span className="text-xs text-engrave">{t.hiddenSelected(hiddenSelected)}</span>}
           <BulkSelect
             label={t.setStatus}
             options={[{ value: "", label: UNSORTED.label }, ...STATUSES.map((s) => ({ value: s.id, label: s.label }))]}
@@ -450,8 +482,8 @@ export function LibraryView() {
                 { value: "unshare", label: t.stopSharing },
               ]}
               onPick={(v) => {
-                const skipped = setShared(selectedPaths, v === "share");
-                setShareNote(skipped ? t.sharedElsewhere(skipped) : null);
+                const r = setShared(selectedPaths, v === "share");
+                setShareNote([r.elsewhere ? t.sharedElsewhere(r.elsewhere) : null, shareLimitNote(r.overLimit)].filter(Boolean).join(" ") || null);
               }}
             />
           )}
@@ -473,21 +505,56 @@ export function LibraryView() {
           />
           <button
             onClick={() => startPackage(selectedPaths).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
-            disabled={packaging || demoMode}
+            disabled={packaging || demoMode || selectedPaths.length === 0}
             className={`${btn} ml-auto py-1 text-xs`}
             title={t.packageTitle}
           >
-            <Package size={13} /> {t.packageN(selected.size)}
+            <Package size={13} /> {t.packageN(selectedPaths.length)}
           </button>
-          <button onClick={handleRender} disabled={rendering || demoMode} className={btnPrimary}>
+          <button onClick={handleRender} disabled={rendering || demoMode || selectedPaths.length === 0} className={btnPrimary}>
             <Download size={14} />
-            {rendering ? t.rendering : t.exportN(selected.size)}
+            {rendering ? t.rendering : t.exportN(selectedPaths.length)}
           </button>
           <button onClick={clearSelection} className="rounded p-1 text-engrave hover:text-cream">
             <X size={15} />
           </button>
         </div>
       )}
+
+      {!demoMode &&
+        unreachable.map((folder) => (
+          <div
+            key={folder}
+            role="status"
+            className="mx-6 mt-3 flex flex-wrap items-center gap-2 rounded-md border border-amber-400/30 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-200"
+          >
+            <AlertTriangle size={13} className="shrink-0" />
+            <span className="min-w-0 flex-1 break-all">{t.unreachable(folder)}</span>
+            <button
+              onClick={() => {
+                setError(null);
+                rescan().catch((e) => setError(e instanceof Error ? e.message : String(e)));
+              }}
+              disabled={scanning}
+              className={`${btn} py-1 text-xs`}
+            >
+              <RefreshCw size={12} /> {t.retry}
+            </button>
+            <button
+              onClick={() => repointFolder(folder).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
+              title={t.repointTitle}
+              className={`${btn} py-1 text-xs`}
+            >
+              <FolderSearch size={12} /> {t.repoint}
+            </button>
+            <ConfirmButton
+              label={t.unlink}
+              confirmLabel={t.unlinkConfirm}
+              onConfirm={() => removeWatchedFolder(folder).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
+              className={`${btn} py-1 text-xs`}
+            />
+          </div>
+        ))}
 
       {error && (
         <div className="mx-6 mt-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
@@ -502,6 +569,11 @@ export function LibraryView() {
           <div className="flex h-full flex-col items-center justify-center gap-2 text-engrave">
             <Music2 size={28} />
             <div className="text-sm">{scanning ? t.scanning : t.noMatch}</div>
+            {!scanning && filtersOn && (
+              <button onClick={resetLibraryFilters} className={`${btn} mt-1 text-xs`}>
+                <X size={12} /> {t.clearFilters}
+              </button>
+            )}
           </div>
         ) : (
           <table className="w-full border-separate border-spacing-y-0.5 text-sm">

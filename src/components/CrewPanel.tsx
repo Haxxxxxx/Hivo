@@ -1,10 +1,11 @@
 import { statusInfo } from "../lib/songs";
 import { useEffect, useState } from "react";
 import { Check, ClipboardCopy, LogOut, RefreshCw, Users } from "lucide-react";
-import { useCrewStore } from "../store/useCrewStore";
+import { useCrewStore, type ShareResult } from "../store/useCrewStore";
 import { useAppStore } from "../store/useAppStore";
 import { formatRelative } from "../lib/format";
-import { orphanedShares, releaseSharedHere, shareElsewhere, sharedHere, sharedTitle, syncNote, unsharedTracks } from "../lib/crewSync";
+import { myServerShares, orphanedShares, pushLimitNote, releaseSharedHere, shareElsewhere, sharedHere, sharedTitle, shareLimitNote, syncNote, unsharedTracks } from "../lib/crewSync";
+import { StatusDot } from "./ui";
 import { btn, btnPrimary, ConfirmButton, input } from "../ui";
 import { crewText } from "../lib/crewMessages";
 import { cleanCode, isCodeComplete } from "../lib/signInCode";
@@ -106,6 +107,29 @@ const T = dict(
     whileYours: " on the crew board while your move to ",
     whichStands: " was waiting to be sent. Which one stands?",
     keep: (stage: string) => `Keep ${stage}`,
+    removedFrom: (crew: string) =>
+      `You're no longer in ${crew}: you were removed, or the crew was deleted. Your songs aren't shared with it any more, so rejoining never shares them again by itself.`,
+    aCrew: "a crew",
+    ok: "OK",
+    serverTitle: (n: number) => `Your songs on the server · ${n}`,
+    serverHelp:
+      "Your rows on this crew's board. The ones this computer doesn't know come from another computer or an earlier install: remove the ones nobody shares any more (a computer that still shares a song puts it back).",
+    notHere: (n: number) => ` · ${n} not on this computer`,
+    show: "Show",
+    hide: "Hide",
+    here: "this computer",
+    elsewhereRow: "not on this computer",
+    duplicate: "same title as a song shared from here",
+    removeRow: "Remove",
+    removeRowConfirm: "Remove from the board?",
+    removeDuplicates: (n: number) => `Remove ${n} duplicate${plural(n)}`,
+    removeDuplicatesConfirm: "Remove them?",
+    makeOwner: "Make owner",
+    makeOwnerConfirm: (name: string) => `Make ${name} the owner?`,
+    makeOwnerNote: "Making someone the owner hands them invites, columns and the crew's settings; you become a member.",
+    crewNameLabel: "Crew name",
+    yourNameLabel: "Your name in the crew",
+    save: "Save",
   },
   {
     privacy:
@@ -200,6 +224,29 @@ const T = dict(
     whileYours: " sur le tableau du crew pendant que ton déplacement vers ",
     whichStands: " attendait d'être envoyé. Lequel on garde ?",
     keep: (stage: string) => `Garder ${stage}`,
+    removedFrom: (crew: string) =>
+      `Tu ne fais plus partie de ${crew}\u202f: tu as été retiré, ou le crew a été supprimé. Tes sons n'y sont plus partagés, donc rejoindre le crew ne les repartage jamais tout seul.`,
+    aCrew: "un crew",
+    ok: "OK",
+    serverTitle: (n: number) => `Tes sons sur le serveur · ${n}`,
+    serverHelp:
+      "Tes lignes sur le tableau de ce crew. Celles que cet ordi ne connaît pas viennent d'un autre ordi ou d'une ancienne installation\u202f: retire celles que plus personne ne partage (un ordi qui partage encore un son le remet).",
+    notHere: (n: number) => ` · ${n} pas sur cet ordi`,
+    show: "Afficher",
+    hide: "Masquer",
+    here: "cet ordi",
+    elsewhereRow: "pas sur cet ordi",
+    duplicate: "même titre qu'un son partagé d'ici",
+    removeRow: "Retirer",
+    removeRowConfirm: "Retirer du tableau\u202f?",
+    removeDuplicates: (n: number) => (n === 1 ? "Retirer le doublon" : `Retirer les ${n} doublons`),
+    removeDuplicatesConfirm: "Les retirer\u202f?",
+    makeOwner: "Nommer propriétaire",
+    makeOwnerConfirm: (name: string) => `Nommer ${name} propriétaire\u202f?`,
+    makeOwnerNote: "Nommer quelqu'un propriétaire lui passe les invitations, les colonnes et les réglages du crew\u202f; tu deviens membre.",
+    crewNameLabel: "Nom du crew",
+    yourNameLabel: "Ton nom dans le crew",
+    save: "Enregistrer",
   },
 );
 
@@ -213,6 +260,7 @@ export function CrewPanel() {
         <Users size={15} /> Crew
       </h2>
       <p className="mt-1 text-xs text-engrave">{t.privacy}</p>
+      <RemovedNotice />
       <div className="mt-3">
         {!crew.enabled ? (
           <div className="text-xs text-body">{t.notConfigured}</div>
@@ -234,6 +282,27 @@ export function CrewPanel() {
         )}
       </div>
     </section>
+  );
+}
+
+/** Once: "you're no longer in <crew>" (removed, or the crew was deleted). */
+export function RemovedNotice({ floating = false }: { floating?: boolean }) {
+  const removedFrom = useCrewStore((s) => s.removedFrom);
+  const dismiss = useCrewStore((s) => s.dismissRemoved);
+  if (!removedFrom.length) return null;
+  const t = tr(T);
+  return (
+    <div
+      role="status"
+      className={`flex flex-col gap-1 rounded-md border border-warn/30 px-3 py-2 text-xs text-cream ${floating ? "max-w-sm bg-panel shadow-xl" : "mt-3 bg-warn/10"}`}
+    >
+      {removedFrom.map((name, i) => (
+        <span key={i}>{t.removedFrom(name || t.aCrew)}</span>
+      ))}
+      <button onClick={dismiss} className="self-start underline hover:text-cream">
+        {t.ok}
+      </button>
+    </div>
   );
 }
 
@@ -407,6 +476,7 @@ export function CrewHome() {
   return (
     <div className="flex flex-col gap-3">
       <CrewStatus />
+      <CrewNames />
       <CrewMembers />
       <CrewInvites />
       <CrewAccount />
@@ -445,7 +515,8 @@ export function CrewStatus() {
       ? t.syncing
       : crew.sync.kind === "synced"
         ? t.synced(formatRelative(crew.sync.atMs) === formatRelative(Date.now()) ? t.justNow : formatRelative(crew.sync.atMs)) +
-          (crew.sync.skipped ? t.refused(crew.sync.skipped) : "")
+          (crew.sync.skipped ? t.refused(crew.sync.skipped) : "") +
+          pushLimitNote(crew.sync.overLimit, crew.sync.releasesOverLimit)
         : crew.sync.kind === "error"
           ? crew.sync.message
           : t.notSynced;
@@ -487,7 +558,113 @@ export function CrewStatus() {
           </button>
         </div>
       )}
+      <MyServerShares />
       {error && <div className="text-xs text-red-300">{error}</div>}
+    </div>
+  );
+}
+
+/** My rows on the crew server, the ones this computer doesn't know first,
+ * with Remove for those (and for duplicates of a song shared from here). */
+function MyServerShares() {
+  const songs = useCrewStore((s) => s.songs);
+  const crewId = useCrewStore((s) => s.activeCrewId);
+  const userId = useCrewStore((s) => s.userId);
+  const remove = useCrewStore((s) => s.removeServerShares);
+  const workspace = useAppStore((s) => s.workspace);
+  const demoMode = useAppStore((s) => s.demoMode);
+  const [open, setOpen] = useState(false);
+  const { busy, error, run } = useAction();
+  // On sample data the workspace isn't yours: every row would look unknown.
+  if (!crewId || !userId || demoMode) return null;
+  const rows = myServerShares(songs, workspace, { crewId, userId });
+  const unknown = rows.filter((r) => !r.local);
+  if (!rows.length) return null;
+  const dupes = unknown.filter((r) => r.duplicate).map((r) => r.id);
+  const t = tr(T);
+  return (
+    <div className="rounded-md border border-rule px-3 py-2 text-xs">
+      <div className="flex items-center gap-3">
+        <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-engrave">
+          {t.serverTitle(rows.length)}
+          {unknown.length > 0 && t.notHere(unknown.length)}
+        </span>
+        {dupes.length > 0 && (
+          <ConfirmButton
+            label={t.removeDuplicates(dupes.length)}
+            confirmLabel={t.removeDuplicatesConfirm}
+            onConfirm={() => void run(() => remove(dupes))}
+            disabled={busy}
+            className="rounded border border-transparent px-1 text-engrave hover:text-cream disabled:opacity-40"
+          />
+        )}
+        <button onClick={() => setOpen(!open)} className="ml-auto text-engrave hover:text-cream">
+          {open ? t.hide : t.show}
+        </button>
+      </div>
+      {open && (
+        <>
+          <p className="mt-1 text-[11px] text-engrave">{t.serverHelp}</p>
+          <ul className="mt-2 flex max-h-64 flex-col gap-1 overflow-y-auto">
+            {rows.map((r) => (
+              <li key={r.id} className="flex items-center gap-2">
+                <StatusDot color={statusInfo(r.stage ?? undefined).color} size={6} glow={false} />
+                <span className="min-w-0 flex-1 truncate text-cream">{r.title}</span>
+                <span className="shrink-0 text-engrave">{r.local ? t.here : r.duplicate ? t.duplicate : t.elsewhereRow}</span>
+                {!r.local && (
+                  <ConfirmButton
+                    label={t.removeRow}
+                    confirmLabel={t.removeRowConfirm}
+                    onConfirm={() => void run(() => remove([r.id]))}
+                    disabled={busy}
+                    className="shrink-0 rounded border border-transparent px-1 text-engrave hover:text-cream disabled:opacity-40"
+                  />
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {error && <div className="mt-1 text-red-300">{error}</div>}
+    </div>
+  );
+}
+
+/** The crew's name (owner) and my name in it (everyone). */
+export function CrewNames() {
+  const active = useActiveCrew();
+  const renameCrew = useCrewStore((s) => s.renameCrew);
+  const setDisplayName = useCrewStore((s) => s.setDisplayName);
+  const [crewName, setCrewName] = useState(active?.name ?? "");
+  const [myName, setMyName] = useState(active?.displayName ?? "");
+  const { busy, error, run } = useAction();
+  useEffect(() => setCrewName(active?.name ?? ""), [active?.name]);
+  useEffect(() => setMyName(active?.displayName ?? ""), [active?.displayName]);
+  if (!active) return null;
+  const t = tr(T);
+  const row = (label: string, value: string, set: (v: string) => void, max: number, current: string, save: (v: string) => Promise<void>) => {
+    const changed = !!value.trim() && value.trim() !== current;
+    return (
+      <form
+        className="flex items-center gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (changed) void run(() => save(value));
+        }}
+      >
+        <span className="w-40 shrink-0 text-engrave">{label}</span>
+        <input value={value} onChange={(e) => set(e.target.value)} maxLength={max} aria-label={label} className={`${field} !w-56`} />
+        <button type="submit" disabled={!changed || busy} className={`${secondary} disabled:opacity-40`}>
+          {t.save}
+        </button>
+      </form>
+    );
+  };
+  return (
+    <div className="flex flex-col gap-2 text-xs">
+      {active.role === "owner" && row(t.crewNameLabel, crewName, setCrewName, 80, active.name, renameCrew)}
+      {row(t.yourNameLabel, myName, setMyName, 60, active.displayName, setDisplayName)}
+      {error && <div className="text-red-300">{error}</div>}
     </div>
   );
 }
@@ -511,6 +688,15 @@ export function CrewMembers() {
             {m.user_id === crew.userId && <span className="ml-1 text-engrave">{t.youTag}</span>}
             {isOwner && m.user_id !== crew.userId && (
               <ConfirmButton
+                label={t.makeOwner}
+                confirmLabel={t.makeOwnerConfirm(m.display_name)}
+                onConfirm={() => void run(() => crew.transferOwnership(m.user_id))}
+                disabled={busy}
+                className="ml-2 rounded-full border border-transparent px-1.5 text-[11px] text-engrave hover:text-cream disabled:opacity-40"
+              />
+            )}
+            {isOwner && m.user_id !== crew.userId && (
+              <ConfirmButton
                 label={t.remove}
                 confirmLabel={t.removeConfirm(m.display_name)}
                 onConfirm={() => void run(() => crew.removeMember(m.user_id))}
@@ -521,7 +707,7 @@ export function CrewMembers() {
           </span>
         ))}
       </div>
-      {isOwner && crew.members.length > 1 && <div className="mt-1 text-[11px] text-engrave">{t.removeNote}</div>}
+      {isOwner && crew.members.length > 1 && <div className="mt-1 text-[11px] text-engrave">{t.removeNote} {t.makeOwnerNote}</div>}
       {error && <div className="mt-1 text-xs text-red-300">{error}</div>}
     </div>
   );
@@ -676,7 +862,7 @@ export function ReleaseShare({ albumId }: { albumId: string }) {
   const here = releaseSharedHere(album, scope);
   const elsewhere = !!album.shared && !!album.shareId && !here;
   const missing = unsharedTracks(album, workspace, scope);
-  const say = (skipped: number) => setNote(skipped ? t.tracksElsewhere(skipped) : null);
+  const say = (r: ShareResult) => setNote([r.elsewhere ? t.tracksElsewhere(r.elsewhere) : null, shareLimitNote(r.overLimit)].filter(Boolean).join(" ") || null);
 
   if (elsewhere) return <div className="mt-3 text-xs text-engrave">{t.releaseElsewhere}</div>;
   return (
@@ -770,7 +956,12 @@ export function ShareToggle({ path }: { path: string }) {
           disabled={busy}
           onChange={(e) =>
             // Still waiting to be removed from another crew: finish that removal now, then share here.
-            e.target.checked && elsewhere ? void run(() => moveShares([path])) : setShared([path], e.target.checked)
+            e.target.checked && elsewhere
+              ? void run(() => moveShares([path]))
+              : void run(async () => {
+                  const note = shareLimitNote(setShared([path], e.target.checked).overLimit);
+                  if (note) throw new Error(note);
+                })
           }
           className="accent-orange-500"
         />
