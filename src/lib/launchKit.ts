@@ -1,6 +1,8 @@
-import type { AiFieldReview, Album, AudioAnalysis, CaptionLang, KitFieldId, MasterSpec, Person, ProjectInfo, Snippet, SongMeta } from "../types";
+import type { AiFieldReview, Album, AudioAnalysis, CaptionLang, FileEntry, KitFieldId, MasterSpec, Person, ProjectInfo, Snippet, SongMeta } from "../types";
 import { detectKey, detectedPeople } from "./people";
-import { KEYS, renderFreshness } from "./songs";
+import { KEYS } from "./songs";
+import { LEAD_DAYS, parseDate, resolveReleaseDate } from "./releaseDates";
+import { masterFreshness } from "./kitState";
 import { dawOf, isSketch } from "./daws";
 import { applyLang, currentLang, dict, tr } from "../i18n";
 
@@ -95,7 +97,12 @@ const T = dict(
     labelCrew: "Your crew's name. Self-releasing? Your artist name works too",
     labelSelf: "Self-released: the artist name is the usual label",
     labelEmpty: "Your label, or your artist name if self-released",
-    languageFromSettings: "Your language in Settings → AI. Change it if this song's different",
+    languageLast: (lang: string) => `The lyrics language, or Instrumental. Your other kits mostly say ${lang} (not filled in: type it if it's the same)`,
+    suggestionKept: "The suggested date, kept when the kit was accepted or exported. A date set on its release wins",
+    fromSiblings: (title: string) => `The date the other tracks of "${title}" have. Set it on the release to lock it for all of them`,
+    releaseMismatch: (title: string, date: string) => `"${title}" comes out ${date} in Releases, but this kit says another date. The kit exports this one`,
+    analysisFailed: "Couldn't read the master: format checks were skipped and no snippets will be cut",
+    finalCover: "Final cover not marked as ready: 3000 × 3000 px, JPG or PNG, RGB",
     languageMissing: "The language of the lyrics (Instrumental if none). Distributors require it",
     isrcNote: "Leave empty: your distributor assigns one for free. Fill it if this song already has one",
     upcNote: "Leave empty: assigned for free with the release. Fill it to reuse an existing one",
@@ -144,7 +151,7 @@ const T = dict(
     notAllIn: (lang: CaptionLang, words: string) => `Not all in ${lang === "fr" ? "French" : "English"}: ${words}`,
     // Kit-level checks.
     noMixdown: "No mixdown yet. Render one: it's the file you'll upload",
-    staleMixdown: "The project was saved after the latest mixdown. Re-render before exporting",
+    staleMixdown: "The project was saved after the master mixdown. Re-render before exporting",
     defaultExportTip: "In FL Studio: File → Export → Wave file, 44,100 Hz, 24-bit.",
     masterLossy: (name: string, tip: string) => `The master is ${name}: distributors want lossless WAV. ${tip}`,
     masterFlac: (tip: string) => `FLAC master: DistroKid takes it, most others want WAV. ${tip}`,
@@ -191,7 +198,12 @@ const T = dict(
     labelCrew: "Le nom de ton crew. Tu sors en indé ? Ton nom d'artiste marche aussi",
     labelSelf: "Sortie en indé : en général, le nom d'artiste sert de label",
     labelEmpty: "Ton label, ou ton nom d'artiste si tu sors en indé",
-    languageFromSettings: "Ta langue dans Réglages → IA. Change-la si ce son est différent",
+    languageLast: (lang: string) => `La langue des paroles, ou Instrumental. Tes autres kits disent surtout ${lang} (pas rempli : tape-la si c'est la même)`,
+    suggestionKept: "La date suggérée, gardée quand le kit a été validé ou exporté. Une date mise sur sa sortie passe avant",
+    fromSiblings: (title: string) => `La date des autres morceaux de "${title}". Mets-la sur la sortie pour la fixer pour tous`,
+    releaseMismatch: (title: string, date: string) => `"${title}" sort le ${date} dans Sorties, mais ce kit a une autre date. Le kit exporte celle-ci`,
+    analysisFailed: "Impossible de lire le master : les vérifs de format sont sautées et aucun extrait ne sera coupé",
+    finalCover: "Cover finale pas marquée comme prête : 3000 × 3000 px, JPG ou PNG, RVB",
     languageMissing: "La langue des paroles (Instrumental s'il n'y en a pas). Les distributeurs l'exigent",
     isrcNote: "Laisse vide : ton distributeur en attribue un gratuitement. Remplis-le si ce son en a déjà un",
     upcNote: "Laisse vide : attribué gratuitement avec la sortie. Remplis-le pour en réutiliser un",
@@ -238,7 +250,7 @@ const T = dict(
     trackNumberAsk: "Un numéro de piste, comme 1",
     notAllIn: (lang: CaptionLang, words: string) => `Pas tout en ${lang === "fr" ? "français" : "anglais"} : ${words}`,
     noMixdown: "Pas encore de mixdown. Fais-en le rendu : c'est le fichier que tu vas uploader",
-    staleMixdown: "Le projet a été sauvegardé après le dernier mixdown. Refais le rendu avant d'exporter",
+    staleMixdown: "Le projet a été sauvegardé après le mixdown master. Refais le rendu avant d'exporter",
     defaultExportTip: "Dans FL Studio : File → Export → Wave file, 44 100 Hz, 24 bits.",
     masterLossy: (name: string, tip: string) => `Le master est en ${name} : les distributeurs veulent du WAV sans perte. ${tip}`,
     masterFlac: (tip: string) => `Master en FLAC : DistroKid le prend, la plupart des autres veulent du WAV. ${tip}`,
@@ -305,20 +317,24 @@ export interface KitInput {
   albums: Album[];
   analysis: AudioAnalysis | null;
   today?: Date;
-  /** Language the lyrics are in (Settings → AI language), for distributors. */
-  language?: string | null;
+  /** The lyrics language last used in another kit: shown as a hint only,
+   * never filled in (a French crew can caption in English). */
+  lastLanguage?: string | null;
   /** Caption language (the kit's own, else Settings). French by default. */
   captionLanguage?: CaptionLang;
   /** Default label: the crew's name, if in a crew. */
   labelName?: string | null;
-  /** Release dates already taken (other releases, the crew's): avoided. */
+  /** Release dates already taken (other releases, the crew's): avoided.
+   * `busyDates` in releaseDates.ts leaves the song's own release out. */
   busyDates?: string[];
+  /** Every song's meta, so a track on an undated release can take the date
+   * its siblings already have. */
+  songs?: Record<string, SongMeta>;
 }
 
 const DAY = 24 * 60 * 60 * 1000;
-/** Lead time to deliver to a distributor and pitch to Spotify editorial,
- * which needs the track at least 7 days before release. */
-const LEAD_DAYS = 28;
+/** Spotify editorial needs the track at least 7 days before release
+ * (the lead time to aim for is LEAD_DAYS, in releaseDates.ts). */
 const PITCH_DAYS = 7;
 
 const VERSION_TAG = /[\s_-]*[([]?\b(v\d+(\.\d+)?|final|master(ed)?|mixdown|demo|wip|copy)\b[)\]]?$/i;
@@ -350,27 +366,10 @@ export function formatDuration(sec: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-export function isoDate(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
+export { fridayAfter, isoDate, parseDate } from "./releaseDates";
 
-/** yyyy-mm-dd → local Date, or null. */
 /** A YYYY-MM-DD day as local midnight in ms (not UTC: `new Date("2026-11-06")` is UTC and can flip a day). */
 export const localDayMs = (value: string | undefined | null): number | null => (value ? (parseDate(value)?.getTime() ?? null) : null);
-
-export function parseDate(value: string): Date | null {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
-  if (!m) return null;
-  const d = new Date(+m[1], +m[2] - 1, +m[3]);
-  return d.getMonth() === +m[2] - 1 ? d : null;
-}
-
-/** First Friday at least `days` from today. */
-export function fridayAfter(today: Date, days: number): Date {
-  const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() + days);
-  d.setDate(d.getDate() + ((5 - d.getDay() + 7) % 7));
-  return d;
-}
 
 export function humanDate(value: string, lang?: CaptionLang): string {
   const d = parseDate(value);
@@ -543,24 +542,17 @@ function generate(input: KitInput) {
 
   g.explicit = { value: "", source: "missing", note: t.explicitMissing };
 
-  const album = albums.find((a) => a.trackPaths.includes(project.path) && a.releaseDate);
-  if (album?.releaseDate) {
-    g.releaseDate = { value: album.releaseDate, source: "detected", note: t.fromRelease(album.title) };
-  } else {
-    // First Friday with enough lead time that nobody else is releasing on.
-    const busy = new Set(input.busyDates ?? []);
-    let friday = fridayAfter(today, LEAD_DAYS);
-    let skipped = 0;
-    while (busy.has(isoDate(friday)) && skipped < 12) {
-      friday = new Date(friday.getFullYear(), friday.getMonth(), friday.getDate() + 7);
-      skipped++;
-    }
-    g.releaseDate = {
-      value: isoDate(friday),
-      source: "suggested",
-      note: t.firstFriday(LEAD_DAYS, skipped),
-    };
-  }
+  const date = resolveReleaseDate({ path: project.path, meta, albums, songs: input.songs, busy: input.busyDates, today });
+  g.releaseDate =
+    date.from === "release"
+      ? { value: date.value, source: "detected", note: t.fromRelease(date.release.title) }
+      : date.from === "pinned"
+        ? date.origin === "typed"
+          ? { value: date.value, source: "edited", note: t.youChanged }
+          : { value: date.value, source: "suggested", note: t.suggestionKept }
+        : date.from === "siblings"
+          ? { value: date.value, source: "suggested", note: t.fromSiblings(date.release.title) }
+          : { value: date.value, source: "suggested", note: t.firstFriday(LEAD_DAYS, date.skipped) };
 
   // Distribution details.
   const label = input.labelName?.trim();
@@ -569,9 +561,9 @@ function generate(input: KitInput) {
     : g.artists.value
       ? { value: g.artists.value.split(",")[0].trim(), source: "suggested", note: t.labelSelf }
       : { value: "", source: "suggested", note: t.labelEmpty };
-  g.language = input.language?.trim()
-    ? { value: input.language.trim(), source: "suggested", note: t.languageFromSettings }
-    : { value: "", source: "missing", note: t.languageMissing };
+  // Never prefilled: captions in English don't make the lyrics English.
+  const lastLanguage = input.lastLanguage?.trim();
+  g.language = { value: "", source: "missing", note: lastLanguage ? t.languageLast(lastLanguage) : t.languageMissing };
   g.isrc = { value: "", source: "suggested", note: t.isrcNote };
   g.upc = { value: "", source: "suggested", note: t.upcNote };
   const inAlbum = albums.find((a) => a.trackPaths.includes(project.path));
@@ -619,21 +611,21 @@ function coverBrief(v: Record<KitFieldId, string>, meta: SongMeta): string {
   return lines.filter((l) => l !== null).join("\n");
 }
 
-function captions(v: Record<KitFieldId, string>, lang: CaptionLang): string {
+function captions(v: Record<KitFieldId, string>, lang: CaptionLang, preSave: boolean): string {
   const h = CAPTION_HEADINGS[lang];
   const prod = v.producers ? `\nprod. ${v.producers}` : "";
   const date = humanDate(v.releaseDate, lang);
   if (lang === "fr") {
     const who = artistLine(v.artists, v.featuring) || "[artiste]";
     return [
-      `${h.announce}\n"${v.title}" de ${who}, dispo le ${date}.\nPré-save : lien en bio.`,
+      `${h.announce}\n"${v.title}" de ${who}, dispo le ${date}.${preSave ? "\nPré-save : lien en bio." : ""}`,
       `${h.teaser}\nVous êtes pas prêts pour celui-là. "${v.title}" sort le ${date}.`,
       `${h.releaseDay}\n"${v.title}" est dispo partout.${prod}\nLien en bio.`,
     ].join("\n\n");
   }
   const who = artistLine(v.artists, v.featuring) || "[artist]";
   return [
-    `${h.announce}\n"${v.title}" by ${who}, out ${date}.\nPre-save link in bio.`,
+    `${h.announce}\n"${v.title}" by ${who}, out ${date}.${preSave ? "\nPre-save link in bio." : ""}`,
     `${h.teaser}\nYou're not ready for this one. "${v.title}" drops ${date}.`,
     `${h.releaseDay}\n"${v.title}" is out now everywhere.${prod}\nLink in bio.`,
   ].join("\n\n");
@@ -753,6 +745,13 @@ export function buildKit(input: KitInput): KitField[] {
   const g = generate(input);
   const values = {} as Record<KitFieldId, string>;
   for (const id of Object.keys(g) as KitFieldId[]) values[id] = edits[id] ?? g[id].value;
+  // The date is resolved with its pin (releaseDates.ts): a kept suggestion
+  // gives way to the release's date, a typed one stays and is flagged.
+  // ("Start blank" types an empty date: kept empty.)
+  const blankDate = edits.releaseDate === "";
+  values.releaseDate = blankDate ? "" : g.releaseDate.value;
+  const date = resolveReleaseDate({ path: input.project.path, meta: input.meta, albums: input.albums, songs: input.songs, busy: input.busyDates, today: input.today });
+  const dateTyped = blankDate || (date.from === "pinned" && date.origin === "typed");
   // Text pieces are generated from the final values, so editing the title
   // flows into the captions unless those were edited too.
   const ai = input.meta.launchKit?.ai;
@@ -762,7 +761,7 @@ export function buildKit(input: KitInput): KitField[] {
   values.copyright = edits.copyright ?? (values.label ? `℗ ${year} ${values.label}` : "");
   values.coverBrief = edits.coverBrief ?? drafts?.coverBrief ?? coverBrief(values, input.meta);
   const captionLang = input.captionLanguage ?? "fr";
-  values.captions = edits.captions ?? drafts?.captions ?? captions(values, captionLang);
+  values.captions = edits.captions ?? drafts?.captions ?? captions(values, captionLang, !!input.meta.launchKit?.preSaveUrl?.trim());
   // AI text bakes in the title/artist/date it was written for.
   const basis = drafts?.basis;
   const draftsOutdated =
@@ -774,9 +773,13 @@ export function buildKit(input: KitInput): KitField[] {
 
   const t = tr(T);
   const field = (id: KitFieldId, kind: KitField["kind"], gen: { source: FieldSource; note: string }, options?: string[]): KitField => {
-    const edited = edits[id] !== undefined;
+    const edited = id === "releaseDate" ? dateTyped : edits[id] !== undefined;
     const review = ai?.review?.fields[id];
     const outdated = draftsOutdated && !edited && (id === "captions" || id === "coverBrief");
+    const mismatch =
+      id === "releaseDate" && !blankDate && date.from === "pinned" && date.mismatch && date.release
+        ? { level: "warn" as const, message: t.releaseMismatch(date.release.title, date.mismatch) }
+        : undefined;
     return {
       id,
       label: fieldLabel(id),
@@ -785,7 +788,7 @@ export function buildKit(input: KitInput): KitField[] {
       note: edited ? t.youChanged : gen.note,
       kind,
       options,
-      check: outdated ? { level: "warn", message: t.draftsOutdated } : verify(id, values[id], input.today, captionLang),
+      check: outdated ? { level: "warn", message: t.draftsOutdated } : (mismatch ?? verify(id, values[id], input.today, captionLang)),
       review: review && { ...review, stale: outdated || review.checkedValue !== values[id] },
     };
   };
@@ -838,14 +841,32 @@ export function aiSummary(fields: KitField[]): {
 }
 
 /** Kit-level problems that aren't one field's. */
-export function kitChecks(project: ProjectInfo, analysis?: AudioAnalysis | null): Check[] {
+/** The "final cover" check's message (the kit offers "Mark as ready" on it). */
+export function finalCoverMessage(): string {
+  return tr(T).finalCover;
+}
+
+export interface KitCheckOptions {
+  /** The kit's master (see kitState.ts `kitMaster`); the newest render when left out. */
+  master?: FileEntry;
+  /** The master couldn't be analysed: no format checks, no snippets. */
+  analysisFailed?: boolean;
+  /** Whether the user marked the final cover as ready (undefined: not asked). */
+  finalCoverDone?: boolean;
+}
+
+export function kitChecks(project: ProjectInfo, analysis?: AudioAnalysis | null, opts: KitCheckOptions = {}): Check[] {
   const tip = dawOf(project).exportTip;
-  const freshness = renderFreshness(project);
+  const freshness = masterFreshness(project, opts.master ?? project.renders[0]);
   const t = tr(T);
-  if (freshness === "none") return [{ level: "missing", message: t.noMixdown }];
   const out: Check[] = [];
-  if (freshness === "stale") out.push({ level: "warn", message: t.staleMixdown });
-  if (analysis?.master) out.push(...masterChecks(analysis.master, tip));
+  if (freshness === "none") out.push({ level: "missing", message: t.noMixdown });
+  else {
+    if (freshness === "stale") out.push({ level: "warn", message: t.staleMixdown });
+    if (analysis?.master) out.push(...masterChecks(analysis.master, tip));
+    else if (opts.analysisFailed) out.push({ level: "warn", message: t.analysisFailed });
+  }
+  if (opts.finalCoverDone === false) out.push({ level: "warn", message: t.finalCover });
   return out;
 }
 
@@ -1099,7 +1120,7 @@ export interface KitGuide {
  * the cover concept are listed too: they land in the same folder when made. */
 export function kitGuide(lang: KitLang, { title, master, snippets }: { title: string; master: string | null; snippets: string[] }): KitGuide {
   const fr = lang === "fr";
-  const clips = snippets.length ? snippets.join(", ") : fr ? "aucun extrait" : "no snippets";
+  const clips = snippets.join(", ");
   const items: KitGuideItem[] = [
     {
       file: "distributor-sheet.md",
@@ -1117,13 +1138,18 @@ export function kitGuide(lang: KitLang, { title, master, snippets }: { title: st
           },
         ]
       : []),
-    {
-      file: "snippets/",
-      what: fr ? `Extraits pour les réseaux (${clips}).` : `Clips for socials (${clips}).`,
-      todo: fr
-        ? "Poste-les en reels, stories et TikTok avant la sortie (le teaser d'abord, le hook ensuite)."
-        : "Post them as reels, stories and TikToks before release (the teaser first, then the hook).",
-    },
+    // Only snippets that were cut: a kit exported without them doesn't promise any.
+    ...(snippets.length
+      ? [
+          {
+            file: "snippets/",
+            what: fr ? `Extraits pour les réseaux (${clips}).` : `Clips for socials (${clips}).`,
+            todo: fr
+              ? "Poste-les en reels, stories et TikTok avant la sortie (le teaser d'abord, le hook ensuite)."
+              : "Post them as reels, stories and TikToks before release (the teaser first, then the hook).",
+          },
+        ]
+      : []),
     {
       file: "shorts/",
       what: fr ? "Vidéos 9:16 prêtes à poster, si tu les as rendues." : "Ready-to-post 9:16 videos, if you rendered them.",
@@ -1159,14 +1185,14 @@ export function kitGuide(lang: KitLang, { title, master, snippets }: { title: st
           "Vérifie checklist.md.",
           "Upload le mixdown chez ton distributeur avec distributor-sheet.md (vise 3 à 4 semaines avant la sortie pour les playlists).",
           "Fais la cover à partir de cover-brief.md.",
-          "Avant la sortie : poste le teaser et les extraits avec les textes de captions.md.",
+          snippets.length ? "Avant la sortie : poste le teaser et les extraits avec les textes de captions.md." : "Avant la sortie : poste l'annonce avec les textes de captions.md.",
           "Le jour J : poste le texte « jour de sortie ».",
         ]
       : [
           "Check checklist.md.",
           "Upload the mixdown to your distributor using distributor-sheet.md (aim for 3-4 weeks before release, for playlist pitching).",
           "Get the cover made from cover-brief.md.",
-          "Before release: post the teaser and snippets with the texts from captions.md.",
+          snippets.length ? "Before release: post the teaser and snippets with the texts from captions.md." : "Before release: post the announcement with the texts from captions.md.",
           "On release day: post the release-day text.",
         ],
   };
