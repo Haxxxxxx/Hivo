@@ -21,7 +21,8 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useAppStore } from "../store/useAppStore";
+import { useAppStore, type RenderJob } from "../store/useAppStore";
+import { isUnder } from "../lib/relink";
 import { formatBytes, formatDateTime, trashName } from "../lib/format";
 import { audioSrc, backupsOnRiskyVolumes, openExternal, openInFlStudio, revealInFileManager } from "../lib/tauri";
 import { KEYS, albumsOf, backupsBytes, formatBpm, lastSaveMs, missingPlugins, renderFreshness } from "../lib/songs";
@@ -51,7 +52,18 @@ const T = dict(
     reveal: "Reveal",
     launchKitTitle: "Metadata, snippets, release date, captions",
     renderDone: "Render finished: see the panel at the bottom.",
-    renderTitle: "Render a mixdown with FL Studio",
+    renderTitle: "Render a mixdown with FL Studio (close FL Studio first if it's open: it can't render from the command line while it runs)",
+    renderFailed: (err: string) => `The render failed: ${err}`,
+    renderPending: "The render is still running: see the panel at the bottom.",
+    renderMissingSamples: (n: number) =>
+      `${n} sample${n === 1 ? "" : "s"} of this song can't be found: a render will be silent where ${n === 1 ? "it plays" : "they play"}.`,
+    ambiguousExports: (n: number) =>
+      `${n} mixdown${n === 1 ? "" : "s"} in the export folder ${n === 1 ? "is" : "are"} named after this song, but another linked song has the same name, so ${n === 1 ? "it isn't" : "they aren't"} counted for either. Rename one of the projects to tell them apart.`,
+    notFound: "Not found right now",
+    notFoundUnreachable: (folder: string) =>
+      `Its linked folder (${folder}) isn't reachable: an unplugged drive or a moved folder. Its stage, notes and credits are kept; it comes back when the folder does.`,
+    notFoundGone: "The project isn't where it was. If it was moved or renamed inside a linked folder, the next scan follows it; its stage, notes and credits are kept.",
+    close: "Close",
     renderFlOnly: (tip: string) => `Rendering from the app works with FL Studio. ${tip}`,
     render: "Render",
     packageTitle: "Zip the project with every sample it uses — FL opens it directly. For sharing, collabs or archiving.",
@@ -147,7 +159,18 @@ const T = dict(
     reveal: "Afficher",
     launchKitTitle: "Métadonnées, extraits, date de sortie, textes",
     renderDone: "Rendu terminé : regarde le panneau en bas.",
-    renderTitle: "Faire le rendu d'un mixdown avec FL Studio",
+    renderTitle: "Faire le rendu d'un mixdown avec FL Studio (ferme FL Studio d'abord s'il est ouvert : il ne peut pas faire de rendu en ligne de commande pendant qu'il tourne)",
+    renderFailed: (err: string) => `Le rendu a échoué : ${err}`,
+    renderPending: "Le rendu tourne encore : regarde le panneau en bas.",
+    renderMissingSamples: (n: number) =>
+      `${n} sample${n === 1 ? " de ce son est introuvable" : "s de ce son sont introuvables"} : un rendu sera muet là où ${n === 1 ? "il joue" : "ils jouent"}.`,
+    ambiguousExports: (n: number) =>
+      `${n} mixdown${n === 1 ? "" : "s"} du dossier d'export ${n === 1 ? "porte" : "portent"} le nom de ce son, mais un autre son lié a le même nom : ${n === 1 ? "il ne compte" : "ils ne comptent"} pour aucun des deux. Renomme un des projets pour les distinguer.`,
+    notFound: "Introuvable pour l'instant",
+    notFoundUnreachable: (folder: string) =>
+      `Son dossier lié (${folder}) est injoignable : disque débranché ou dossier déplacé. Son étape, ses notes et ses crédits sont gardés ; il revient avec le dossier.`,
+    notFoundGone: "Le projet n'est plus là où il était. S'il a été déplacé ou renommé dans un dossier lié, le prochain scan le suit ; son étape, ses notes et ses crédits sont gardés.",
+    close: "Fermer",
     renderFlOnly: (tip: string) => `Le rendu depuis l'app marche avec FL Studio. ${tip}`,
     render: "Faire le rendu",
     packageTitle:
@@ -241,6 +264,60 @@ const T = dict(
   },
 );
 
+/** Resolves with the song's render job once it's done or failed (the
+ * progress event can land just after the render command returns), or
+ * whatever it is after a few seconds. */
+function settledJob(path: string): Promise<RenderJob | undefined> {
+  const settled = (j: RenderJob | undefined) => j?.status === "done" || j?.status === "error";
+  const now = useAppStore.getState().renderJobs.get(path);
+  if (settled(now)) return Promise.resolve(now);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      off();
+      resolve(useAppStore.getState().renderJobs.get(path));
+    }, 3000);
+    const off = useAppStore.subscribe((s) => {
+      const j = s.renderJobs.get(path);
+      if (settled(j)) {
+        clearTimeout(timer);
+        off();
+        resolve(j);
+      }
+    });
+  });
+}
+
+/** The open song vanished from the last scan: its folder is unreachable, or
+ * the file is gone. Its data is kept either way. */
+function NotFoundDrawer({ path, unreachable, onClose }: { path: string; unreachable: string[]; onClose: () => void }) {
+  const t = tr(T);
+  const root = unreachable.find((r) => isUnder(path, r));
+  const name = path.split(/[/\\]/).filter(Boolean).pop() ?? path;
+  return (
+    <aside className="flex w-[380px] shrink-0 flex-col border-l border-rule bg-panel">
+      <div className="flex items-start gap-2 border-b border-rule px-5 py-4">
+        <div className="min-w-0 flex-1">
+          <h2 className="truncate text-base font-semibold text-cream">{name}</h2>
+          <div className="mt-0.5 truncate text-[11px] text-engrave" title={path}>
+            {path}
+          </div>
+        </div>
+        <button onClick={onClose} aria-label={t.close} className="rounded p-1 text-engrave hover:bg-rule hover:text-cream">
+          <X size={16} />
+        </button>
+      </div>
+      <div className="px-5 py-4">
+        <div role="status" className="rounded-md border border-amber-400/20 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-200/80">
+          <div className="mb-1 flex items-center gap-1.5 font-semibold">
+            <AlertTriangle size={13} /> {t.notFound}
+          </div>
+          {root ? t.notFoundUnreachable(root) : t.notFoundGone}
+        </div>
+      </div>
+    </aside>
+  );
+}
+
 export function ProjectDrawer() {
   const detailPath = useAppStore((s) => s.detailPath);
   const project = useAppStore((s) => s.projects.find((p) => p.path === s.detailPath));
@@ -263,7 +340,7 @@ export function ProjectDrawer() {
   const openLaunchKit = useAppStore((s) => s.openLaunchKit);
 
   const [versionName, setVersionName] = useState<string | null>(null);
-  const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [message, setMessage] = useState<{ kind: "ok" | "warn" | "error"; text: string } | null>(null);
   const [showAllBackups, setShowAllBackups] = useState(false);
   /** Backups to clean up that sit on a drive with no Recycle Bin: waiting for an explicit OK. */
   const [permanent, setPermanent] = useState<{ project: string; paths: string[]; risky: number } | null>(null);
@@ -275,8 +352,11 @@ export function ProjectDrawer() {
     return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t);
   }, [workspace.songs]);
   const inboxItems = usePhoneInbox((s) => s.items);
+  const unreachable = useAppStore((s) => s.unreachable);
 
-  if (!detailPath || !project) return null;
+  if (!detailPath) return null;
+  // Gone from the last scan: say so instead of closing under the user.
+  if (!project) return <NotFoundDrawer path={detailPath} unreachable={unreachable} onClose={() => openDetail(null)} />;
 
   const meta = workspace.songs[project.path] ?? {};
   const detectedKey = detectKey(project.trackNames);
@@ -289,6 +369,7 @@ export function ProjectDrawer() {
   const visibleBackups = showAllBackups ? project.backups : project.backups.slice(0, 6);
   const sketch = isSketch(project);
   const songMemos = memosForSong(inboxItems, project.path);
+  const missingCount = project.samples.filter((s) => s.status === "missing").length;
 
   async function run(action: () => Promise<string | number>, ok: (r: string | number) => string) {
     setMessage(null);
@@ -347,7 +428,20 @@ export function ProjectDrawer() {
             <Rocket size={14} /> Launch Kit
           </button>
           <button
-            onClick={() => run(async () => (await startRender([project.path]), ""), () => t.renderDone)}
+            onClick={async () => {
+              // The drawer reports this song's own job: done, done with a
+              // warning (samples not found), or its error.
+              setMessage(null);
+              try {
+                await startRender([project.path]);
+                const job = await settledJob(project.path);
+                if (job?.status === "error") setMessage({ kind: "error", text: t.renderFailed(job.message ?? "?") });
+                else if (job?.status === "done") setMessage(job.message ? { kind: "warn", text: job.message } : { kind: "ok", text: t.renderDone });
+                else setMessage({ kind: "warn", text: t.renderPending });
+              } catch (e) {
+                setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+              }
+            }}
             disabled={demoMode || rendering || !canRenderInApp(project)}
             title={canRenderInApp(project) ? t.renderTitle : t.renderFlOnly(dawOf(project).exportTip)}
             className={btn}
@@ -377,6 +471,16 @@ export function ProjectDrawer() {
         </div>
         <ShareToggle path={project.path} />
         <StageConflictBanner path={project.path} />
+        {canRenderInApp(project) && missingCount > 0 && (
+          <div className="mt-3 rounded-md border border-amber-400/20 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-200/80">
+            {t.renderMissingSamples(missingCount)}
+          </div>
+        )}
+        {(project.ambiguousExports ?? 0) > 0 && (
+          <div className="mt-3 rounded-md border border-amber-400/20 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-200/80">
+            {t.ambiguousExports(project.ambiguousExports ?? 0)}
+          </div>
+        )}
         {project.readError && (
           <div className="mt-3 rounded-md border border-amber-400/20 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-200/80">
             {t.readError(project.readError)}
@@ -388,7 +492,9 @@ export function ProjectDrawer() {
             className={`mt-3 rounded-md border px-3 py-2 text-xs ${
               message.kind === "ok"
                 ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-                : "border-red-500/30 bg-red-500/10 text-red-300"
+                : message.kind === "warn"
+                  ? "border-amber-400/30 bg-amber-500/[0.06] text-amber-200"
+                  : "border-red-500/30 bg-red-500/10 text-red-300"
             }`}
           >
             {message.text}
@@ -809,9 +915,9 @@ function SketchPanel({ project }: { project: ProjectInfo }) {
       // failure is reported in the app's error banner.
       const done = await continueSketch(project.path, templatePath);
       // Only a real problem goes in the (red) banner: the audio not in the project.
-      if (done.clips === 0) useAppStore.setState({ startupError: t.continueNote(project.name, done.clips, done.note) });
+      if (done.clips === 0) useAppStore.setState({ actionError: t.continueNote(project.name, done.clips, done.note) });
       await openInFlStudio(done.flp).catch((e) =>
-        useAppStore.setState({ startupError: t.continueOpenFailed(project.name, e instanceof Error ? e.message : String(e)) }),
+        useAppStore.setState({ actionError: t.continueOpenFailed(project.name, e instanceof Error ? e.message : String(e)) }),
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

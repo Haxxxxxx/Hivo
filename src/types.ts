@@ -67,6 +67,17 @@ export interface ProjectInfo {
   samples: SampleInfo[];
   /** Named mixer tracks + recorded-take labels ("Lead Voices - Nova"). */
   trackNames: string[];
+  /** Mixdowns in the export folder named after this song that weren't
+   * counted: another linked song has the same name, and the file name can't
+   * say which one it came from. */
+  ambiguousExports?: number;
+}
+
+/** What `scan_projects` returns: the projects, and the linked folders that
+ * couldn't be read right now (their songs are missing, not moved). */
+export interface ScanResult {
+  projects: ProjectInfo[];
+  unreachable: string[];
 }
 
 export interface PluginInfo {
@@ -493,6 +504,9 @@ export interface Workspace {
   leadNotes?: Record<string, string>;
   /** Notes on beats (Settings → Beats folders), by file path. */
   beatNotes?: Record<string, string>;
+  /** Set only on generated sample data (src/lib/sampleData.ts): a workspace
+   * carrying it is never written to disk. */
+  sample?: true;
 }
 
 /** A pipeline column. Columns sit on the fixed lifecycle stages: putting a

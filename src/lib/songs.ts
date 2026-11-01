@@ -92,6 +92,9 @@ const LEGACY_STAGES: Record<string, SongStatus> = {
 export function migrateWorkspace(stored: Workspace | { version?: number }): { workspace: Workspace; changed: boolean } {
   const ws = { ...EMPTY_WORKSPACE, ...(stored as Workspace) };
   if (ws.version === 2) return { workspace: ws, changed: false };
+  // Saved by a newer Hivo: shown as it is, never re-stamped (the store opens
+  // it read-only, see newerWorkspaceVersion).
+  if (newerWorkspaceVersion(stored) !== null) return { workspace: ws, changed: false };
   const songs: Workspace["songs"] = {};
   for (const [path, meta] of Object.entries(ws.songs ?? {})) {
     const old = meta.status as string | undefined;
@@ -105,6 +108,16 @@ export function migrateWorkspace(stored: Workspace | { version?: number }): { wo
 export const ALBUM_COLORS = ["#c98500", "#199e70", "#d55181", "#9085e9", "#e66767", "#8a9a5b", "#b8742a"];
 
 export const EMPTY_WORKSPACE: Workspace = { version: 2, songs: {}, albums: [], people: [] };
+
+/** The workspace version this build reads and writes. */
+export const WORKSPACE_VERSION = 2;
+
+/** The stored workspace's version when a newer Hivo wrote it (this build
+ * must not save over it), else null. */
+export function newerWorkspaceVersion(stored: unknown): number | null {
+  const v = (stored as { version?: unknown } | null)?.version;
+  return typeof v === "number" && v > WORKSPACE_VERSION ? v : null;
+}
 
 /** Fresh = the newest mixdown is at least as new as the last save, backups
  * included (an autosave after the render means the mixdown is behind). */

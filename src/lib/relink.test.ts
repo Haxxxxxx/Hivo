@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProjectInfo, Workspace } from "../types";
-import { applyRelinks, findRelinks } from "./relink";
+import { applyRelinks, findRelinks, rootRelinks } from "./relink";
 
 const W = ["/music/Projects"];
 const proj = (path: string, isTemplate = false) => ({ path, isTemplate }) as ProjectInfo;
@@ -50,6 +50,16 @@ describe("findRelinks", () => {
     expect(r).toHaveLength(1);
   });
 
+  it("never takes a song under an unreachable linked folder for an orphan", () => {
+    // D: is unplugged: its Envy must not be handed to the Envy on C:.
+    const linked = ["D:\\Music", "C:\\Beats"];
+    const record = ws({ "D:\\Music\\Envy\\Envy.flp": { status: "release", notes: "hook" } });
+    const elsewhere = [proj("C:\\Beats\\Envy\\Envy.flp")];
+    expect(findRelinks(elsewhere, record, linked, ["D:\\Music"])).toEqual([]);
+    // Reachable again and really gone: then it's a move.
+    expect(findRelinks(elsewhere, record, linked, [])).toHaveLength(1);
+  });
+
   it("never targets templates", () => {
     expect(findRelinks([proj("/music/Projects/A/T.flp", true)], ws({ "/music/Projects/A/A.flp": { status: "creation" } }), W)).toEqual([]);
   });
@@ -83,5 +93,19 @@ describe("applyRelinks", () => {
     expect(out.songs["/p/Idea/Idea.flp"]).toEqual({ status: "creation", notes: "verse 1", bandlabUrl: "https://www.bandlab.com/x" });
     expect(out.songs["/p/Idea/BandLab"]).toBeUndefined();
     expect(out.albums[0].trackPaths).toEqual(["/p/Idea/Idea.flp"]);
+  });
+});
+
+describe("rootRelinks", () => {
+  it("moves every record under a re-pointed folder, keeping the rest of each path", () => {
+    const w = ws({ "D:\\Music\\Envy\\Envy.flp": { status: "prep" }, "D:\\Musicals\\X.flp": { status: "creation" }, "C:\\Other\\Y.flp": {} });
+    expect(rootRelinks(w, "D:\\Music", "E:\\Music\\")).toEqual([
+      { from: "D:\\Music\\Envy\\Envy.flp", to: "E:\\Music\\Envy\\Envy.flp", reason: "moved" },
+    ]);
+  });
+
+  it("never overwrites a record already at the new path", () => {
+    const w = ws({ "/Volumes/A/Music/S.flp": { status: "prep" }, "/Volumes/B/Music/S.flp": { status: "creation" } });
+    expect(rootRelinks(w, "/Volumes/A/Music", "/Volumes/B/Music")).toEqual([]);
   });
 });
