@@ -1,6 +1,5 @@
-use crate::flp_metadata;
 use crate::daws::{self, Daw};
-use crate::models::{FileEntry, ProjectInfo, StemsInfo};
+use crate::models::{FileEntry, ProjectInfo, ScanResult, StemsInfo};
 use crate::resolve::Resolver;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -165,6 +164,46 @@ fn named_after(stem: &str, name: &str) -> bool {
     }
 }
 
+/// Whether `stem` belongs to the song `name` among the songs of one folder
+/// (`names`, all lowercased): it's named after `name`, and not after a
+/// longer name there too. "Envy v2.wav" is "Envy v2"'s, not "Envy"'s, when
+/// both projects sit in the same folder.
+fn owned_by(stem: &str, name: &str, names: &[String]) -> bool {
+    named_after(stem, name) && !names.iter().any(|n| n.len() > name.len() && named_after(stem, n))
+}
+
+/// Whether `needle` appears in `hay` as whole words: bounded by the start,
+/// the end or a character that isn't a letter or digit. Both lowercased.
+fn has_words(hay: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let mut from = 0;
+    while let Some(i) = hay[from..].find(needle) {
+        let at = from + i;
+        let end = at + needle.len();
+        let before = hay[..at].chars().next_back().is_none_or(|c| !c.is_alphanumeric());
+        let after = hay[end..].chars().next().is_none_or(|c| !c.is_alphanumeric());
+        if before && after {
+            return true;
+        }
+        from = at + hay[at..].chars().next().map_or(1, char::len_utf8);
+    }
+    false
+}
+
+/// A stems folder: "Stems", "Envy stems", "STEM - Envy". Not "Systems" or
+/// "Ecosystem".
+fn is_stems_dir(name: &str) -> bool {
+    let name = name.to_lowercase();
+    has_words(&name, "stems") || has_words(&name, "stem")
+}
+
+/// Folder names that hold templates in the DAWs Hivo reads (FL "Templates",
+/// REAPER "ProjectTemplates", Cubase "Project Templates", Pro Tools
+/// "Session Templates"). Whole folder names only: "Love Template" is a song.
+const TEMPLATE_DIRS: &[&str] = &["templates", "template", "project templates", "projecttemplates", "session templates"];
+
 #[cfg(test)]
 fn scan(folders: &[String], output_folder: Option<&str>) -> Vec<ProjectInfo> {
     scan_with(folders, output_folder, Resolver::new(crate::settings::detect_fl_studio()))
@@ -181,7 +220,8 @@ fn scan_with(folders: &[String], output_folder: Option<&str>, mut resolver: Reso
 
     for root in folders {
         let root_path = Path::new(root);
-        if !root_path.exists() {
+        // Unreachable right now: reported by `unreachable_roots`.
+        if !reachable(root_path) {
             continue;
         }
         // Ableton's library folders hold presets and demo sets, not songs.
@@ -225,11 +265,8 @@ fn scan_with(folders: &[String], output_folder: Option<&str>, mut resolver: Reso
             // A corrupt, oversized or hostile project never fails the whole
             // scan: it's listed with no metadata and the reason. A reader bug
             // (panic) is contained the same way (release builds unwind, see
-            // Cargo.toml).
-            let read = std::panic::catch_unwind(|| match daw {
-                Daw::FlStudio => flp_metadata::parse_flp_metadata(path),
-                other => daws::read_project(other, path),
-            });
+            // Cargo.toml). Reads are cached by size and mtime (daws.rs).
+            let read = std::panic::catch_unwind(|| daws::read_project(daw, path));
             let (flp, read_error) = match read {
                 Ok(Ok(flp)) => (flp, None),
                 Ok(Err(e)) => (Default::default(), Some(e)),
@@ -272,6 +309,7 @@ fn scan_with(folders: &[String], output_folder: Option<&str>, mut resolver: Reso
                     names
                 },
                 read_error,
+                ambiguous_exports: 0,
             });
         }
     }
@@ -307,6 +345,13 @@ fn scan_with(folders: &[String], output_folder: Option<&str>, mut resolver: Reso
         }
     }
 
+    // Export-folder mixdowns are matched by name only: when two linked
+    // songs share a name, a file there could be either's, so neither gets it.
+    let mut name_counts: HashMap<String, usize> = HashMap::new();
+    for p in projects.iter().filter(|p| !p.is_template) {
+        *name_counts.entry(p.name.to_lowercase()).or_default() += 1;
+    }
+
     // Renders sit next to the .flp; recordings in the sibling Audio/ folder.
     for indices in by_folder.values() {
         let dir = PathBuf::from(&projects[indices[0]].folder);
@@ -314,22 +359,26 @@ fn scan_with(folders: &[String], output_folder: Option<&str>, mut resolver: Reso
         let recordings: Vec<PathBuf> = read_files(&dir.join("Audio"));
         let stem_dirs: Vec<PathBuf> = read_dirs(&dir)
             .into_iter()
-            .filter(|d| d.file_name().map(|n| n.to_string_lossy().to_lowercase().contains("stem")).unwrap_or(false))
+            .filter(|d| d.file_name().is_some_and(|n| is_stems_dir(&n.to_string_lossy())))
             .collect();
+        // Every song name in this folder: a file goes to the longest one it's
+        // named after (versions: "Envy", "Envy v2", "Envy v2 final").
+        let names: Vec<String> = indices.iter().map(|&j| projects[j].name.to_lowercase()).collect();
 
         for &i in indices {
             let name = projects[i].name.to_lowercase();
+            let owns = |p: &Path| owned_by(&stem_of(p), &name, &names);
             // FL's split-mixer export: `<name>_<track>.wav`, one per track.
             // Two or more of them are stems, not mixdowns.
             let split_prefix = format!("{name}_");
             let split: Vec<&PathBuf> = siblings
                 .iter()
-                .filter(|p| has_ext(p, AUDIO_EXTS) && stem_of(p).to_lowercase().starts_with(&split_prefix))
+                .filter(|p| has_ext(p, AUDIO_EXTS) && stem_of(p).to_lowercase().starts_with(&split_prefix) && owns(p))
                 .collect();
             let split_are_stems = split.len() >= 2;
             let mut renders: Vec<FileEntry> = siblings
                 .iter()
-                .filter(|p| has_ext(p, AUDIO_EXTS) && named_after(&stem_of(p), &name))
+                .filter(|p| has_ext(p, AUDIO_EXTS) && owns(p))
                 .filter(|p| !(split_are_stems && stem_of(p).to_lowercase().starts_with(&split_prefix)))
                 .filter_map(|p| file_entry(p))
                 .collect();
@@ -342,15 +391,17 @@ fn scan_with(folders: &[String], output_folder: Option<&str>, mut resolver: Reso
                 renders.extend(
                     read_files(&dir.join(sub))
                         .iter()
-                        .filter(|p| has_ext(p, AUDIO_EXTS) && (alone || named_after(&stem_of(p), &name)))
+                        .filter(|p| has_ext(p, AUDIO_EXTS) && (alone || owns(p)))
                         .filter_map(|p| file_entry(p)),
                 );
             }
             // A stems folder belongs to this song if it's the only song in the
-            // folder, or the stems folder is named after it.
+            // folder, or the stems folder is named after it (whole words, and
+            // the longest song name that fits: "Envy v2 Stems" is "Envy v2"'s).
+            let dir_named_after = |d: &Path, n: &str| d.file_name().is_some_and(|f| has_words(&f.to_string_lossy().to_lowercase(), n));
             let own_dir = stem_dirs
                 .iter()
-                .find(|d| d.file_name().map(|n| n.to_string_lossy().to_lowercase().contains(&name)).unwrap_or(false))
+                .find(|d| dir_named_after(d, &name) && !names.iter().any(|n| n.len() > name.len() && dir_named_after(d, n)))
                 .or_else(|| (indices.len() == 1).then(|| stem_dirs.first()).flatten());
             projects[i].stems = if let Some(sd) = own_dir {
                 stems_info(sd, &read_files(sd))
@@ -360,7 +411,11 @@ fn scan_with(folders: &[String], output_folder: Option<&str>, mut resolver: Reso
                 None
             };
             if let Some(exported) = exports.get(&name) {
-                renders.extend(exported.iter().cloned());
+                if name_counts.get(&name).copied().unwrap_or(0) > 1 {
+                    projects[i].ambiguous_exports = exported.len() as u32;
+                } else {
+                    renders.extend(exported.iter().cloned());
+                }
             }
             renders.sort_by(by_newest);
             projects[i].renders = renders;
@@ -383,7 +438,7 @@ fn scan_with(folders: &[String], output_folder: Option<&str>, mut resolver: Reso
             }
             let prefix = format!("{name}_");
             for rec in recordings.iter().filter(|p| {
-                has_ext(p, AUDIO_EXTS) && stem_of(p).to_lowercase().starts_with(&prefix)
+                has_ext(p, AUDIO_EXTS) && stem_of(p).to_lowercase().starts_with(&prefix) && owns(p)
             }) {
                 if let Ok(meta) = fs::metadata(rec) {
                     projects[i].recordings_count += 1;
@@ -462,6 +517,7 @@ fn sketch_of(bandlab: &Path, root: &str) -> Option<ProjectInfo> {
         plugins: Vec::new(),
         samples: Vec::new(),
         track_names: Vec::new(),
+        ambiguous_exports: 0,
     })
 }
 
@@ -502,7 +558,7 @@ fn under_template_dir(path: &Path, root: &Path) -> bool {
     let rel = path.strip_prefix(root).unwrap_or(path);
     let mut comps: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).collect();
     comps.pop();
-    comps.iter().any(|c| c.contains("template"))
+    comps.iter().any(|c| TEMPLATE_DIRS.contains(&c.trim()))
 }
 
 fn read_dirs(dir: &Path) -> Vec<PathBuf> {
@@ -536,9 +592,13 @@ fn read_files(dir: &Path) -> Vec<PathBuf> {
 /// Scans the linked folders and the export folder from Settings (never
 /// folders named by the webview: the backup cleanup trusts this listing).
 #[tauri::command]
-pub async fn scan_projects(app: AppHandle) -> Result<Vec<ProjectInfo>, String> {
+pub async fn scan_projects(app: AppHandle) -> Result<ScanResult, String> {
     let scope = crate::scope::Scope::load(&app)?;
     let folders: Vec<String> = scope.folders().iter().map(|f| f.to_string_lossy().to_string()).collect();
+    // Every linked folder as saved (the scope drops the ones that can't be
+    // resolved, e.g. a drive letter that's gone): the webview needs to know
+    // which are unreachable, so their songs aren't taken for moved or deleted.
+    let linked = crate::settings::load(&app)?.watched_folders;
     let output_folder = scope.output_folder().map(|o| o.to_string_lossy().to_string());
     // Let the webview stream renders from linked folders and the export
     // folder (in-app playback) without opening the asset protocol to the
@@ -549,14 +609,26 @@ pub async fn scan_projects(app: AppHandle) -> Result<Vec<ProjectInfo>, String> {
     }
     let (fl, user_data) = crate::settings::fl_paths(&app);
     let sample_folders = scope.sample_folders().to_vec();
-    let projects = tauri::async_runtime::spawn_blocking(move || {
+    let (projects, unreachable) = tauri::async_runtime::spawn_blocking(move || {
         let resolver = Resolver::new(fl).with_user_data(user_data).with_sample_folders(&sample_folders);
-        scan_with(&folders, output_folder.as_deref(), resolver)
+        (scan_with(&folders, output_folder.as_deref(), resolver), unreachable_roots(&linked))
     })
         .await
         .map_err(|e| format!("scan failed: {e}"))?;
     remember_scan(&projects);
-    Ok(projects)
+    Ok(ScanResult { projects, unreachable })
+}
+
+/// A linked folder that can be listed right now. Network and device paths
+/// are never touched (on Windows a lookup sends the user's credentials).
+fn reachable(root: &Path) -> bool {
+    !crate::paths::is_remote_or_device(&root.to_string_lossy()) && fs::read_dir(root).is_ok()
+}
+
+/// The linked folders that can't be listed right now (unplugged drive,
+/// unmounted share, folder renamed or deleted), in the order they're linked.
+pub(crate) fn unreachable_roots(linked: &[String]) -> Vec<String> {
+    linked.iter().filter(|f| !reachable(Path::new(f))).cloned().collect()
 }
 
 /// Backups the last scan listed. Cleanup only deletes paths from this set,
@@ -851,6 +923,127 @@ mod tests {
         let other = projects.iter().find(|p| p.name == "Other").unwrap();
         assert_eq!(envy.stems.as_ref().map(|s| (s.count, s.bytes)), Some((1, 4)));
         assert!(other.stems.is_none(), "a stems folder named after another song isn't this one's");
+    }
+
+    fn fixture(tag: &str) -> (PathBuf, impl Fn(&str)) {
+        let root = std::env::temp_dir().join(format!("flsm-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let r = root.clone();
+        (root, move |rel: &str| {
+            let p = r.join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, b"x").unwrap();
+        })
+    }
+
+    fn file_names(entries: &[FileEntry]) -> Vec<String> {
+        let mut names: Vec<String> = entries.iter().map(|f| Path::new(&f.path).file_name().unwrap().to_string_lossy().to_string()).collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn versions_in_one_folder_keep_their_own_renders_and_stems() {
+        let (root, w) = fixture("versions");
+        for f in ["Envy.flp", "Envy v2.flp", "Envy v2 final.flp"] {
+            w(&format!("Envy/{f}"));
+        }
+        for f in ["Envy.wav", "Envy (master).mp3", "Envy v2.wav", "Envy v2 (master).mp3", "Envy v2 final.wav"] {
+            w(&format!("Envy/{f}"));
+        }
+        // Split-mixer exports of v1 and of v2.
+        for f in ["Envy_Kick.wav", "Envy_Vox.wav", "Envy v2_Kick.wav", "Envy v2_Vox.wav"] {
+            w(&format!("Envy/{f}"));
+        }
+        // Recorded takes for v2 only.
+        w("Envy/Audio/Envy v2_2025-12-15 18-49-59_Voice.wav");
+        let projects = scan(&[root.to_string_lossy().to_string()], None);
+        let _ = fs::remove_dir_all(&root);
+        let get = |name: &str| projects.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("{name} missing"));
+
+        assert_eq!(file_names(&get("Envy").renders), vec!["Envy (master).mp3", "Envy.wav"]);
+        assert_eq!(file_names(&get("Envy v2").renders), vec!["Envy v2 (master).mp3", "Envy v2.wav"]);
+        assert_eq!(file_names(&get("Envy v2 final").renders), vec!["Envy v2 final.wav"]);
+        assert_eq!(get("Envy").stems.as_ref().map(|s| s.count), Some(2));
+        assert_eq!(get("Envy v2").stems.as_ref().map(|s| s.count), Some(2));
+        assert!(get("Envy v2 final").stems.is_none());
+        assert_eq!((get("Envy").recordings_count, get("Envy v2").recordings_count), (0, 1));
+    }
+
+    #[test]
+    fn only_whole_template_folders_hold_templates() {
+        let (root, w) = fixture("templates");
+        w("Love Template/Love Template.flp");
+        w("Beat Templates 2025/Bounce/Bounce.flp");
+        w("Templates/Basic.flp");
+        w("FL/project templates/Rap.flp");
+        w("Reaper/ProjectTemplates/Session.rpp");
+        let projects = scan(&[root.to_string_lossy().to_string()], None);
+        let _ = fs::remove_dir_all(&root);
+        let template = |name: &str| projects.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("{name} missing")).is_template;
+        assert!(!template("Love Template"));
+        assert!(!template("Bounce"));
+        assert!(template("Basic") && template("Rap") && template("Session"));
+    }
+
+    #[test]
+    fn same_name_songs_in_two_folders_dont_share_export_renders() {
+        let (root, w) = fixture("same-name");
+        w("Projects/Kairo/Envy/Envy.flp");
+        w("Projects/Nova/Envy/Envy.flp");
+        w("Projects/Nova/Solo/Solo.flp");
+        // Each one's own mixdown, next to it.
+        w("Projects/Nova/Envy/Envy.wav");
+        // The export folder can't say which Envy this came from.
+        w("Exports/Envy.wav");
+        w("Exports/02 - Solo.wav");
+        let exports = root.join("Exports").to_string_lossy().to_string();
+        let projects = scan(&[root.join("Projects").to_string_lossy().to_string()], Some(&exports));
+        let _ = fs::remove_dir_all(&root);
+        let envies: Vec<&ProjectInfo> = projects.iter().filter(|p| p.name == "Envy").collect();
+        assert_eq!(envies.len(), 2);
+        for envy in &envies {
+            assert!(envy.renders.iter().all(|r| !r.path.contains("Exports")), "{:?}", envy.renders);
+            assert_eq!(envy.ambiguous_exports, 1);
+        }
+        let nova = envies.iter().find(|p| p.folder.contains("Nova")).unwrap();
+        assert_eq!(nova.renders.len(), 1, "its own render still counts");
+        let solo = projects.iter().find(|p| p.name == "Solo").unwrap();
+        assert_eq!((solo.renders.len(), solo.ambiguous_exports), (1, 0));
+    }
+
+    #[test]
+    fn stems_folders_match_whole_words() {
+        let (root, w) = fixture("stems-words");
+        w("Beats/A.flp");
+        w("Beats/Envy.flp");
+        w("Beats/Envy Stems/Drums.wav");
+        w("Beats/Systems/Loop.wav");
+        w("Solo/Solo.flp");
+        w("Solo/Ecosystem/Pad.wav");
+        let projects = scan(&[root.to_string_lossy().to_string()], None);
+        let _ = fs::remove_dir_all(&root);
+        let get = |name: &str| projects.iter().find(|p| p.name == name).unwrap();
+        assert!(get("A").stems.is_none(), "a one-letter name doesn't match inside another folder name");
+        assert_eq!(get("Envy").stems.as_ref().map(|s| s.count), Some(1));
+        assert!(get("Solo").stems.is_none(), "\"Ecosystem\" isn't a stems folder");
+        assert!(is_stems_dir("Stems") && is_stems_dir("envy stems") && is_stems_dir("STEM - Envy"));
+        assert!(!is_stems_dir("Systems") && !is_stems_dir("Ecosystem"));
+    }
+
+    #[test]
+    fn an_unreachable_root_is_reported_not_scanned() {
+        let (root, w) = fixture("unreachable");
+        w("Here/Envy/Envy.flp");
+        let here = root.join("Here").to_string_lossy().to_string();
+        let gone = root.join("Unplugged drive").to_string_lossy().to_string();
+        let linked = vec![here.clone(), gone.clone()];
+        let projects = scan(&linked, None);
+        let unreachable = unreachable_roots(&linked);
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(projects.len(), 1);
+        assert_eq!(unreachable, vec![gone]);
+        assert!(unreachable_roots(&[r"\\server\share".to_string()]).len() == 1, "a network path is never touched, so never reachable");
     }
 
     #[test]

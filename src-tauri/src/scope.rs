@@ -53,10 +53,18 @@ fn inside(path: &Path, root: &Path) -> bool {
     path.starts_with(root)
 }
 
-/// Audio Hivo can decode (symphonia: wav, mp3, ogg, flac).
+/// Audio Hivo can decode (symphonia: wav, mp3, ogg, flac, and m4a = AAC or
+/// ALAC in MP4) and the webview can play.
 pub fn is_beat_file(path: &Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-    matches!(ext.as_str(), "wav" | "mp3" | "ogg" | "flac")
+    matches!(ext.as_str(), "wav" | "mp3" | "ogg" | "flac" | "m4a")
+}
+
+/// Audio a beats folder may hold that the Digger can't read (no decoder, or
+/// the webview can't play it): counted, so the list can say so.
+pub fn is_unsupported_audio(path: &Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    matches!(ext.as_str(), "opus" | "aac" | "wma" | "aif" | "aiff" | "webm" | "weba" | "alac" | "ape")
 }
 
 fn denied(what: &str, path: &str) -> String {
@@ -160,7 +168,7 @@ impl Scope {
             .filter(|p| self.beat_roots.iter().any(|r| inside(p, r)))
             .ok_or_else(|| format!("That beat isn't inside a beats folder linked in Settings: {path}"))?;
         if !is_beat_file(&real) || !real.is_file() {
-            return Err(format!("not a beat (mp3, wav, ogg or flac): {path}"));
+            return Err(format!("not a beat (mp3, wav, ogg, flac or m4a): {path}"));
         }
         // The resolved path: what was checked is what gets opened.
         Ok(real)

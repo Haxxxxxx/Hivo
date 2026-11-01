@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { UPDATES_ENABLED } from "../lib/updater";
-import { isReadOnlyInstallError } from "../lib/updaterErrors";
+import { updateErrorKind } from "../lib/updaterErrors";
 import { FolderPlus, Trash2, Wand2, FileSearch, PlayCircle } from "lucide-react";
 import { useAppStore } from "../store/useAppStore";
 import * as api from "../lib/tauri";
@@ -13,12 +13,16 @@ import { aiDisclosure } from "../lib/ai";
 import { converterTemplateFor } from "../lib/converters";
 import type { CaptionLang, RenderFormat, SpotifyStatus, YoutubeStatus } from "../types";
 import { dict, tr } from "../i18n";
+import { StatusDot } from "../ui";
 
 // A stable empty list: a fresh [] in a store selector re-renders forever.
 const NO_FOLDERS: string[] = [];
 
 const T = dict(
   {
+    flNotFound: "FL Studio wasn't found in its usual install folders. Pick it with Browse.",
+    notConnected: "Not connected right now (unplugged drive, or the folder was moved or renamed)",
+    notConnectedShort: "Not connected",
     needPaths: "Set both the FL Studio path and output folder first.",
     needFlp: "The test render needs an FL Studio project (.flp). None was found in your linked folders.",
     renderFailed: "Render failed",
@@ -96,6 +100,9 @@ const T = dict(
       "Both stay on this computer (their own owner-only file in the app config folder, not settings.json) and are never shown again. Only the image prompt is sent to Cloudflare. It's built from the cover brief's concept, imagery, palette, tags and any free text you write in it, with the song title, artist names and the Notes line taken out. No audio, no file paths.",
   },
   {
+    flNotFound: "FL Studio n'a pas été trouvé dans ses dossiers d'installation habituels. Choisis-le avec Parcourir.",
+    notConnected: "Pas connecté en ce moment (disque débranché, ou dossier déplacé ou renommé)",
+    notConnectedShort: "Pas connecté",
     needPaths: "Indique d'abord le chemin de FL Studio et le dossier d'export.",
     needFlp: "Le rendu test a besoin d'un projet FL Studio (.flp). Aucun trouvé dans tes dossiers reliés.",
     renderFailed: "Échec du rendu",
@@ -200,6 +207,10 @@ export function SettingsView() {
   const clearSettingsSection = useAppStore((s) => s.clearSettingsSection);
   const [detecting, setDetecting] = useState(false);
   const [folderError, setFolderError] = useState<string | null>(null);
+  // Each picker's error shows under its own control.
+  const [flError, setFlError] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const unreachable = useUnreachableFolders(settings.watchedFolders, settings.outputFolder);
   const [testState, setTestState] = useState<
     { status: "idle" } | { status: "running" } | { status: "done"; path: string } | { status: "error"; message: string }
   >({ status: "idle" });
@@ -228,8 +239,11 @@ export function SettingsView() {
 
   async function handleDetect() {
     setDetecting(true);
+    setFlError(null);
     try {
-      await detectFlStudio();
+      if (!(await detectFlStudio())) setFlError(tr(T).flNotFound);
+    } catch (e) {
+      setFlError(e instanceof Error ? e.message : String(e));
     } finally {
       setDetecting(false);
     }
@@ -238,11 +252,13 @@ export function SettingsView() {
   // Pickers run in Rust, which checks the choice (FL Studio must be FL
   // Studio) before saving it.
   async function handleBrowseExecutable() {
-    await pickFlStudio().catch((e) => setTestState({ status: "error", message: e instanceof Error ? e.message : String(e) }));
+    setFlError(null);
+    await pickFlStudio().catch((e) => setFlError(e instanceof Error ? e.message : String(e)));
   }
 
   async function handleBrowseOutput() {
-    await pickOutputFolder().catch((e) => setTestState({ status: "error", message: e instanceof Error ? e.message : String(e) }));
+    setExportError(null);
+    await pickOutputFolder().catch((e) => setExportError(e instanceof Error ? e.message : String(e)));
   }
 
   async function handleTestRender() {
@@ -327,7 +343,7 @@ export function SettingsView() {
                 key={folder}
                 className="flex items-center justify-between gap-2 rounded-md border border-rule bg-raised px-3 py-2 text-sm text-body"
               >
-                <span className="truncate">{folder}</span>
+                <FolderName folder={folder} unreachable={unreachable.has(folder)} />
                 <button
                   onClick={() => handleRemoveFolder(folder)}
                   className="shrink-0 rounded p-1 text-engrave hover:bg-rule hover:text-red-300"
@@ -402,6 +418,7 @@ export function SettingsView() {
               {t.browse}
             </button>
           </div>
+          {flError && <div className="mt-2 text-xs text-missing">{flError}</div>}
         </section>
 
         <section id="export">
@@ -422,6 +439,13 @@ export function SettingsView() {
               {t.browse}
             </button>
           </div>
+          {settings.outputFolder && unreachable.has(settings.outputFolder) && (
+            <div className="mt-2 flex items-center gap-1.5 text-xs text-warn">
+              <StatusDot color="var(--color-warn)" size={6} />
+              {t.notConnected}
+            </div>
+          )}
+          {exportError && <div className="mt-2 text-xs text-missing">{exportError}</div>}
 
           <div className="mt-3 flex gap-2">
             {FORMATS.map((f) => (
@@ -513,6 +537,36 @@ function ShortsSettings() {
       </div>
       {error && <div className="mt-2 text-xs text-red-300">{error}</div>}
     </section>
+  );
+}
+
+/** The saved folders (any of `folders`) that can't be reached right now,
+ * asked from Rust each time the list changes. Empty in a browser tab. */
+function useUnreachableFolders(...folders: (string[] | string | null | undefined)[]): Set<string> {
+  const key = folders.flat().filter(Boolean).join("\n");
+  const [missing, setMissing] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    let live = true;
+    api
+      .unreachableSettingFolders()
+      .then((list) => live && setMissing(new Set(list)))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [key]);
+  return missing;
+}
+
+/** A saved folder's path, with a warning LED when it can't be reached. */
+function FolderName({ folder, unreachable }: { folder: string; unreachable: boolean }) {
+  const t = tr(T);
+  return (
+    <span className="flex min-w-0 items-center gap-2" title={unreachable ? `${folder} · ${t.notConnected}` : folder}>
+      {unreachable && <StatusDot color="var(--color-warn)" size={6} />}
+      <span className="truncate">{folder}</span>
+      {unreachable && <span className="shrink-0 text-[11px] text-warn">{t.notConnectedShort}</span>}
+    </span>
   );
 }
 
@@ -989,7 +1043,7 @@ function DiggerSettings() {
     const pick = raw ? converterTemplateFor(raw) : null;
     const template = pick?.template ?? "";
     try {
-      await updateSettings({ converterUrlTemplate: template || undefined });
+      await updateSettings({ converterUrlTemplate: template || undefined }, { report: false });
       const text = !template
         ? t.removed
         : pick?.recognized === "example"
@@ -1071,6 +1125,7 @@ function BeatFoldersSection() {
   const remove = useAppStore((s) => s.removeBeatFolder);
   const [error, setError] = useState<string | null>(null);
   const t = tr(T_BEATS);
+  const unreachable = useUnreachableFolders(folders);
 
   function run(action: Promise<void>) {
     setError(null);
@@ -1084,7 +1139,7 @@ function BeatFoldersSection() {
       <div className="mt-3 flex flex-col gap-2">
         {folders.map((folder) => (
           <div key={folder} className="flex items-center justify-between gap-2 rounded-md border border-rule bg-raised px-3 py-2 text-sm text-body">
-            <span className="truncate">{folder}</span>
+            <FolderName folder={folder} unreachable={unreachable.has(folder)} />
             <button onClick={() => run(remove(folder))} aria-label={t.remove(folder)} className="shrink-0 rounded p-1 text-engrave hover:bg-rule hover:text-red-300">
               <Trash2 size={14} />
             </button>
@@ -1126,6 +1181,7 @@ function SampleFoldersSection() {
   const remove = useAppStore((s) => s.removeSampleFolder);
   const [error, setError] = useState<string | null>(null);
   const t = tr(T_SAMPLES);
+  const unreachable = useUnreachableFolders(folders);
 
   function run(action: Promise<void>) {
     setError(null);
@@ -1139,7 +1195,7 @@ function SampleFoldersSection() {
       <div className="mt-3 flex flex-col gap-2">
         {folders.map((folder) => (
           <div key={folder} className="flex items-center justify-between gap-2 rounded-md border border-rule bg-raised px-3 py-2 text-sm text-body">
-            <span className="truncate">{folder}</span>
+            <FolderName folder={folder} unreachable={unreachable.has(folder)} />
             <button onClick={() => run(remove(folder))} aria-label={t.remove(folder)} className="shrink-0 rounded p-1 text-engrave hover:bg-rule hover:text-red-300">
               <Trash2 size={14} />
             </button>
@@ -1160,7 +1216,9 @@ function SampleFoldersSection() {
 
 const T_UPDATES = dict(
   {
-    hint: "Checked once at launch. An update downloads, installs and restarts the app in one click.",
+    hint: "Checked at launch, then once a day while Hivo stays open. An update downloads, installs and restarts the app in one click.",
+    offline: "Couldn't reach the update server. Check your internet connection and try again.",
+    failed: "The update didn't go through. Try again later.",
     check: "Check for updates",
     checking: "Checking…",
     upToDate: "You're up to date.",
@@ -1172,7 +1230,9 @@ const T_UPDATES = dict(
     readOnly: "Hivo is running from a read-only place (the disk image, or the copy macOS makes of a downloaded app). Move it to Applications with Finder, open it from there, and try again.",
   },
   {
-    hint: "Vérifié une fois au lancement. Une mise à jour se télécharge, s'installe et relance l'appli en un clic.",
+    hint: "Vérifié au lancement, puis une fois par jour tant que Hivo reste ouvert. Une mise à jour se télécharge, s'installe et relance l'appli en un clic.",
+    offline: "Impossible de joindre le serveur de mises à jour. Vérifie ta connexion internet et réessaie.",
+    failed: "La mise à jour n'est pas passée. Réessaie plus tard.",
     devBuild: "Version de développement : les mises à jour sont désactivées ici. Installe une release pour les tester.",
     readOnly: "Hivo tourne depuis un emplacement en lecture seule (l'image disque, ou la copie que macOS fait d'une appli téléchargée). Déplace-le dans Applications avec le Finder, ouvre-le de là et réessaie.",
     check: "Vérifier les mises à jour",
@@ -1220,7 +1280,7 @@ function UpdatesSection() {
         : status === "ready"
           ? t.restarting
           : status === "error"
-            ? (isReadOnlyInstallError(update.error) ? t.readOnly : (update.error ?? ""))
+            ? { readOnly: t.readOnly, network: t.offline, other: t.failed }[updateErrorKind(update.error)]
             : checked && status === "idle"
               ? t.upToDate
               : null;
@@ -1242,7 +1302,7 @@ function UpdatesSection() {
       </div>
       {line !== null && (
         <div className="mt-2 flex items-center gap-3 text-xs">
-          <span className={status === "error" ? "text-red-300" : status === "available" ? "text-cream" : "text-emerald-300"}>{line}</span>
+          <span className={status === "error" ? "text-red-300" : status === "available" ? "text-cream" : "text-emerald-300"} title={status === "error" ? update.error : undefined}>{line}</span>
           {status === "available" && (
             <button
               onClick={() => void installUpdate()}

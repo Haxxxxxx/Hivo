@@ -3,12 +3,13 @@ import { dict, tr } from "../i18n";
 import * as api from "../lib/tauri";
 import * as updater from "../lib/updater";
 import { generateSampleProjects, generateSampleWorkspace } from "../lib/sampleData";
-import { ALBUM_COLORS, EMPTY_WORKSPACE, migrateWorkspace, newId } from "../lib/songs";
+import { ALBUM_COLORS, EMPTY_WORKSPACE, migrateWorkspace, newId, newerWorkspaceVersion } from "../lib/songs";
 import { logStageChanges } from "../lib/stageLog";
 import { addColumn, moveCard, moveColumn, removeColumn, renameColumn } from "../lib/pipeline";
 import type { DashboardLayout } from "../lib/dashboardLayout";
-import { applyRelinks, findRelinks, type Relink } from "../lib/relink";
+import { applyRelinks, findRelinks, isUnder, rootRelinks, type Relink } from "../lib/relink";
 import { setNote } from "../lib/notes";
+import { relinkBeatNotes } from "../lib/digger";
 import { canRenderInApp, dawOf, splitRenderable } from "../lib/daws";
 import type {
   DetectedFolder,
@@ -27,6 +28,7 @@ import type {
   CoverStatus,
   KitCoverMeta,
   KitAiMeta,
+  LaunchKitMeta,
   KitFieldId,
   SongStatus,
   Workspace,
@@ -71,7 +73,7 @@ export type SortDir = "asc" | "desc";
 /** "unsorted" = songs with no status yet. */
 export type StatusFilter = SongStatus | "unsorted" | null;
 
-interface RenderJob {
+export interface RenderJob {
   status: RenderStatus;
   message: string | null;
   outputPath: string | null;
@@ -99,23 +101,57 @@ export interface UpdateState {
   error?: string;
 }
 
+/** Why the workspace is read-only (the strip above the view). */
+export type WorkspaceIssue =
+  /** workspace.json couldn't be read or parsed. */
+  | { kind: "unreadable"; detail: string; hasBackup: boolean }
+  /** A newer Hivo saved it: shown, never saved over by this version. */
+  | { kind: "newer"; version: number };
+
+/** How often a running app looks for an update again (the first look is at launch). */
+export const UPDATE_RECHECK_MS = 24 * 60 * 60 * 1000;
+
 interface AppState {
   view: View;
   settings: Settings;
   settingsLoaded: boolean;
+  /** Settings couldn't be read (or were reset) at launch. */
   startupError: string | null;
+  /** The last scan failed (cleared by the next one that works). */
+  scanError: string | null;
+  /** An action failed (a render, a settings save…); never overwrites the others. */
+  actionError: string | null;
   /** The last workspace save failed (cleared by the next successful save). */
   saveError: string | null;
   dismissErrors: () => void;
   /** Try the failed save (or the failed workspace read) again. */
   retrySave: () => Promise<void>;
+  /** Why the workspace is read-only, with what the strip can offer. */
+  workspaceIssue: WorkspaceIssue | null;
+  /** Unreadable workspace: put `workspace.json.bak` back. */
+  restoreWorkspaceBackup: () => Promise<void>;
+  /** Unreadable workspace: keep it as `workspace.json.bad` and save what's in
+   * memory (an empty workspace plus the edits made since) from now on. */
+  startFreshWorkspace: () => Promise<void>;
+  showConfigFolder: () => Promise<void>;
   /** DAW default folders found on this computer; null = not looked yet. */
   detectedFolders: DetectedFolder[] | null;
+  /** Looking for DAW folders failed (not the same as "none found"). */
+  detectError: string | null;
   workspace: Workspace;
   /** False if the stored workspace couldn't be read — see loadWorkspace. */
   workspaceWritable: boolean;
   projects: ProjectInfo[];
   scanning: boolean;
+  /** Linked folders the last scan couldn't read (unplugged drive, unmounted
+   * share): their songs are missing for now, never taken for moved. */
+  unreachable: string[];
+  /** A linked folder that moved: pick its new place (native picker in Rust);
+   * every song's data under it follows. */
+  repointFolder: (folder: string) => Promise<void>;
+  /** Rescan; a failure shows in the error banner instead of being thrown
+   * (window focus, after a render). */
+  rescanOrReport: () => Promise<void>;
   /** Songs whose record followed a rename/move in the last scan (shown once). */
   relinked: Relink[];
   dismissRelinked: () => void;
@@ -170,8 +206,13 @@ interface AppState {
   folderFilter: string | null;
   setFolderFilter: (folder: string | null) => void;
   init: () => Promise<void>;
-/** Preferences only: paths go through the pickers below (Rust owns them). */
-  updateSettings: (patch: Partial<Omit<Settings, "watchedFolders" | "flStudioPath" | "outputFolder" | "ffmpegPath">>) => Promise<void>;
+  /** Preferences only: paths go through the pickers below (Rust owns them).
+   * A failed save puts back what settings.json holds and is reported in the
+   * banner; `{ report: false }` throws instead (the caller shows it). */
+  updateSettings: (
+    patch: Partial<Omit<Settings, "watchedFolders" | "flStudioPath" | "outputFolder" | "ffmpegPath">>,
+    opts?: { report?: boolean },
+  ) => Promise<void>;
   /** Native picker (in Rust); links the folder and scans it. */
   addWatchedFolder: () => Promise<void>;
   /** Look for every DAW's default projects folder (never links anything). */
@@ -187,7 +228,8 @@ interface AppState {
   removeSampleFolder: (folder: string) => Promise<void>;
   pickOutputFolder: () => Promise<void>;
   pickFlStudio: () => Promise<void>;
-  /** Fill in the FL Studio found on this machine; false if none was found. */
+  /** Fill in the FL Studio found on this machine; false if none was found
+   * (failing to save it throws). */
   detectFlStudio: () => Promise<boolean>;
   pickFfmpeg: () => Promise<void>;
   clearPathSetting: (which: "flStudio" | "ffmpeg" | "outputFolder") => Promise<void>;
@@ -225,7 +267,14 @@ interface AppState {
   setSnippetStart: (path: string, label: string, startSec: number | undefined) => void;
   /** Change a snippet's length (undefined = back to the detected length). */
   setSnippetLength: (path: string, label: string, lengthSec: number | undefined) => void;
-  acceptKit: (path: string) => void;
+  /** "Accept all": `fingerprint` is what it was accepted against (kitState.ts). */
+  acceptKit: (path: string, fingerprint?: string) => void;
+  /** Keeps the suggested release date on the song (accept, export): marked as
+   * a suggestion, so a date set on its release later wins. */
+  pinKitReleaseDate: (path: string, date: string) => void;
+  /** Small kit settings that aren't field values (master, export record,
+   * final cover, pre-save link). Doesn't touch "Accepted". */
+  patchKit: (path: string, patch: Partial<LaunchKitMeta>) => void;
   /** Merge AI drafts/review into a song's kit. */
   setKitAi: (path: string, patch: Partial<KitAiMeta>) => void;
   /** null until loaded; whether a Gemini key is set. */
@@ -277,6 +326,10 @@ interface AppState {
   /** Notes on a saved prod (by lead hash) or a beat (by file path); empty removes. */
   setLeadNote: (hash: string, text: string) => void;
   setBeatNote: (path: string, text: string) => void;
+  /** After a beats scan: notes follow renamed/moved beats, noted beats' sizes are remembered. */
+  syncBeatNotes: (beats: { path: string; name: string; sizeBytes: number }[]) => void;
+  /** A saved prod's beat set by hand: a path, null ("not in your prods"), or undefined (back to the name match). */
+  setLeadBeat: (hash: string, path: string | null | undefined) => void;
   /** Also removes their credits and pitches. */
   deletePerson: (id: string) => void;
   addPitch: (path: string, pitch: Omit<Pitch, "id">) => void;
@@ -306,15 +359,22 @@ interface AppState {
   trashBackups: (paths: string[], allowPermanent?: boolean) => Promise<number>;
 }
 
-/** Flush a pending debounced workspace save (set once the store exists). */
-let flushPending: () => Promise<void> = () => Promise.resolve();
+/** Flush a pending debounced workspace save (set once the store exists).
+ * Resolves false when the save failed (saveError says why). */
+let flushPending: () => Promise<boolean> = () => Promise.resolve(true);
 export const flushWorkspace = () => flushPending();
+/** Edits were made while the stored workspace couldn't be read (they live
+ * only in memory until "Start fresh"; a reload or restore drops them, and
+ * says so). */
+let editedWhileUnreadable = false;
 
 /** The workspace save currently being written, if any. */
 let savingNow: Promise<void> | null = null;
 /** The real favorites while sample data is shown (sample stars stay in memory). */
 let realFavorites: string[] | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+/** The daily update re-check (started once by init). */
+let updateTimer: ReturnType<typeof setInterval> | null = null;
 let scanSeq = 0;
 
 /** Errors the store throws (shown as they are in the UI). */
@@ -327,6 +387,7 @@ const STORE_ERRORS = dict(
     needExportForPackages: "Set an export folder in Settings first: packages go in <export folder>/Packages.",
     exportRunning: "An export is already running.",
     packaging: "Already packaging.",
+    nothingToPackage: "Nothing to package.",
   },
   {
     sampleExport: "Ce sont des données d'exemple : lie un vrai dossier de projets dans les Réglages avant d'exporter.",
@@ -336,13 +397,63 @@ const STORE_ERRORS = dict(
     needExportForPackages: "Choisis d'abord un dossier d'export dans les Réglages : les paquets vont dans <dossier d'export>/Packages.",
     exportRunning: "Un export est déjà en cours.",
     packaging: "Paquet déjà en cours.",
+    nothingToPackage: "Rien à empaqueter.",
   },
 );
 
 const STORE_TEXT = dict(
-  { renderFlOnly: (daw: string, tip: string) => `Rendering from Hivo works with FL Studio projects. Export this one from ${daw}: ${tip}` },
-  { renderFlOnly: (daw: string, tip: string) => `Le rendu depuis Hivo marche avec les projets FL Studio. Exporte celui-ci depuis ${daw} : ${tip}` },
+  {
+    renderFlOnly: (daw: string, tip: string) => `Rendering from Hivo works with FL Studio projects. Export this one from ${daw}: ${tip}`,
+    notFl: (daw: string) => `Not an FL Studio project. Export it from ${daw}.`,
+    packageFlOnly: (daw: string) => `Packaging works with FL Studio projects. In ${daw}, use its own "collect and save" feature.`,
+    saveFailed: (e: string) => `Couldn't save your changes (stages, notes, releases): ${e}`,
+    scanFailed: (e: string) => `Scanning failed: ${e}`,
+    settingsUnreadable: (e: string) => `Couldn't read your settings, using the defaults for now: ${e}`,
+    settingsReset: (bad: string) =>
+      `Your settings file couldn't be read, so Hivo started from the default settings: link your folders again in Settings. The old file is kept as ${bad}.`,
+    settingsSaveFailed: (e: string) => `Couldn't save that setting, it's back to what was saved: ${e}`,
+    droppedEdits: "Your workspace loaded. The changes made while it couldn't be read were not kept.",
+    untitledAlbum: "Untitled album",
+  },
+  {
+    renderFlOnly: (daw: string, tip: string) => `Le rendu depuis Hivo marche avec les projets FL Studio. Exporte celui-ci depuis ${daw} : ${tip}`,
+    notFl: (daw: string) => `Pas un projet FL Studio. Exporte-le depuis ${daw}.`,
+    packageFlOnly: (daw: string) => `Les paquets marchent avec les projets FL Studio. Dans ${daw}, utilise sa propre fonction « rassembler et enregistrer ».`,
+    saveFailed: (e: string) => `Impossible d'enregistrer tes modifications (étapes, notes, sorties) : ${e}`,
+    scanFailed: (e: string) => `Échec de l'analyse des dossiers : ${e}`,
+    settingsUnreadable: (e: string) => `Impossible de lire tes réglages, les réglages par défaut sont utilisés pour l'instant : ${e}`,
+    settingsReset: (bad: string) =>
+      `Ton fichier de réglages était illisible, Hivo a donc repris les réglages par défaut : relie à nouveau tes dossiers dans les Réglages. L'ancien fichier est gardé sous ${bad}.`,
+    settingsSaveFailed: (e: string) => `Impossible d'enregistrer ce réglage, il est revenu à ce qui était enregistré : ${e}`,
+    droppedEdits: "Ton espace de travail est chargé. Les modifications faites pendant qu'il était illisible n'ont pas été gardées.",
+    untitledAlbum: "Album sans titre",
+  },
 );
+
+/** A workspace read from disk, ready to apply in one `set`. */
+export type LoadedWorkspace =
+  | { ok: true; workspace: Workspace; changed: boolean; newer: number | null }
+  | { ok: false; detail: string; hasBackup: boolean };
+
+/** Turns what `get_workspace` returned into the workspace to show. */
+export function fromStored(stored: Workspace | null): LoadedWorkspace {
+  if (!stored) return { ok: true, workspace: EMPTY_WORKSPACE, changed: false, newer: null };
+  const newer = newerWorkspaceVersion(stored);
+  const { workspace, changed } = migrateWorkspace(stored);
+  // Whatever was on disk, it's never sample data.
+  const { sample: _sample, ...real } = workspace;
+  return { ok: true, workspace: real, changed: changed && newer === null, newer };
+}
+
+async function readWorkspace(): Promise<LoadedWorkspace> {
+  try {
+    return fromStored(await api.getWorkspace());
+  } catch (e) {
+    const files = await api.workspaceFiles().catch(() => null);
+    return { ok: false, detail: String(e), hasBackup: !!files?.hasBackup };
+  }
+}
+
 
 export const useAppStore = create<AppState>((set, get) => {
   /** Apply a change to the workspace and persist it (debounced, so typing
@@ -353,7 +464,11 @@ export const useAppStore = create<AppState>((set, get) => {
     const prev = get().workspace;
     const next = logStageChanges(prev, fn(prev), Date.now());
     set({ workspace: next });
-    if (get().demoMode || !get().workspaceWritable) return;
+    if (get().demoMode || next.sample) return;
+    if (!get().workspaceWritable) {
+      if (get().workspaceIssue?.kind === "unreadable") editedWhileUnreadable = true;
+      return;
+    }
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => void persistWorkspace(), 400);
   }
@@ -362,31 +477,85 @@ export const useAppStore = create<AppState>((set, get) => {
   async function persistWorkspace() {
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = null;
-    // Re-check at fire time: sample data may have been loaded meanwhile.
-    if (get().demoMode || !get().workspaceWritable) return;
+    // Re-check at fire time: sample data may have been loaded meanwhile. The
+    // `sample` flag is the last guard: generated data never reaches the disk.
+    const { demoMode, workspaceWritable, workspace } = get();
+    if (demoMode || !workspaceWritable || workspace.sample) return;
     const write = api
-      .saveWorkspace(get().workspace)
+      .saveWorkspace(workspace)
       .then(() => {
         if (get().saveError) set({ saveError: null });
       })
       .catch((e) => {
         console.error("saving workspace failed", e);
-        set({ saveError: `Couldn't save your changes (stages, notes, releases): ${String(e)}` });
+        set({ saveError: tr(STORE_TEXT).saveFailed(String(e)) });
       });
     savingNow = write;
     await write;
     if (savingNow === write) savingNow = null;
   }
   // On close: write a pending save, or wait for the one being written.
+  // False = it failed (the caller keeps the window open once).
   flushPending = async () => {
     if (saveTimer) await persistWorkspace();
     else if (savingNow) await savingNow;
+    return get().saveError === null;
   };
 
-  /** Leaving sample data: put the real favorites back. */
-  function restoreRealFavorites() {
-    if (realFavorites) set({ settings: { ...get().settings, favorites: realFavorites } });
+  /** The real favorites to put back when leaving sample data (and forget them). */
+  function takeRealFavorites(): Partial<AppState> {
+    const favorites = realFavorites;
     realFavorites = null;
+    return favorites ? { settings: { ...get().settings, favorites } } : {};
+  }
+
+  /** Shows a workspace read from disk, in one `set` with `extra` (leaving
+   * sample data passes `demoMode: false` here, so there's never a moment
+   * where sample data is on screen with saving on). */
+  function applyLoaded(loaded: LoadedWorkspace, extra: Partial<AppState> = {}) {
+    // Edits made while the file couldn't be read existed only in memory.
+    const dropped = editedWhileUnreadable;
+    editedWhileUnreadable = false;
+    const droppedNote = dropped ? { actionError: tr(STORE_TEXT).droppedEdits } : {};
+    if (!loaded.ok) {
+      // Never save over a workspace we couldn't read — that would wipe the
+      // user's albums and statuses. The strip offers restore / start fresh.
+      // Still unreadable on a retry: the edits made meanwhile stay in memory.
+      const s = get();
+      const keep = s.workspaceIssue?.kind === "unreadable" && !s.demoMode && !s.workspace.sample;
+      editedWhileUnreadable = keep && dropped;
+      set({
+        ...extra,
+        workspace: keep ? s.workspace : EMPTY_WORKSPACE,
+        workspaceWritable: false,
+        workspaceIssue: { kind: "unreadable", detail: loaded.detail, hasBackup: loaded.hasBackup },
+      });
+      return;
+    }
+    if (loaded.newer !== null) {
+      set({ ...extra, ...droppedNote, workspace: loaded.workspace, workspaceWritable: false, workspaceIssue: { kind: "newer", version: loaded.newer } });
+      return;
+    }
+    set({ ...extra, ...droppedNote, workspace: loaded.workspace, workspaceWritable: true, workspaceIssue: null });
+    // Save the upgraded shape once, so the migration doesn't rerun.
+    if (loaded.changed) void api.saveWorkspace(loaded.workspace).catch((e) => console.error("saving migrated workspace failed", e));
+  }
+
+  /** Leaving sample data: the real workspace is read first, then swapped in
+   * with `demoMode: false` in the same `set`. Anything that changes the
+   * workspace meanwhile changes sample data, which is never saved. */
+  async function leaveSampleData(extra: Partial<AppState> = {}) {
+    const loaded = await readWorkspace();
+    applyLoaded(loaded, {
+      ...extra,
+      ...takeRealFavorites(),
+      demoMode: false,
+      projects: [],
+      selected: new Set(),
+      detailPath: null,
+      openAlbumId: null,
+      launchPath: null,
+    });
   }
 
   /** Take the path settings Rust saved; keep this session's other preferences
@@ -400,11 +569,7 @@ export const useAppStore = create<AppState>((set, get) => {
   async function linked(saved: Settings) {
     // Leaving sample data: drop its fake albums/people before anything
     // can be saved over the real workspace.
-    if (get().demoMode) {
-      set({ demoMode: false, projects: [], selected: new Set(), detailPath: null, openAlbumId: null });
-      restoreRealFavorites();
-      await loadWorkspace();
-    }
+    if (get().demoMode) await leaveSampleData();
     keepPaths(saved);
     await scanOrReport();
   }
@@ -429,9 +594,9 @@ export const useAppStore = create<AppState>((set, get) => {
     return get()
       .rescan()
       .then(() => {
-        if (get().startupError?.startsWith("Scanning failed")) set({ startupError: null });
+        if (get().scanError) set({ scanError: null });
       })
-      .catch((e) => set({ startupError: `Scanning failed: ${String(e)}` }));
+      .catch((e) => set({ scanError: tr(STORE_TEXT).scanFailed(String(e)) }));
   }
 
   function mutateAlbum(id: string, fn: (album: Album) => Album) {
@@ -442,22 +607,9 @@ export const useAppStore = create<AppState>((set, get) => {
   }
 
   async function loadWorkspace() {
-    try {
-      const stored = await api.getWorkspace();
-      const { workspace, changed } = stored ? migrateWorkspace(stored) : { workspace: EMPTY_WORKSPACE, changed: false };
-      set({ workspace, workspaceWritable: true });
-      if (get().startupError?.startsWith("Couldn't read your workspace")) set({ startupError: null });
-      // Save the upgraded shape once, so the migration doesn't rerun.
-      if (changed) await api.saveWorkspace(workspace).catch((e) => console.error("saving migrated workspace failed", e));
-    } catch (e) {
-      // Never save over a workspace we couldn't read — that would wipe the
-      // user's albums and statuses. Edits stay in memory until it's fixed.
-      set({
-        workspace: EMPTY_WORKSPACE,
-        workspaceWritable: false,
-        startupError: `Couldn't read your workspace (albums, statuses, notes): ${String(e)}. Changes won't be saved until it's fixed.`,
-      });
-    }
+    // Sample data on screen: the real workspace is read when leaving it.
+    if (get().demoMode) return;
+    applyLoaded(await readWorkspace());
   }
 
   return {
@@ -465,22 +617,57 @@ export const useAppStore = create<AppState>((set, get) => {
     settings: DEFAULT_SETTINGS,
     settingsLoaded: false,
     startupError: null,
+    scanError: null,
+    actionError: null,
     saveError: null,
-    dismissErrors: () => set({ startupError: null, saveError: null }),
+    dismissErrors: () => set({ startupError: null, scanError: null, actionError: null, saveError: null }),
     retrySave: async () => {
-      // Unreadable at startup: read it again rather than write over it (see
-      // loadWorkspace). Once it reads, saves resume on the stored copy.
+      // Unreadable (or from a newer Hivo): read it again rather than write
+      // over it. Once it reads, saves resume on the stored copy.
       if (!get().workspaceWritable) {
         await loadWorkspace();
         return;
       }
       await persistWorkspace();
     },
+    workspaceIssue: null,
+    restoreWorkspaceBackup: async () => {
+      if (get().workspaceIssue?.kind !== "unreadable") return;
+      applyLoaded(fromStored(await api.restoreWorkspaceBackup()));
+    },
+    startFreshWorkspace: async () => {
+      if (get().workspaceIssue?.kind !== "unreadable" || get().demoMode) return;
+      await api.setAsideWorkspace();
+      // What's in memory (an empty workspace plus any edits made since) is
+      // what gets saved from now on.
+      editedWhileUnreadable = false;
+      set({ workspaceWritable: true, workspaceIssue: null });
+      await persistWorkspace();
+    },
+    showConfigFolder: () => api.showConfigFolder(),
     detectedFolders: null,
+    detectError: null,
     workspace: EMPTY_WORKSPACE,
     workspaceWritable: false,
     projects: [],
     scanning: false,
+    unreachable: [],
+    rescanOrReport: () => scanOrReport(),
+    repointFolder: async (folder) => {
+      if (get().demoMode) throw new Error(tr(STORE_ERRORS).sample);
+      const moved = await api.repointWatchedFolder(folder);
+      if (!moved) return;
+      keepPaths(moved.settings);
+      // Every record under the old folder moves to the same place under the
+      // new one (stage, notes, credits, crew share, release slots, favorites).
+      if (get().workspaceWritable) {
+        const relinks = rootRelinks(get().workspace, moved.from, moved.to);
+        if (relinks.length) followRelinks(relinks);
+      }
+      const filter = get().folderFilter;
+      if (filter && isUnder(`${filter}/x`, moved.from)) set({ folderFilter: null });
+      await scanOrReport();
+    },
     relinked: [],
     dismissRelinked: () => set({ relinked: [] }),
     search: "",
@@ -534,7 +721,7 @@ export const useAppStore = create<AppState>((set, get) => {
         await updater.installUpdate(
           ({ downloaded, total, finished }) =>
             set({ update: { status: finished ? "ready" : "downloading", version, progress: total ? downloaded / total : undefined } }),
-          flushWorkspace,
+          async () => void (await flushWorkspace()),
         );
       } catch (e) {
         set({ update: { status: "error", version, error: e instanceof Error ? e.message : String(e) } });
@@ -567,8 +754,12 @@ export const useAppStore = create<AppState>((set, get) => {
         settings = await api.getSettings();
       } catch (e) {
         settings = { ...DEFAULT_SETTINGS };
-        set({ startupError: `Couldn't read settings, using defaults: ${String(e)}` });
+        set({ startupError: tr(STORE_TEXT).settingsUnreadable(String(e)) });
       }
+      // settings.json didn't parse: Rust kept it aside and started from the
+      // defaults. Said once, with where the old file is.
+      const keptAs = await api.takeSettingsRecovery().catch(() => null);
+      if (keptAs) set({ startupError: tr(STORE_TEXT).settingsReset(keptAs) });
       // First run on a machine with FL installed: fill the path in for them.
       if (!settings.flStudioPath) {
         settings = (await api.useDetectedFlStudio().catch(() => null)) ?? settings;
@@ -578,8 +769,14 @@ export const useAppStore = create<AppState>((set, get) => {
       get().refreshAiStatus();
       get().refreshCoverStatus();
       set({ settingsLoaded: true });
-      // One update check per launch (never for sample data or a browser tab).
-      if (updater.UPDATES_ENABLED && !get().demoMode) void get().checkUpdate({ quiet: true });
+      // An update check at launch, then once a day while the app stays open
+      // (never for sample data or a browser tab). Quiet: offline is normal.
+      if (updater.UPDATES_ENABLED && !updateTimer) {
+        if (!get().demoMode) void get().checkUpdate({ quiet: true });
+        updateTimer = setInterval(() => {
+          if (!get().demoMode) void get().checkUpdate({ quiet: true });
+        }, UPDATE_RECHECK_MS);
+      }
 
       if (!get().unlisten) {
         const unlisten = await api.onRenderProgress((event: RenderEvent) => {
@@ -597,18 +794,28 @@ export const useAppStore = create<AppState>((set, get) => {
       }
 
       if (settings.watchedFolders.length > 0) {
-        await get().rescan().catch((e) => set({ startupError: `Scanning failed: ${String(e)}` }));
+        await scanOrReport();
       } else {
         // Fresh machine: propose every DAW folder found (the user links them).
         await get().detectFolders();
       }
     },
 
-    updateSettings: async (patch) => {
+    updateSettings: async (patch, { report = true } = {}) => {
       const merged = { ...get().settings, ...patch };
       set({ settings: merged });
-      // Sample-data stars never reach settings.json.
-      await api.saveSettings(realFavorites ? { ...merged, favorites: realFavorites } : merged);
+      try {
+        // Sample-data stars never reach settings.json.
+        await api.saveSettings(realFavorites ? { ...merged, favorites: realFavorites } : merged);
+      } catch (e) {
+        // Back to what settings.json holds (Rust may have saved part of it),
+        // so the screen never shows a setting that isn't saved.
+        const saved = await api.getSettings().catch(() => null);
+        // (Sample-data stars stay in memory.)
+        if (saved) set((s) => ({ settings: { ...saved, favorites: realFavorites ? s.settings.favorites : saved.favorites } }));
+        if (!report) throw e;
+        set({ actionError: tr(STORE_TEXT).settingsSaveFailed(e instanceof Error ? e.message : String(e)) });
+      }
     },
 
     addWatchedFolder: async () => {
@@ -618,7 +825,12 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     detectFolders: async () => {
-      set({ detectedFolders: await api.detectDawFolders().catch(() => []) });
+      // A failure isn't "nothing found": say what went wrong instead.
+      try {
+        set({ detectedFolders: await api.detectDawFolders(), detectError: null });
+      } catch (e) {
+        set({ detectedFolders: [], detectError: e instanceof Error ? e.message : String(e) });
+      }
     },
 
     linkDetected: async (path) => {
@@ -656,9 +868,10 @@ export const useAppStore = create<AppState>((set, get) => {
     pickFlStudio: async () => keepPaths(await api.pickFlStudio()),
 
     detectFlStudio: async () => {
-      const next = await api.useDetectedFlStudio().catch(() => null);
-      if (next) keepPaths(next);
-      return !!next?.flStudioPath;
+      if (!(await api.detectFlStudio())) return false;
+      const next = await api.useDetectedFlStudio();
+      keepPaths(next);
+      return !!next.flStudioPath;
     },
 
     pickFfmpeg: async () => keepPaths(await api.pickFfmpeg()),
@@ -672,7 +885,7 @@ export const useAppStore = create<AppState>((set, get) => {
       if (get().demoMode) return;
       const folders = get().settings.watchedFolders;
       if (folders.length === 0) {
-        set({ projects: [] });
+        set({ projects: [], unreachable: [] });
         return;
       }
       // Scans can overlap (window focus + adding a folder); only the newest
@@ -680,17 +893,18 @@ export const useAppStore = create<AppState>((set, get) => {
       const id = ++scanSeq;
       set({ scanning: true });
       try {
-        const projects = await api.scanProjects();
+        const { projects, unreachable } = await api.scanProjects();
         if (id === scanSeq && !get().demoMode) {
           // Renamed/moved .flp files keep their stage, tags, notes, credits,
           // crew share and album slot (lib/relink.ts). Only on the real,
-          // writable workspace, never sample data.
-          const relinks = get().workspaceWritable ? findRelinks(projects, get().workspace, folders) : [];
+          // writable workspace, never sample data. Songs under a linked
+          // folder that's unreachable right now are missing, not moved.
+          const relinks = get().workspaceWritable ? findRelinks(projects, get().workspace, folders, unreachable) : [];
           if (relinks.length) {
             followRelinks(relinks);
             set({ relinked: [...get().relinked, ...relinks] });
           }
-          set({ projects });
+          set({ projects, unreachable });
         }
       } finally {
         if (id === scanSeq) set({ scanning: false });
@@ -739,7 +953,7 @@ export const useAppStore = create<AppState>((set, get) => {
       }
       for (const path of skipped) {
         const daw = dawOf(byPath.get(path) ?? {});
-        seedJobs.set(path, { status: "error", message: `Not an FL Studio project. Export it from ${daw.label}.`, outputPath: null });
+        seedJobs.set(path, { status: "error", message: tr(STORE_TEXT).notFl(daw.label), outputPath: null });
       }
       set({ renderJobs: seedJobs, rendering: true });
 
@@ -759,7 +973,7 @@ export const useAppStore = create<AppState>((set, get) => {
       } finally {
         set({ rendering: false });
         // Pick up the new mixdowns (freshness badges, playback).
-        get().rescan().catch(() => {});
+        void scanOrReport();
       }
     },
 
@@ -786,11 +1000,11 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     exitDemoMode: async () => {
-      set({ demoMode: false, selected: new Set(), detailPath: null, openAlbumId: null, launchPath: null });
+      if (!get().demoMode) return;
+      // Real workspace first, then demoMode off in the same set (B3).
+      await leaveSampleData();
       get().resetLibraryFilters();
-      restoreRealFavorites();
-      await loadWorkspace();
-      await get().rescan();
+      await scanOrReport();
     },
 
     toggleFavorite: (path) => {
@@ -832,12 +1046,12 @@ export const useAppStore = create<AppState>((set, get) => {
           bytes: 0,
           included: 0,
           missing: [],
-          error: `Packaging works with FL Studio projects. In ${dawOf(byPath.get(p) ?? {}).label}, use its own "collect and save" feature.`,
+          error: tr(STORE_TEXT).packageFlOnly(dawOf(byPath.get(p) ?? {}).label),
         }));
       paths = paths.filter((p) => canRenderInApp(byPath.get(p) ?? {}));
       if (paths.length === 0) {
         set({ packageResults: skippedResults });
-        throw new Error(skippedResults[0]?.error ?? "Nothing to package.");
+        throw new Error(skippedResults[0]?.error ?? tr(STORE_ERRORS).nothingToPackage);
       }
       const plans = await api.packagePreview(paths);
       set({ packagePlan: { plans, subfolder, skipped: skippedResults }, packageResults: null });
@@ -877,7 +1091,20 @@ export const useAppStore = create<AppState>((set, get) => {
       const edits = { ...kit.edits };
       if (value === undefined) delete edits[id];
       else edits[id] = value;
-      get().updateSong(path, { launchKit: { ...kit, edits, acceptedAtMs: undefined } });
+      // A date the user sets is theirs (never silently replaced by the release's).
+      const releaseDatePin = id === "releaseDate" ? (value === undefined ? undefined : "typed") : kit.releaseDatePin;
+      get().updateSong(path, { launchKit: { ...kit, edits, releaseDatePin, acceptedAtMs: undefined } });
+    },
+
+    pinKitReleaseDate: (path, date) => {
+      const kit = get().workspace.songs[path]?.launchKit ?? {};
+      if (kit.edits?.releaseDate) return;
+      get().updateSong(path, { launchKit: { ...kit, edits: { ...kit.edits, releaseDate: date }, releaseDatePin: "suggested" } });
+    },
+
+    patchKit: (path, patch) => {
+      const kit = get().workspace.songs[path]?.launchKit ?? {};
+      get().updateSong(path, { launchKit: { ...kit, ...patch } });
     },
 
     setSnippetStart: (path, label, startSec) => {
@@ -898,12 +1125,13 @@ export const useAppStore = create<AppState>((set, get) => {
 
     setKitEdits: (path, edits) => {
       const kit = get().workspace.songs[path]?.launchKit ?? {};
-      get().updateSong(path, { launchKit: { ...kit, edits: edits === null ? {} : { ...kit.edits, ...edits }, acceptedAtMs: undefined } });
+      const releaseDatePin = edits === null ? undefined : edits.releaseDate !== undefined ? "typed" : kit.releaseDatePin;
+      get().updateSong(path, { launchKit: { ...kit, edits: edits === null ? {} : { ...kit.edits, ...edits }, releaseDatePin, acceptedAtMs: undefined } });
     },
 
-    acceptKit: (path) => {
+    acceptKit: (path, fingerprint) => {
       const kit = get().workspace.songs[path]?.launchKit ?? {};
-      get().updateSong(path, { launchKit: { ...kit, acceptedAtMs: Date.now() } });
+      get().updateSong(path, { launchKit: { ...kit, acceptedAtMs: Date.now(), acceptedFingerprint: fingerprint } });
     },
 
     setKitAi: (path, patch) => {
@@ -983,7 +1211,7 @@ export const useAppStore = create<AppState>((set, get) => {
           ...ws.albums,
           {
             id,
-            title: title.trim() || "Untitled album",
+            title: title.trim() || tr(STORE_TEXT).untitledAlbum,
             kind: "album",
             color: ALBUM_COLORS[ws.albums.length % ALBUM_COLORS.length],
             releaseDate: null,
@@ -1009,6 +1237,28 @@ export const useAppStore = create<AppState>((set, get) => {
 
     setLeadNote: (hash, text) => mutateWorkspace((ws) => ({ ...ws, leadNotes: setNote(ws.leadNotes, hash, text) })),
     setBeatNote: (path, text) => mutateWorkspace((ws) => ({ ...ws, beatNotes: setNote(ws.beatNotes, path, text) })),
+    syncBeatNotes: (beats) => {
+      const ws = get().workspace;
+      if (!ws.beatNotes || Object.keys(ws.beatNotes).length === 0) return;
+      const moved = relinkBeatNotes(ws.beatNotes, ws.beatNoteSizes, beats);
+      const notes = moved?.notes ?? ws.beatNotes;
+      const sizes: Record<string, number> = {};
+      const byPath = new Map(beats.map((b) => [b.path, b.sizeBytes]));
+      // Sizes of noted beats only; a noted beat missing from this scan keeps its last size.
+      for (const p of Object.keys(notes)) {
+        const s = byPath.get(p) ?? moved?.sizes[p] ?? ws.beatNoteSizes?.[p];
+        if (s !== undefined) sizes[p] = s;
+      }
+      const same = !moved && JSON.stringify(sizes) === JSON.stringify(ws.beatNoteSizes ?? {});
+      if (!same) mutateWorkspace((w) => ({ ...w, beatNotes: notes, beatNoteSizes: sizes }));
+    },
+    setLeadBeat: (hash, path) =>
+      mutateWorkspace((ws) => {
+        const next = { ...(ws.leadBeats ?? {}) };
+        if (path === undefined) delete next[hash];
+        else next[hash] = path;
+        return { ...ws, leadBeats: next };
+      }),
 
     updatePerson: (id, patch) =>
       mutateWorkspace((ws) => ({ ...ws, people: ws.people.map((p) => (p.id === id ? { ...p, ...patch } : p)) })),
@@ -1084,7 +1334,9 @@ export const useAppStore = create<AppState>((set, get) => {
       const path = await api.createProject({ templatePath, parentFolder, name });
       get().updateSong(path, { status });
       if (albumId) get().addTracks(albumId, [path]);
-      await get().rescan();
+      // The file exists now: a failed rescan is reported, never thrown (a
+      // retry would only say "already exists").
+      await scanOrReport();
       return path;
     },
 
@@ -1107,11 +1359,16 @@ export const useAppStore = create<AppState>((set, get) => {
 
     duplicateProject: async (path, newName) => {
       const created = await api.duplicateProject(path, newName);
-      // The new version inherits the song's tags and stage only: not its
-      // crew share (one share id per song), Launch Kit, credits or archive flag.
+      // The new version inherits the song's stage, tags, key, notes and
+      // credits: not its crew share (one share id per song), Launch Kit or
+      // archive flag.
       const meta = get().workspace.songs[path];
-      if (meta) get().updateSong(created, { tags: meta.tags, status: meta.status });
-      await get().rescan();
+      if (meta) {
+        const { tags, status, key, notes, credits } = meta;
+        get().updateSong(created, { tags, status, key, notes, credits: credits?.map((c) => ({ ...c })) });
+      }
+      // The copy exists now: a failed rescan is reported, never thrown.
+      await scanOrReport();
       return created;
     },
 

@@ -119,6 +119,12 @@ impl Lists {
 /// above for the exact event IDs this pulls from.
 pub fn parse_flp_metadata(path: &Path) -> Result<FlpMetadata, String> {
     let file = File::open(path).map_err(|e| format!("could not open file: {e}"))?;
+    parse_flp_file(file)
+}
+
+/// The same, from a file already opened (the scan's read cache opens it
+/// first, so a file that can't be opened isn't cached as damaged).
+pub(crate) fn parse_flp_file(file: File) -> Result<FlpMetadata, String> {
     let len = file.metadata().map(|m| m.len()).ok();
     let mut reader = BufReader::new(file);
     parse_from_reader(&mut reader, len)

@@ -73,7 +73,11 @@ export function RenderPanel() {
             <div className="min-w-0 flex-1">
               <div className="truncate text-body">{path.split(/[/\\]/).pop()}</div>
               {job.status === "error" && job.message && (
-                <div className="truncate text-[11px] text-red-300/80">{job.message}</div>
+                <div className="truncate text-[11px] text-red-300/80" title={job.message}>{job.message}</div>
+              )}
+              {/* Rendered with a warning (samples that weren't found). */}
+              {job.status === "done" && job.message && (
+                <div className="truncate text-[11px] text-amber-300/80" title={job.message}>{job.message}</div>
               )}
             </div>
           </div>

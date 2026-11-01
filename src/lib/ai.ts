@@ -1,5 +1,6 @@
 import * as api from "./tauri";
-import { artistLine, briefSpecs, CAPTION_HEADINGS, CAPTION_LANGUAGE_NAMES, isoDate, parseDate, type KitField, type KitInput } from "./launchKit";
+import { artistLine, briefSpecs, CAPTION_HEADINGS, CAPTION_LANGUAGE_NAMES, isoDate, parseDate, RELEASE_TYPES, type KitField, type KitInput } from "./launchKit";
+import { KEYS } from "./songs";
 import { detectKey, detectedPeople } from "./people";
 import type { AiFieldReview, KitFieldId, Settings } from "../types";
 import { dict, tr } from "../i18n";
@@ -137,7 +138,10 @@ export function sanitizeReview(raw: unknown, fields: KitField[]): Partial<Record
       suggestion === field.value ||
       suggestion.length > limit ||
       (field.id === "releaseDate" && !parseDate(suggestion)) ||
-      (field.id === "explicit" && suggestion !== "Yes" && suggestion !== "No")
+      (field.id === "explicit" && suggestion !== "Yes" && suggestion !== "No") ||
+      // Choices with a fixed list: anything else would fail the field's own check.
+      (field.id === "key" && !KEYS.includes(suggestion)) ||
+      (field.id === "releaseType" && !RELEASE_TYPES.includes(suggestion))
     ) {
       suggestion = "";
     }

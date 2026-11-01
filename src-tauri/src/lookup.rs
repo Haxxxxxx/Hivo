@@ -90,6 +90,19 @@ pub enum Source {
     Musicbrainz,
     Deezer,
     Itunes,
+    /// Added by hand (People → Profiles → Add a link).
+    Manual,
+}
+
+/// What a by-name match says about the artist it found, so the user can
+/// tell two artists with the same name apart before confirming it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchInfo {
+    pub fans: Option<u64>,
+    pub albums: Option<u64>,
+    pub genre: Option<String>,
+    pub top_track: Option<String>,
 }
 
 /// A profile on one platform: the link (rebuilt from the id for known
@@ -103,6 +116,11 @@ pub struct PlatformLink {
     pub url: String,
     pub id: Option<String>,
     pub source: Source,
+    /// False for Deezer / Apple Music found by name only (a homonym is
+    /// possible): the user confirms it before its id counts.
+    pub verified: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub match_info: Option<MatchInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -170,7 +188,7 @@ fn host_is(host: &str, domain: &str) -> bool {
 }
 
 fn link(platform: &str, label: &str, category: Category, url: String, id: Option<String>) -> PlatformLink {
-    PlatformLink { platform: platform.into(), label: label.into(), category, url, id, source: Source::Musicbrainz }
+    PlatformLink { platform: platform.into(), label: label.into(), category, url, id, source: Source::Musicbrainz, verified: true, match_info: None }
 }
 
 /// Reference databases MusicBrainz links to that aren't profiles.
@@ -429,7 +447,8 @@ pub fn parse_relations(v: &Value) -> Vec<PlatformLink> {
     dedupe(links)
 }
 
-/// Deezer's search answer: the artist whose name is exactly `name`.
+/// Deezer's search answer: the artist whose name is exactly `name`,
+/// unverified (a name match only), with its fan and album counts.
 pub fn parse_deezer(v: &Value, name: &str) -> Option<PlatformLink> {
     let want = normalize(name);
     v.get("data")?.as_array()?.iter().find_map(|a| {
@@ -441,11 +460,14 @@ pub fn parse_deezer(v: &Value, name: &str) -> Option<PlatformLink> {
             url: format!("https://www.deezer.com/artist/{id}"),
             id: Some(id.to_string()),
             source: Source::Deezer,
+            verified: false,
+            match_info: Some(MatchInfo { fans: a.get("nb_fan").and_then(Value::as_u64), albums: a.get("nb_album").and_then(Value::as_u64), ..MatchInfo::default() }),
         })
     })
 }
 
-/// iTunes' search answer: the artist whose name is exactly `name`.
+/// iTunes' search answer: the artist whose name is exactly `name`,
+/// unverified (a name match only), with its main genre.
 pub fn parse_itunes(v: &Value, name: &str) -> Option<PlatformLink> {
     let want = normalize(name);
     v.get("results")?.as_array()?.iter().find_map(|a| {
@@ -457,8 +479,20 @@ pub fn parse_itunes(v: &Value, name: &str) -> Option<PlatformLink> {
             url: format!("https://music.apple.com/artist/{id}"),
             id: Some(id.to_string()),
             source: Source::Itunes,
+            verified: false,
+            match_info: Some(MatchInfo { genre: Some(str_of(a, "primaryGenreName")).filter(|g| !g.is_empty()), ..MatchInfo::default() }),
         })
     })
+}
+
+/// The first title in Deezer's `/artist/{id}/top` answer.
+pub fn parse_deezer_top(v: &Value) -> Option<String> {
+    Some(str_of(v.get("data")?.as_array()?.first()?, "title")).filter(|t| !t.is_empty())
+}
+
+/// The first song in iTunes' `/lookup?id=…&entity=song` answer (the artist comes first).
+pub fn parse_itunes_top(v: &Value) -> Option<String> {
+    v.get("results")?.as_array()?.iter().find(|r| r.get("wrapperType").and_then(Value::as_str) == Some("track")).map(|r| str_of(r, "trackName")).filter(|t| !t.is_empty())
 }
 
 /// Spotify's artist object.
@@ -501,23 +535,28 @@ fn explain(what: &str, e: reqwest::Error) -> String {
 }
 
 async fn get_json(client: &reqwest::Client, what: &str, url: &str, bearer: Option<&str>) -> Result<Value, String> {
+    get_json_status(client, what, url, bearer).await.map_err(|(_, e)| e)
+}
+
+/// `get_json`, keeping the HTTP status of a refusal (0 when nothing answered).
+async fn get_json_status(client: &reqwest::Client, what: &str, url: &str, bearer: Option<&str>) -> Result<Value, (u16, String)> {
     let mut req = client.get(url).header("Accept", "application/json");
     if let Some(token) = bearer {
         req = req.bearer_auth(token);
     }
-    let res = req.send().await.map_err(|e| explain(what, e))?;
+    let res = req.send().await.map_err(|e| (0, explain(what, e)))?;
     let status = res.status().as_u16();
-    let bytes = res.bytes().await.map_err(|e| explain(what, e))?;
+    let bytes = res.bytes().await.map_err(|e| (0, explain(what, e)))?;
     if bytes.len() > MAX_BODY {
-        return Err(format!("{what} sent too much data."));
+        return Err((0, format!("{what} sent too much data.")));
     }
     let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     match status {
         200 => Ok(body),
-        429 | 503 => Err(format!("{what} is busy (rate limit). Wait a few seconds and try again.")),
-        404 => Err(format!("{what}: not found.")),
-        401 | 403 => Err(format!("{what} refused the request ({status}). Check the credentials in Settings.")),
-        _ => Err(format!("{what} answered {status}.")),
+        429 | 503 => Err((status, format!("{what} is busy (rate limit). Wait a few seconds and try again."))),
+        404 => Err((status, format!("{what}: not found."))),
+        401 | 403 => Err((status, format!("{what} refused the request ({status}). Check the credentials in Settings."))),
+        _ => Err((status, format!("{what} answered {status}."))),
     }
 }
 
@@ -558,13 +597,26 @@ async fn mb_relations(client: &reqwest::Client, base: &str, mbid: &str) -> Resul
 async fn deezer_search(client: &reqwest::Client, base: &str, name: &str) -> Option<PlatformLink> {
     let url = Url::parse_with_params(&format!("{base}/search/artist"), &[("q", name), ("limit", "5")]).ok()?;
     let v = get_json(client, "Deezer", url.as_str(), None).await.ok()?;
-    parse_deezer(&v, name)
+    let mut link = parse_deezer(&v, name)?;
+    // The top track helps tell two artists with the same name apart.
+    if let (Some(id), Some(info)) = (link.id.clone(), link.match_info.as_mut()) {
+        if let Ok(top) = get_json(client, "Deezer", &format!("{base}/artist/{id}/top?limit=1"), None).await {
+            info.top_track = parse_deezer_top(&top);
+        }
+    }
+    Some(link)
 }
 
 async fn itunes_search(client: &reqwest::Client, base: &str, name: &str) -> Option<PlatformLink> {
     let url = Url::parse_with_params(&format!("{base}/search"), &[("term", name), ("entity", "musicArtist"), ("limit", "5")]).ok()?;
     let v = get_json(client, "iTunes", url.as_str(), None).await.ok()?;
-    parse_itunes(&v, name)
+    let mut link = parse_itunes(&v, name)?;
+    if let (Some(id), Some(info)) = (link.id.clone(), link.match_info.as_mut()) {
+        if let Ok(top) = get_json(client, "iTunes", &format!("{base}/lookup?id={id}&entity=song&limit=1"), None).await {
+            info.top_track = parse_itunes_top(&top);
+        }
+    }
+    Some(link)
 }
 
 // ---- Spotify credentials (optional) ----
@@ -640,12 +692,40 @@ pub fn spotify_status(app: AppHandle) -> SpotifyStatus {
 /// Saves (or, with empty values, removes) the credentials. Never returned.
 #[tauri::command]
 pub fn set_spotify_credentials(app: AppHandle, client_id: Option<String>, client_secret: Option<String>) -> Result<(), String> {
+    // A token from the old app must not outlive its credentials.
+    clear_spotify_token();
     store_credentials(&secrets_path(&app)?, client_id, client_secret)
 }
 
 fn token_cache() -> &'static Mutex<Option<(String, Instant)>> {
     static TOKEN: OnceLock<Mutex<Option<(String, Instant)>>> = OnceLock::new();
     TOKEN.get_or_init(|| Mutex::new(None))
+}
+
+/// Forgets the cached app token (new credentials, or Spotify said 401).
+fn clear_spotify_token() {
+    *token_cache().lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// Where to get a token and with what (tests point `token_url` at a local server).
+struct SpotifyApp {
+    token_url: String,
+    id: String,
+    secret: String,
+}
+
+/// A Spotify API GET with the app token; a 401 (the token was revoked or
+/// belongs to older credentials) drops the cached token and retries once.
+async fn spotify_get(client: &reqwest::Client, app: &SpotifyApp, url: &str) -> Result<Value, String> {
+    let token = spotify_token(client, &app.token_url, &app.id, &app.secret).await?;
+    match get_json_status(client, "Spotify", url, Some(&token)).await {
+        Err((401, _)) => {
+            clear_spotify_token();
+            let token = spotify_token(client, &app.token_url, &app.id, &app.secret).await?;
+            get_json(client, "Spotify", url, Some(&token)).await
+        }
+        other => other.map_err(|(_, e)| e),
+    }
 }
 
 /// An app token (client credentials), cached until shortly before it expires.
@@ -675,22 +755,19 @@ async fn spotify_token(client: &reqwest::Client, token_url: &str, id: &str, secr
 }
 
 /// The artist object, and its name.
-async fn spotify_artist(client: &reqwest::Client, base: &str, token: &str, id: &str) -> Result<(String, SpotifyDetails), String> {
-    let v = get_json(client, "Spotify", &format!("{base}/artists/{id}"), Some(token)).await?;
+async fn spotify_artist(client: &reqwest::Client, base: &str, app: &SpotifyApp, id: &str) -> Result<(String, SpotifyDetails), String> {
+    let v = spotify_get(client, app, &format!("{base}/artists/{id}")).await?;
     Ok((str_of(&v, "name"), parse_spotify_artist(&v, id)))
 }
 
-async fn spotify_search(client: &reqwest::Client, base: &str, token: &str, query: &str) -> Result<Vec<Candidate>, String> {
+async fn spotify_search(client: &reqwest::Client, base: &str, app: &SpotifyApp, query: &str) -> Result<Vec<Candidate>, String> {
     let url = Url::parse_with_params(&format!("{base}/search"), &[("q", query), ("type", "artist"), ("limit", &MAX_CANDIDATES.to_string())]).map_err(|e| e.to_string())?;
-    Ok(parse_spotify_candidates(&get_json(client, "Spotify", url.as_str(), Some(token)).await?))
+    Ok(parse_spotify_candidates(&spotify_get(client, app, url.as_str()).await?))
 }
 
-/// A Spotify token when credentials are set: Ok(None) without credentials.
-async fn spotify_token_if_set(app: &AppHandle, client: &reqwest::Client) -> Result<Option<String>, String> {
-    match credentials(app) {
-        Some(((id, secret), _)) => spotify_token(client, SPOTIFY_TOKEN_URL, &id, &secret).await.map(Some),
-        None => Ok(None),
-    }
+/// The Spotify app when credentials are set.
+fn spotify_app(app: &AppHandle) -> Option<SpotifyApp> {
+    credentials(app).map(|((id, secret), _)| SpotifyApp { token_url: SPOTIFY_TOKEN_URL.to_string(), id, secret })
 }
 
 // ---- Commands ----
@@ -705,10 +782,9 @@ pub async fn lookup_artists(app: AppHandle, query: String) -> Result<Vec<Candida
         return Ok(Vec::new());
     }
     let client = client();
-    let spotify = match spotify_token_if_set(&app, &client).await {
-        Ok(Some(token)) => spotify_search(&client, SPOTIFY_BASE, &token, &q).await,
-        Ok(None) => Ok(Vec::new()),
-        Err(e) => Err(e),
+    let spotify = match spotify_app(&app) {
+        Some(sp) => spotify_search(&client, SPOTIFY_BASE, &sp, &q).await,
+        None => Ok(Vec::new()),
     };
     let mb = mb_search(&client, MB_BASE, &q).await;
     match (spotify, mb) {
@@ -739,8 +815,8 @@ pub async fn lookup_profile(app: AppHandle, source: CandidateSource, id: String)
             if !spotify_id(&id) {
                 return Err("That isn't a Spotify artist id.".to_string());
             }
-            let token = spotify_token_if_set(&app, &client).await?.ok_or("Set Spotify credentials in Settings first.")?;
-            let (name, details) = spotify_artist(&client, SPOTIFY_BASE, &token, &id).await?;
+            let sp = spotify_app(&app).ok_or("Set Spotify credentials in Settings first.")?;
+            let (name, details) = spotify_artist(&client, SPOTIFY_BASE, &sp, &id).await?;
             let mut links = vec![spotify_link(&id)];
             if !name.is_empty() {
                 links.extend(deezer_search(&client, DEEZER_BASE, &name).await);
@@ -765,18 +841,32 @@ pub async fn lookup_profile(app: AppHandle, source: CandidateSource, id: String)
             let sid = links.iter().find(|l| l.platform == "spotify").and_then(|l| l.id.clone());
             let (spotify, spotify_note) = match sid {
                 None => (None, None),
-                Some(sid) => match spotify_token_if_set(&app, &client).await {
-                    Ok(Some(token)) => match spotify_artist(&client, SPOTIFY_BASE, &token, &sid).await {
+                Some(sid) => match spotify_app(&app) {
+                    Some(sp) => match spotify_artist(&client, SPOTIFY_BASE, &sp, &sid).await {
                         Ok((_, d)) => (Some(d), None),
                         Err(e) => (None, Some(e)),
                     },
-                    Ok(None) => (None, Some("no credentials".to_string())),
-                    Err(e) => (None, Some(e)),
+                    None => (None, Some("no credentials".to_string())),
                 },
             };
             Ok(Profile { source, mbid: Some(id), name, links, spotify, spotify_note })
         }
     }
+}
+
+/// A profile link typed by the user (People → Profiles → Add a link): the
+/// same classification as MusicBrainz's urls (a known platform's link is
+/// rebuilt from its id), marked as added by hand.
+#[tauri::command]
+pub fn classify_profile_link(url: String) -> Result<PlatformLink, String> {
+    if url.len() > MAX_URL_CHARS {
+        return Err("That link is too long.".to_string());
+    }
+    manual_link(&url).ok_or_else(|| "That isn't a profile link (http or https).".to_string())
+}
+
+pub fn manual_link(url: &str) -> Option<PlatformLink> {
+    classify(url, "").map(|l| PlatformLink { source: Source::Manual, verified: true, ..l })
 }
 
 #[cfg(test)]
@@ -877,6 +967,23 @@ mod tests {
         assert!(parse_deezer(&d, "Nobody").is_none());
         let i = json!({ "results": [ { "artistId": 5, "artistName": "Someone", "artistLinkUrl": "https://evil.example/" } ] });
         assert_eq!(parse_itunes(&i, "someone").unwrap().url, "https://music.apple.com/artist/5");
+        // Found by name only: unverified, with what tells homonyms apart.
+        let d = json!({ "data": [ { "id": 7, "name": "Someone", "nb_fan": 1200, "nb_album": 3 } ] });
+        let dz = parse_deezer(&d, "Someone").unwrap();
+        assert!(!dz.verified);
+        assert_eq!(dz.match_info, Some(MatchInfo { fans: Some(1200), albums: Some(3), ..MatchInfo::default() }));
+        let i = json!({ "results": [ { "artistId": 5, "artistName": "Someone", "primaryGenreName": "Hip-Hop/Rap" } ] });
+        let it = parse_itunes(&i, "Someone").unwrap();
+        assert!(!it.verified && it.match_info.unwrap().genre.as_deref() == Some("Hip-Hop/Rap"));
+        assert_eq!(parse_deezer_top(&json!({ "data": [ { "title": "Night Drive" } ] })).as_deref(), Some("Night Drive"));
+        assert_eq!(parse_deezer_top(&json!({ "data": [] })), None);
+        let top = json!({ "results": [ { "wrapperType": "artist", "artistName": "Someone" }, { "wrapperType": "track", "trackName": "Cold Room" } ] });
+        assert_eq!(parse_itunes_top(&top).as_deref(), Some("Cold Room"));
+        // MusicBrainz links and hand-added ones count as checked.
+        assert!(l("https://open.spotify.com/artist/4Z8W4fKeB5YxbusRsdQVPb").unwrap().verified);
+        let m = manual_link("https://www.instagram.com/someone/").unwrap();
+        assert_eq!((m.source, m.verified), (Source::Manual, true));
+        assert!(manual_link("javascript:alert(1)").is_none());
         assert_eq!(normalize("Mé-Dé !!"), "médé");
     }
 
@@ -889,6 +996,52 @@ mod tests {
         let v = json!({ "id": "x", "name": "Someone", "images": [ { "url": "https://evil.example/x.jpg" } ] });
         let d = parse_spotify_artist(&v, "id");
         assert_eq!((d.followers, d.popularity, d.genres.len(), d.image_url), (None, None, 0, None));
+    }
+
+    /// A local Spotify: `/token` hands out "t1", then "t2"…; `/artists/<id>`
+    /// refuses "t1" with a 401 (a revoked token) and answers the others.
+    fn mock_spotify() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", server.server_addr().to_ip().unwrap());
+        let issued = std::sync::Arc::new(AtomicUsize::new(0));
+        let count = issued.clone();
+        std::thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let (status, body) = if req.url() == "/token" {
+                    let n = count.fetch_add(1, Ordering::SeqCst) + 1;
+                    (200, json!({ "access_token": format!("t{n}"), "expires_in": 3600 }))
+                } else {
+                    let auth = req.headers().iter().find(|h| h.field.equiv("Authorization")).map(|h| h.value.to_string()).unwrap_or_default();
+                    if auth == "Bearer t1" { (401, json!({ "error": "bad token" })) } else { (200, json!({ "name": "Someone", "followers": { "total": 5 } })) }
+                };
+                let _ = req.respond(tiny_http::Response::from_string(body.to_string()).with_status_code(status));
+            }
+        });
+        (base, issued)
+    }
+
+    #[test]
+    fn spotify_token_resets_and_a_401_retries_once() {
+        use std::sync::atomic::Ordering;
+        let (base, issued) = mock_spotify();
+        let app = SpotifyApp { token_url: format!("{base}/token"), id: "a".repeat(32), secret: "b".repeat(32) };
+        let client = reqwest::Client::new();
+        tauri::async_runtime::block_on(async {
+            clear_spotify_token();
+            // "t1" is refused: the cache is dropped, "t2" is fetched, the call retried.
+            let (name, d) = spotify_artist(&client, &base, &app, "4Z8W4fKeB5YxbusRsdQVPb").await.unwrap();
+            assert_eq!((name.as_str(), d.followers), ("Someone", Some(5)));
+            assert_eq!(issued.load(Ordering::SeqCst), 2);
+            // "t2" is cached now: no new token.
+            spotify_artist(&client, &base, &app, "4Z8W4fKeB5YxbusRsdQVPb").await.unwrap();
+            assert_eq!(issued.load(Ordering::SeqCst), 2);
+            // New credentials clear the cache: the next call asks again.
+            clear_spotify_token();
+            assert!(token_cache().lock().unwrap().is_none());
+            spotify_artist(&client, &base, &app, "4Z8W4fKeB5YxbusRsdQVPb").await.unwrap();
+            assert_eq!(issued.load(Ordering::SeqCst), 3);
+        });
     }
 
     #[test]

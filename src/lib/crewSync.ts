@@ -1,5 +1,7 @@
 import type { Album, AlbumKind, CrewCredit, CrewReleaseRow, CrewSongRow, ProjectInfo, SongMeta, SongStatus, StageConflict, Workspace } from "../types";
 import { cleanTitle } from "./launchKit";
+import { datedRelease } from "./releaseDates";
+import { isKitAccepted } from "./kitState";
 import { lastSaveMs } from "./songs";
 import { dict, tr } from "../i18n";
 
@@ -40,8 +42,8 @@ function inScope(meta: SongMeta, scope: ShareScope): boolean {
 
 /** The release date the crew should see: the song's release, else its Launch Kit date. */
 function releaseDateFor(path: string, meta: SongMeta, ws: Workspace): string | null {
-  const album = ws.albums.find((a) => a.trackPaths.includes(path) && a.releaseDate);
-  const date = album?.releaseDate ?? meta.launchKit?.edits?.releaseDate ?? null;
+  // The same rule as the Launch Kit and the Calendar (releaseDates.ts).
+  const date = datedRelease(path, meta, ws.albums);
   return date && isRealDate(date) ? date : null;
 }
 
@@ -137,7 +139,7 @@ export function sharedSongPayload(project: ProjectInfo, meta: SongMeta, ws: Work
     ),
     release_date: releaseDateFor(project.path, meta, ws),
     has_mixdown: project.renders.length > 0,
-    kit_accepted: !!meta.launchKit?.acceptedAtMs,
+    kit_accepted: isKitAccepted(project, meta, ws.albums),
     last_saved_at: lastSaveMs(project) > 0 ? iso(lastSaveMs(project)) : null,
   };
 }
@@ -351,3 +353,142 @@ export function releaseTracks(r: CrewReleaseRow, songs: CrewSongRow[]): CrewSong
   return r.song_ids.flatMap((id) => (byId.has(id) ? [byId.get(id)!] : []));
 }
 
+
+// ---- Push planning: quotas, unchanged rows, removal, my rows on the server ----
+
+/** The server's limits (enforce_quotas): songs per person per crew, releases per crew. */
+export const SONGS_PER_CREW = 1000;
+export const RELEASES_PER_CREW = 500;
+/** Rows per upsert request. */
+export const UPSERT_CHUNK = 200;
+
+/** A share or release limit refused a new row (enforce_quotas, P0001). */
+export function isQuotaError(e: unknown): boolean {
+  const err = e as { code?: string; message?: string } | null;
+  return err?.code === "P0001" && /share limit|release limit/i.test(err.message ?? "");
+}
+
+export function chunks<T>(rows: T[], size = UPSERT_CHUNK): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < rows.length; i += size) out.push(rows.slice(i, i + size));
+  return out;
+}
+
+const sameTime = (a: string | null, b: string | null) => (a == null || b == null ? a == b : Date.parse(a) === Date.parse(b));
+const sameCredits = (a: CrewCredit[], b: CrewCredit[]) =>
+  a.length === b.length && a.every((c, i) => c.name === b[i]?.name && (c.role ?? "") === (b[i]?.role ?? "") && (c.split ?? null) === (b[i]?.split ?? null));
+const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+/** The server already has these details (the stage is never compared: it
+ * moves through move_song_stage). Unchanged rows aren't sent again, so a
+ * restart doesn't rewrite every shared song. */
+export function songRowMatches(p: Omit<SharedSongPayload, "stage">, row: CrewSongRow): boolean {
+  return (
+    p.title === row.title &&
+    (p.bpm ?? null) === (row.bpm == null ? null : Number(row.bpm)) &&
+    (p.musical_key ?? null) === (row.musical_key ?? null) &&
+    sameList(p.tags, row.tags ?? []) &&
+    sameCredits(p.credits, row.credits ?? []) &&
+    (p.release_date ?? null) === (row.release_date ?? null) &&
+    p.has_mixdown === row.has_mixdown &&
+    p.kit_accepted === row.kit_accepted &&
+    sameTime(p.last_saved_at, row.last_saved_at)
+  );
+}
+
+export function releaseRowMatches(p: SharedReleasePayload, row: CrewReleaseRow): boolean {
+  return (
+    p.title === row.title &&
+    p.kind === row.kind &&
+    (p.color ?? null) === (row.color ?? null) &&
+    (p.release_date ?? null) === (row.release_date ?? null) &&
+    sameList(p.song_ids, (row.song_ids ?? []).map((id) => id.toLowerCase()))
+  );
+}
+
+/** How many more songs I can share with this crew: the limit minus my rows
+ * there and my shares here that aren't there yet. */
+export function shareRoom(rows: CrewSongRow[], ws: Workspace, scope: ShareScope): number {
+  const ids = new Set(rows.filter((r) => r.owner_id === scope.userId && r.crew_id === scope.crewId).map((r) => r.id));
+  for (const m of Object.values(ws.songs)) if (sharedHere(m, scope)) ids.add(m.shareId!);
+  return Math.max(0, SONGS_PER_CREW - ids.size);
+}
+
+/** Crews my shares on this computer point to that I'm no longer in (removed
+ * by the owner, or the crew was deleted): the server already dropped my rows
+ * there, so these shares are forgotten, never silently republished if I
+ * rejoin. Only shares stamped with a crew and this account count. */
+export function goneCrewIds(ws: Workspace, userId: string, myCrewIds: string[]): string[] {
+  const mine = new Set(myCrewIds);
+  const out = new Set<string>();
+  const check = (crewId: string | undefined, owner: string | undefined, shareId: string | undefined) => {
+    if (shareId && crewId && owner === userId && !mine.has(crewId)) out.add(crewId);
+  };
+  for (const m of Object.values(ws.songs)) check(m.shareCrewId, m.shareUserId, m.shareId);
+  for (const a of ws.albums) check(a.shareCrewId, a.shareUserId, a.shareId);
+  for (const d of ws.deletedReleaseShares ?? []) check(d.crewId, d.userId, d.id);
+  return [...out];
+}
+
+/** One of my rows on the crew server. `local`: this computer knows it (a
+ * song here carries its id). `duplicate`: not known here, but a song with
+ * the same title that is known here is also on the board (the same song
+ * shared from two computers, or before a reinstall). */
+export interface MyServerShare {
+  id: string;
+  title: string;
+  stage: SongStatus | null;
+  local: boolean;
+  duplicate: boolean;
+}
+
+const titleKey = (t: string) => t.trim().toLocaleLowerCase();
+
+/** My rows in this crew, the ones this computer doesn't know first. */
+export function myServerShares(rows: CrewSongRow[], ws: Workspace, scope: ShareScope): MyServerShare[] {
+  const known = pathsByShareId(ws);
+  const mine = rows.filter((r) => r.owner_id === scope.userId && r.crew_id === scope.crewId);
+  const knownTitles = new Set(mine.filter((r) => known.has(r.id)).map((r) => titleKey(r.title)));
+  return mine
+    .map((r) => {
+      const local = known.has(r.id);
+      return { id: r.id, title: r.title, stage: r.stage ?? null, local, duplicate: !local && knownTitles.has(titleKey(r.title)) };
+    })
+    .sort((a, b) => Number(a.local) - Number(b.local) || a.title.localeCompare(b.title));
+}
+
+/** Everything a push depends on, in one string: a local change that leaves
+ * it the same (typing a note, a window size) doesn't start a sync. */
+export function syncFingerprint(projects: ProjectInfo[], ws: Workspace, scope: ShareScope): string {
+  const stages = Object.values(ws.songs)
+    .filter((m) => m.shareId && inScope(m, scope))
+    .map((m) => [m.shareId, m.shared ?? null, m.status ?? null, m.stagePending ?? null, m.stageBaseAt ?? null, m.stageConflict?.at ?? null]);
+  const albums = ws.albums.filter((a) => a.shareId).map((a) => [a.shareId, a.shared ?? null, a.shareCrewId ?? null, a.shareUserId ?? null]);
+  return JSON.stringify([sharedPayloads(projects, ws, scope), releasePayloads(ws, scope), stages, albums, ws.deletedReleaseShares ?? []]);
+}
+
+const T_LIMIT = dict(
+  {
+    share: (n: number) =>
+      `${n} song${n === 1 ? " wasn't" : "s weren't"} shared: a crew takes up to ${SONGS_PER_CREW} songs from each person. Stop sharing some first (Settings → Crew lists what's on the server).`,
+    pushSongs: (n: number) => ` · ${n} new song${n === 1 ? "" : "s"} not shared (share limit reached: stop sharing some to make room)`,
+    pushReleases: (n: number) => ` · ${n} release${n === 1 ? "" : "s"} not shared (the crew has ${RELEASES_PER_CREW}, the most allowed)`,
+  },
+  {
+    share: (n: number) =>
+      `${n} son${n === 1 ? " n'a pas été partagé" : "s n'ont pas été partagés"} : un crew prend jusqu'à ${SONGS_PER_CREW} sons par personne. Arrête d'en partager d'abord (Réglages → Crew liste ce qui est sur le serveur).`,
+    pushSongs: (n: number) => ` · ${n} nouveau${n === 1 ? " son non partagé" : "x sons non partagés"} (limite de partage atteinte : arrête d'en partager pour faire de la place)`,
+    pushReleases: (n: number) => ` · ${n} sortie${n === 1 ? " non partagée" : "s non partagées"} (le crew en a ${RELEASES_PER_CREW}, le maximum)`,
+  },
+);
+
+/** Said after a share that hit the limit (null when nothing was left out). */
+export function shareLimitNote(overLimit: number): string | null {
+  return overLimit > 0 ? tr(T_LIMIT).share(overLimit) : null;
+}
+
+/** Appended to the sync line when the limits left new shares out. */
+export function pushLimitNote(songs: number, releases: number): string {
+  const t = tr(T_LIMIT);
+  return (songs > 0 ? t.pushSongs(songs) : "") + (releases > 0 ? t.pushReleases(releases) : "");
+}

@@ -3,6 +3,8 @@ use crate::models::{PluginInfo, SampleInfo, SampleStatus};
 use crate::paths::is_remote_or_device;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 use walkdir::WalkDir;
 
 /// Turns the raw sample paths / plugins stored in a .flp into what's
@@ -19,7 +21,7 @@ pub struct Resolver {
     /// Every audio file under the user's sample libraries (Settings →
     /// Sample libraries), by lowercased file name: a pack that lives at
     /// another path on this computer counts as moved, not missing.
-    sample_libraries: HashMap<String, PathBuf>,
+    sample_libraries: Arc<HashMap<String, PathBuf>>,
     exists_cache: HashMap<String, bool>,
     folder_files: HashMap<PathBuf, HashMap<String, PathBuf>>,
 }
@@ -30,10 +32,39 @@ const SAMPLE_EXTS: &[&str] = &["wav", "mp3", "ogg", "flac", "aif", "aiff", "wv",
 /// walked once per scan; nothing is read inside the files).
 const LIBRARY_DEPTH: usize = 8;
 const LIBRARY_MAX_FILES: usize = 200_000;
+/// How long a sample-library index is reused before it's walked again.
+const LIBRARY_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// (folders and their mtimes, when it was built, the index).
+type SampleIndex = (Vec<(PathBuf, Option<SystemTime>)>, Instant, Arc<HashMap<String, PathBuf>>);
+static SAMPLE_INDEX: Mutex<Option<SampleIndex>> = Mutex::new(None);
+
+fn index_sample_folders(folders: &[PathBuf]) -> HashMap<String, PathBuf> {
+    let mut index = HashMap::new();
+    for folder in folders {
+        if is_remote_or_device(&folder.to_string_lossy()) {
+            continue;
+        }
+        for entry in WalkDir::new(folder).max_depth(LIBRARY_DEPTH).into_iter().filter_map(|e| e.ok()) {
+            if index.len() >= LIBRARY_MAX_FILES {
+                return index;
+            }
+            let path = entry.path();
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+            if !entry.file_type().is_file() || !SAMPLE_EXTS.contains(&ext.as_str()) {
+                continue;
+            }
+            if let Some(name) = lower_file_name(path) {
+                index.entry(name).or_insert_with(|| path.to_path_buf());
+            }
+        }
+    }
+    index
+}
 
 /// A stored sample path that's relative to the project folder (`Audio\take.wav`,
 /// `..\Kick.wav`): no root, no Windows drive, no unexpanded FL macro.
-fn is_project_relative(path: &str) -> bool {
+pub(crate) fn is_project_relative(path: &str) -> bool {
     let bytes = path.as_bytes();
     !path.is_empty()
         && !path.starts_with(['/', '\\', '%'])
@@ -43,7 +74,7 @@ fn is_project_relative(path: &str) -> bool {
 /// Paths stored in a .flp use the separators of the OS it was saved on. A
 /// project made on Windows and opened on macOS has `C:\…\kick.wav`, where
 /// `\` isn't a separator — normalize so file names and folders resolve.
-fn native(raw: &str) -> String {
+pub(crate) fn native(raw: &str) -> String {
     if cfg!(windows) {
         raw.to_string()
     } else {
@@ -178,7 +209,7 @@ impl Resolver {
             factory_data: fl_studio_exe.and_then(|p| factory_data_dir(Path::new(&p))),
             user_data: None,
             installed_plugins,
-            sample_libraries: HashMap::new(),
+            sample_libraries: Arc::new(HashMap::new()),
             exists_cache: HashMap::new(),
             folder_files: HashMap::new(),
         }
@@ -192,26 +223,24 @@ impl Resolver {
     }
 
     /// Indexes the user's sample libraries by file name (first match wins,
-    /// in the order the folders were added).
+    /// in the order the folders were added). The index is reused across
+    /// scans (a scan runs on every window focus) until the folder list or a
+    /// folder's own mtime changes, or `LIBRARY_TTL` passes.
     pub fn with_sample_folders(mut self, folders: &[PathBuf]) -> Self {
-        for folder in folders {
-            if is_remote_or_device(&folder.to_string_lossy()) {
-                continue;
-            }
-            for entry in WalkDir::new(folder).max_depth(LIBRARY_DEPTH).into_iter().filter_map(|e| e.ok()) {
-                if self.sample_libraries.len() >= LIBRARY_MAX_FILES {
-                    return self;
-                }
-                let path = entry.path();
-                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-                if !entry.file_type().is_file() || !SAMPLE_EXTS.contains(&ext.as_str()) {
-                    continue;
-                }
-                if let Some(name) = lower_file_name(path) {
-                    self.sample_libraries.entry(name).or_insert_with(|| path.to_path_buf());
-                }
+        let key: Vec<(PathBuf, Option<SystemTime>)> = folders
+            .iter()
+            .map(|f| (f.clone(), if is_remote_or_device(&f.to_string_lossy()) { None } else { std::fs::metadata(f).and_then(|m| m.modified()).ok() }))
+            .collect();
+        let mut cache = SAMPLE_INDEX.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((k, at, index)) = cache.as_ref() {
+            if *k == key && at.elapsed() < LIBRARY_TTL {
+                self.sample_libraries = Arc::clone(index);
+                return self;
             }
         }
+        let index = Arc::new(index_sample_folders(folders));
+        *cache = Some((key, Instant::now(), Arc::clone(&index)));
+        self.sample_libraries = index;
         self
     }
 
@@ -286,7 +315,8 @@ impl Resolver {
         let moved = name
             .as_ref()
             .and_then(|n| self.files_in_song_folder(&folder).get(n).cloned())
-            .or_else(|| name.as_ref().and_then(|n| self.sample_libraries.get(n).cloned()));
+            // The index can be a few minutes old: check the file is still there.
+            .or_else(|| name.as_ref().and_then(|n| self.sample_libraries.get(n).cloned()).filter(|p| p.is_file()));
         match moved {
             Some(p) => (path, SampleStatus::Relocated, Some(p)),
             None => (path, SampleStatus::Missing, None),
