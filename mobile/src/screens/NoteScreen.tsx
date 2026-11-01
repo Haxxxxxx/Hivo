@@ -16,6 +16,7 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
   const stored = useApp((s) => noteFor(s.sync, kind, id));
   const pending = useApp((s) => !!s.sync.pending[itemKey(kind, id)]);
   const conflictAt = useApp((s) => s.sync.conflicts[itemKey(kind, id)]);
+  const tooLongAt = useApp((s) => s.sync.tooLong?.[itemKey(kind, id)]);
   const [text, setText] = useState(stored);
   const written = useRef(stored);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -103,6 +104,13 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
           <Led color={C.missing} size={7} />
           <Text style={styles.conflictText}>{t.goneBanner}</Text>
           <Button label={t.removeFromPhone} variant="danger" onPress={remove} style={{ paddingVertical: 4, paddingHorizontal: 8, marginLeft: 6 }} />
+        </View>
+      ) : null}
+
+      {tooLongAt ? (
+        <View style={[styles.conflict, { borderColor: C.missing }]}>
+          <Led color={C.missing} size={7} />
+          <Text style={styles.conflictText}>{t.noteTooLong}</Text>
         </View>
       ) : null}
 
