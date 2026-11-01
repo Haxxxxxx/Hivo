@@ -915,9 +915,9 @@ function SketchPanel({ project }: { project: ProjectInfo }) {
       // failure is reported in the app's error banner.
       const done = await continueSketch(project.path, templatePath);
       // Only a real problem goes in the (red) banner: the audio not in the project.
-      if (done.clips === 0) useAppStore.setState({ startupError: t.continueNote(project.name, done.clips, done.note) });
+      if (done.clips === 0) useAppStore.setState({ actionError: t.continueNote(project.name, done.clips, done.note) });
       await openInFlStudio(done.flp).catch((e) =>
-        useAppStore.setState({ startupError: t.continueOpenFailed(project.name, e instanceof Error ? e.message : String(e)) }),
+        useAppStore.setState({ actionError: t.continueOpenFailed(project.name, e instanceof Error ? e.message : String(e)) }),
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

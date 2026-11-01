@@ -15,25 +15,80 @@ fn settings_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(dir.join("settings.json"))
 }
 
+/// Where an unreadable settings.json was moved (`settings.json.bad`), until
+/// the webview has been told once (`take_settings_recovery`).
+static RECOVERED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Reads settings.json. One that doesn't parse is moved aside to
+/// `settings.json.bad` (kept for the user) and the defaults are used, so a
+/// corrupt file never blocks every save and picker. Returns where it went.
+fn load_from(path: &Path) -> Result<(Settings, Option<PathBuf>), String> {
+    if !path.exists() {
+        return Ok((Settings::default(), None));
+    }
+    let raw = fs::read(path).map_err(|e| format!("could not read settings: {e}"))?;
+    match serde_json::from_slice(&raw) {
+        Ok(settings) => Ok((settings, None)),
+        Err(parse) => {
+            let bad = crate::workspace::sibling(path, "bad");
+            fs::rename(path, &bad).map_err(|e| format!("could not parse settings ({parse}) or move them aside: {e}"))?;
+            eprintln!("settings.json didn't parse ({parse}): moved to {}", bad.display());
+            Ok((Settings::default(), Some(bad)))
+        }
+    }
+}
+
+fn store_to(path: &Path, settings: &Settings) -> Result<(), String> {
+    let raw = serde_json::to_vec_pretty(settings).map_err(|e| format!("could not serialize settings: {e}"))?;
+    crate::workspace::write_atomic(path, &raw)
+}
+
 /// The saved settings (what every command's scope is built from).
 pub fn load(app: &AppHandle) -> Result<Settings, String> {
-    let path = settings_path(app)?;
-    if !path.exists() {
-        return Ok(Settings::default());
+    let (settings, moved) = load_from(&settings_path(app)?)?;
+    if let Some(bad) = moved {
+        if let Ok(mut slot) = RECOVERED.lock() {
+            *slot = Some(bad.to_string_lossy().to_string());
+        }
     }
-    let raw = fs::read_to_string(&path).map_err(|e| format!("could not read settings: {e}"))?;
-    serde_json::from_str(&raw).map_err(|e| format!("could not parse settings: {e}"))
+    Ok(settings)
 }
 
 fn store(app: &AppHandle, settings: &Settings) -> Result<(), String> {
-    let path = settings_path(app)?;
-    let raw = serde_json::to_string_pretty(settings).map_err(|e| format!("could not serialize settings: {e}"))?;
-    fs::write(&path, raw).map_err(|e| format!("could not write settings: {e}"))
+    store_to(&settings_path(app)?, settings)
 }
 
 #[tauri::command]
 pub fn get_settings(app: AppHandle) -> Result<Settings, String> {
     load(&app)
+}
+
+/// Settings were unreadable and reset to the defaults: where the old file
+/// was kept. Answers once (the app tells the user once).
+#[tauri::command]
+pub fn take_settings_recovery() -> Option<String> {
+    RECOVERED.lock().ok().and_then(|mut slot| slot.take())
+}
+
+/// The saved folders (projects, beats, samples, export) that can't be
+/// reached right now: an unplugged drive, a renamed folder. Settings marks
+/// them; nothing is removed.
+#[tauri::command]
+pub async fn unreachable_setting_folders(app: AppHandle) -> Result<Vec<String>, String> {
+    let saved = load(&app)?;
+    let all: Vec<String> = saved
+        .watched_folders
+        .iter()
+        .chain(saved.beat_folders.iter())
+        .chain(saved.sample_folders.iter())
+        .chain(saved.output_folder.iter())
+        .cloned()
+        .collect();
+    tauri::async_runtime::spawn_blocking(move || unreachable(all)).await.map_err(|e| e.to_string())
+}
+
+fn unreachable(folders: Vec<String>) -> Vec<String> {
+    folders.into_iter().filter(|f| is_remote_or_device(f) || !Path::new(f).is_dir()).collect()
 }
 
 /// Saves the preferences the webview may set. Paths (linked folders, the
@@ -558,6 +613,37 @@ mod tests {
         saved.converter_url_template = Some(good.into());
         assert_eq!(apply_preferences(&mut saved, Settings { converter_url_template: Some("   ".into()), ..Settings::default() }), None);
         assert_eq!(saved.converter_url_template, None, "an empty field clears it without an error");
+    }
+
+    #[test]
+    fn an_unreadable_settings_file_is_kept_aside_and_never_blocks() {
+        let dir = std::env::temp_dir().join(format!("hivo-settings-bad-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        // Missing: defaults, nothing moved.
+        assert!(load_from(&path).unwrap().1.is_none());
+        // A crash mid-write used to leave this.
+        fs::write(&path, b"{\"watchedFolders\": [\"/mus").unwrap();
+        let (settings, moved) = load_from(&path).unwrap();
+        assert_eq!(settings.watched_folders, Vec::<String>::new());
+        let bad = moved.expect("moved aside");
+        assert_eq!(bad, dir.join("settings.json.bad"));
+        assert_eq!(fs::read(&bad).unwrap(), b"{\"watchedFolders\": [\"/mus", "the broken file is kept");
+        // Saving works again, atomically, and reads back.
+        let saved = Settings { render_format: "mp3".into(), ..Settings::default() };
+        store_to(&path, &saved).unwrap();
+        let (back, moved) = load_from(&path).unwrap();
+        assert_eq!((back.render_format.as_str(), moved), ("mp3", None));
+        assert!(!dir.join("settings.json.tmp").exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn folders_that_cant_be_reached_are_reported() {
+        let here = std::env::temp_dir().to_string_lossy().to_string();
+        let gone = std::env::temp_dir().join(format!("hivo-unplugged-{}", std::process::id())).to_string_lossy().to_string();
+        assert_eq!(unreachable(vec![here, gone.clone(), r"\\host\share".into()]), vec![gone, r"\\host\share".to_string()]);
     }
 
     #[test]
