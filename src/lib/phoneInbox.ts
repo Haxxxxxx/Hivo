@@ -61,12 +61,33 @@ export function knownTarget(item: InboxItem, options: TargetOption[]): TargetOpt
   return t ? (options.find((o) => o.kind === t.kind && o.id === t.id) ?? null) : null;
 }
 
-/** A song name for a sketch: its title, else a name from the first file
- * ("Night_Run (Mixdown).mp3" → "Night Run"), else "Sketch". */
+/** A file name that's a provider's id, not a name ("msf_1000032969.m4a",
+ * "1000032969.m4a", a UUID): older phones sent BandLab exports like that.
+ * Same rule as the phone's `isOpaqueName` (mobile/src/lib/shareMeta.ts). */
+export function isOpaqueName(name: string): boolean {
+  const stem = name.replace(/\.[a-z0-9]{1,5}$/i, "").trim();
+  if (!stem) return true;
+  if (/^(msf|document|media|audio|primary|raw|image|video|content|file|shared)[\s:_-]*\d+$/i.test(stem)) return true;
+  if (/^\d{3,}$/.test(stem)) return true;
+  if (/^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i.test(stem)) return true;
+  return /^shared(-\d+)?$/i.test(stem);
+}
+
+/** A song name for a sketch: its title (without links or "on BandLab"),
+ * else a name from the first real file ("Night_Run (Mixdown).mp3" →
+ * "Night Run"), else "BandLab sketch" / "Sketch". Never a link or an id. */
 export function sketchName(item: InboxItem): string {
-  const fromTitle = item.title.replace(/[/\\:*?"<>|]/g, " ").replace(/\s+/g, " ").trim();
-  const fromFile = item.files[0] ? songNameFromFile(item.files[0].name) : "";
-  return (fromTitle || fromFile || "Sketch").slice(0, 80).trim() || "Sketch";
+  const fromTitle = item.title
+    .replace(/\bhttps?:\/\/\S+/gi, " ")
+    .replace(/\s*(?:[-–|:•]\s*|\b(?:on|sur|via)\s+)bandlab\s*[.!:]*\s*$/i, "")
+    .replace(/[/\\:*?"<>|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const title = isOpaqueName(fromTitle) ? "" : fromTitle;
+  const file = item.files.find((f) => !isOpaqueName(f.name));
+  const fromFile = file ? songNameFromFile(file.name) : "";
+  const fallback = bandlabLink(item) ? "BandLab sketch" : "Sketch";
+  return (title || fromFile || fallback).slice(0, 80).trim() || fallback;
 }
 
 /** A BandLab link in the item's text, if one was shared with it. */

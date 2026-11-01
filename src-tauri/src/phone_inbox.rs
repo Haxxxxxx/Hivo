@@ -29,6 +29,9 @@ pub const MAX_CHUNK_BYTES: usize = 393_216;
 pub const MAX_INBOX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 pub const MAX_IDEAS_PER_PUSH: usize = 200;
 pub const MAX_TITLE_CHARS: usize = 200;
+/// What was shared with an upload (BandLab's words and link); same as the
+/// phone's `MAX_SHARE_TEXT` (src/lib/shareMeta.ts).
+pub const MAX_SHARE_TEXT_CHARS: usize = 2000;
 /// Same as `MAX_NOTE_CHARS` (an idea's text ends up in a note).
 pub const MAX_IDEA_CHARS: usize = crate::phone_sync::MAX_NOTE_CHARS;
 pub const MAX_MEMO_MS: i64 = 15 * 60 * 1000;
@@ -382,7 +385,8 @@ impl Inbox {
                     phone_name: phone_name.to_string(),
                     item_type,
                     title: clip_line(body.get("title").and_then(Value::as_str).unwrap_or(""), MAX_TITLE_CHARS),
-                    text: String::new(),
+                    // Optional (v1.1+): older phones send none.
+                    text: clip(body.get("text").and_then(Value::as_str).unwrap_or(""), MAX_SHARE_TEXT_CHARS),
                     target: parse_target(body.get("target")),
                     created_at: body.get("createdAt").and_then(Value::as_i64).unwrap_or(now),
                     updated_at: now,
@@ -993,6 +997,21 @@ mod tests {
         inbox.remove("dev.m1").unwrap();
         assert!(inbox.list().is_empty());
         assert!(!d.0.join("inbox").join("files").join("dev.m1").exists());
+    }
+
+    #[test]
+    fn keeps_the_shared_text_of_an_upload() {
+        let d = temp("share-text");
+        let inbox = Inbox::open(d.0.clone());
+        let body = json!({ "itemId": "s1", "itemType": "sketch", "title": "Night run", "text": format!("Night Run on BandLab\nhttps://www.bandlab.com/post/abc{}", "x".repeat(3000)), "fileIndex": 0, "fileCount": 1, "name": "Night Run.m4a", "size": 3, "createdAt": 1 });
+        inbox.upload_start("dev", "Pixel", &body, now_ms()).unwrap();
+        let text_of = |id: &str| lock(&inbox.items).iter().find(|i| i.item_id == id).unwrap().text.clone();
+        let text = text_of("s1");
+        assert!(text.starts_with("Night Run on BandLab\nhttps://www.bandlab.com/post/abc"));
+        assert_eq!(text.chars().count(), MAX_SHARE_TEXT_CHARS);
+        // Older phones send no text.
+        start(&inbox, "s2", "sketch", 0, 1, "a.m4a", 3).unwrap();
+        assert_eq!(text_of("s2"), "");
     }
 
     #[test]

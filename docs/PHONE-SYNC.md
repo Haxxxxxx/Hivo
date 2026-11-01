@@ -196,7 +196,11 @@ Idea = { "id": "<phone uuid>", "title": string (≤ 200), "text": string (≤ 20
 Files go in chunks so a big export survives a flaky Wi-Fi: each chunk is an
 ordinary encrypted request (≤ 1 MB body), so every byte is authenticated.
 - `/v1/upload/start` `{"itemId", "itemType": "memo"|"sketch", "title", "target": {"kind","id","title"}|null,
-  "createdAt", "durationMs": number|null, "fileIndex", "fileCount", "name", "size"}`
+  "createdAt", "durationMs": number|null, "fileIndex", "fileCount", "name", "size", "text"?: string (≤ 2000)}`
+  `text` (optional, 2026-11-01): what the sharing app sent with the files (BandLab's
+  words and link), kept on the inbox item; the desktop takes the BandLab link from it
+  for the song. Older phones send none. The phone names a file whose shared name is
+  only a provider id (`msf:1000032969`) after the song's title (`mobile/src/lib/shareMeta.ts`).
   → `{"offset": <bytes already received>}`. Starting again resumes: same
   `itemId`/`fileIndex`/`size` = the offset so far; a file already complete
   answers its size.

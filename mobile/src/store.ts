@@ -176,11 +176,12 @@ export function removeIdea(id: string): void {
 // ---- Outbox (memos and shared files) ----
 
 /** Adds files already moved into the outbox folder (files.ts `adopt`) as one item. */
-export function addOutItem(id: string, type: OutType, files: OutFile[], init: { title?: string; target?: IdeaTarget | null; durationMs?: number | null } = {}): void {
+export function addOutItem(id: string, type: OutType, files: OutFile[], init: { title?: string; text?: string; target?: IdeaTarget | null; durationMs?: number | null } = {}): void {
   const item: OutItem = {
     id,
     type,
     title: (init.title ?? "").slice(0, 200),
+    ...(init.text ? { text: init.text.slice(0, 2000) } : {}),
     target: init.target ?? null,
     createdAt: Date.now(),
     durationMs: init.durationMs ?? null,
