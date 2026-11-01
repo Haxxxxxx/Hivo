@@ -131,7 +131,7 @@ export function AttentionCarousel({ items, label, onOpen }: { items: AttentionIt
                     void useAppStore
                       .getState()
                       .startRender([i.song.path])
-                      .catch((e) => useAppStore.setState({ startupError: e instanceof Error ? e.message : String(e) }))
+                      .catch((e) => useAppStore.setState({ actionError: e instanceof Error ? e.message : String(e) }))
                   }
                   disabled={rendering}
                   className="mt-1.5 w-full rounded border border-rule-strong px-2 py-1 text-[11px] text-body hover:bg-raised hover:text-cream disabled:opacity-50"

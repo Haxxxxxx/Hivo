@@ -493,6 +493,9 @@ export interface Workspace {
   leadNotes?: Record<string, string>;
   /** Notes on beats (Settings → Beats folders), by file path. */
   beatNotes?: Record<string, string>;
+  /** Set only on generated sample data (src/lib/sampleData.ts): a workspace
+   * carrying it is never written to disk. */
+  sample?: true;
 }
 
 /** A pipeline column. Columns sit on the fixed lifecycle stages: putting a

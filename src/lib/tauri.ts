@@ -112,6 +112,23 @@ export async function saveWorkspace(workspace: Workspace): Promise<void> {
   return invoke("save_workspace", { workspace });
 }
 
+/** What the "can't read your workspace" strip can offer. */
+export interface WorkspaceFiles {
+  hasBackup: boolean;
+  backupSavedAtMs: number | null;
+}
+export const workspaceFiles = (): Promise<WorkspaceFiles> => invoke("workspace_files");
+/** Puts `workspace.json.bak` back (the unreadable file is kept as `.bad`). */
+export const restoreWorkspaceBackup = (): Promise<Workspace> => invoke("restore_workspace_backup");
+/** "Start fresh": the unreadable workspace is kept as `workspace.json.bad`. */
+export const setAsideWorkspace = (): Promise<void> => invoke("set_aside_workspace");
+/** Shows the app's config folder (workspace.json, settings.json) in Finder / Explorer. */
+export const showConfigFolder = (): Promise<void> => invoke("show_config_folder");
+/** settings.json didn't parse and was reset: where the old file was kept (answers once). */
+export const takeSettingsRecovery = (): Promise<string | null> => invoke("take_settings_recovery");
+/** Saved folders (projects, beats, samples, export) that can't be reached right now. */
+export const unreachableSettingFolders = (): Promise<string[]> => invoke("unreachable_setting_folders");
+
 export async function detectFlStudio(): Promise<string | null> {
   return invoke("detect_fl_studio");
 }
