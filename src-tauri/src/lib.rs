@@ -86,6 +86,7 @@ pub fn run() {
             files::kit_files,
             audio::analyze_audio,
             audio::export_launch_kit,
+            audio::read_kit_cover,
             ai::ai_status,
             ai::set_ai_key,
             ai::ai_kit,

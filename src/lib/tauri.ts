@@ -208,8 +208,15 @@ export async function exportLaunchKit(args: {
   master: string | null;
   masterName: string;
   clips: Snippet[];
+  /** The folder name of the last export (a title change cleans it up). */
+  previousFolder: string | null;
 }): Promise<string> {
   return invoke("export_launch_kit", args);
+}
+
+/** The saved cover concept of a kit (base64 JPEG), or null. */
+export async function readKitCover(folderName: string): Promise<string | null> {
+  return invoke("read_kit_cover", { folderName });
 }
 
 /** Whether a Gemini key is set (never the key itself). */
