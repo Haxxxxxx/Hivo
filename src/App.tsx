@@ -20,7 +20,7 @@ import { NewProjectModal } from "./components/NewProjectModal";
 import { FeedbackModal } from "./components/FeedbackModal";
 import { InboxView } from "./components/InboxView";
 import { supabase } from "./lib/supabase";
-import { isReadOnlyInstallError } from "./lib/updaterErrors";
+import { updateErrorKind } from "./lib/updaterErrors";
 import { scrubPaths } from "./lib/feedback";
 import { appLocation } from "./lib/tauri";
 import { UPDATES_ENABLED } from "./lib/updater";
@@ -28,7 +28,7 @@ import { flushWorkspace, useAppStore } from "./store/useAppStore";
 import { startPhoneSyncBridge } from "./store/phoneSyncBridge";
 import { startSessionBridge } from "./store/sessionBridge";
 import { useCrewStore, useInCrew } from "./store/useCrewStore";
-import { StatusDot, btnPrimary, btnQuiet } from "./ui";
+import { ConfirmButton, StatusDot, btnPrimary, btnQuiet } from "./ui";
 
 const fileName = (p: string) => p.split(/[/\\]/).pop() ?? p;
 
@@ -46,7 +46,6 @@ const T = dict(
     updateReady: (v: string) => `Hivo ${v} is ready`,
     updateDownloading: (v: string, pct: number | null) => `Downloading Hivo ${v}${pct === null ? "…" : ` · ${pct}%`}`,
     updateRestarting: (v: string) => `Hivo ${v} is installed, restarting…`,
-    updateFailed: (v: string, error: string) => `Couldn't update to Hivo ${v}: ${error}`,
     updateReadOnly: "Hivo is running from a read-only place (the disk image, or the copy macOS makes of a downloaded app). Move it to Applications with Finder, open it from there, and try again.",
     locationDmg: "Hivo is running from the disk image: updates can't install here. Drag it to Applications in Finder and open it from there.",
     locationTranslocated: "macOS is running a quarantine copy of Hivo: updates can't install here. Move it to Applications with Finder (or run the fix command in Terminal) and reopen it.",
@@ -58,6 +57,17 @@ const T = dict(
     exitSample: "Exit sample data",
     later: "Later",
     notSaving: "Changes aren't being saved",
+    updateOffline: "Couldn't reach the update server. Check your internet connection and try again.",
+    updateFailedPlain: (v: string) => `Couldn't update to Hivo ${v}. Try again later.`,
+    unreadable: "Your workspace (stages, notes, releases) couldn't be read. Changes made now are only kept if you start fresh.",
+    unreadableBackup: "Your workspace (stages, notes, releases) couldn't be read. You can put back its last backup.",
+    newer: (v: number) => `This workspace was saved by a newer Hivo (format ${v}). It's shown read-only: update Hivo to edit it.`,
+    restoreBackup: "Restore backup",
+    startFresh: "Start fresh",
+    startFreshConfirm: "Start fresh? The unreadable file is kept as workspace.json.bad.",
+    showFolder: "Show folder",
+    actionFailed: (e: string) => `That didn't work: ${e}`,
+    closeSaveFailed: (e: string) => `${e} Hivo stayed open so nothing is lost: try Retry, or close again to quit without these changes.`,
   },
   {
     kept: (n: number) =>
@@ -74,7 +84,6 @@ const T = dict(
     updateReady: (v: string) => `Hivo ${v} est prêt`,
     updateDownloading: (v: string, pct: number | null) => `Téléchargement de Hivo ${v}${pct === null ? "…" : ` · ${pct} %`}`,
     updateRestarting: (v: string) => `Hivo ${v} est installé, redémarrage…`,
-    updateFailed: (v: string, error: string) => `Impossible de passer à Hivo ${v} : ${error}`,
     updateReadOnly: "Hivo tourne depuis un emplacement en lecture seule (l'image disque, ou la copie que macOS fait d'une appli téléchargée). Déplace-le dans Applications avec le Finder, ouvre-le de là et réessaie.",
     locationDmg: "Hivo tourne depuis l'image disque : les mises à jour ne peuvent pas s'installer ici. Glisse-le dans Applications avec le Finder et ouvre-le de là.",
     locationTranslocated: "macOS exécute une copie en quarantaine de Hivo : les mises à jour ne peuvent pas s'installer ici. Déplace-le dans Applications avec le Finder (ou lance la commande de réparation dans le Terminal) et rouvre-le.",
@@ -86,6 +95,17 @@ const T = dict(
     exitSample: "Quitter les données d'exemple",
     later: "Plus tard",
     notSaving: "Les modifications ne sont pas enregistrées",
+    updateOffline: "Impossible de joindre le serveur de mises à jour. Vérifie ta connexion internet et réessaie.",
+    updateFailedPlain: (v: string) => `Impossible de passer à Hivo ${v}. Réessaie plus tard.`,
+    unreadable: "Ton espace de travail (étapes, notes, sorties) est illisible. Les modifications faites maintenant ne sont gardées que si tu repars de zéro.",
+    unreadableBackup: "Ton espace de travail (étapes, notes, sorties) est illisible. Tu peux remettre sa dernière sauvegarde.",
+    newer: (v: number) => `Cet espace de travail a été enregistré par un Hivo plus récent (format ${v}). Il est affiché en lecture seule : mets Hivo à jour pour le modifier.`,
+    restoreBackup: "Remettre la sauvegarde",
+    startFresh: "Repartir de zéro",
+    startFreshConfirm: "Repartir de zéro ? Le fichier illisible est gardé sous workspace.json.bad.",
+    showFolder: "Afficher le dossier",
+    actionFailed: (e: string) => `Ça n'a pas marché : ${e}`,
+    closeSaveFailed: (e: string) => `${e} Hivo est resté ouvert pour ne rien perdre : essaie Réessayer, ou ferme encore pour quitter sans ces modifications.`,
   },
 );
 
@@ -107,13 +127,15 @@ function UpdateNotice() {
         ? tr(T).updateDownloading(version, pct)
         : status === "ready"
           ? tr(T).updateRestarting(version)
-          : isReadOnlyInstallError(update.error)
+          : updateErrorKind(update.error) === "readOnly"
             ? tr(T).updateReadOnly
-            : tr(T).updateFailed(version, update.error ?? "");
+            : updateErrorKind(update.error) === "network"
+              ? tr(T).updateOffline
+              : tr(T).updateFailedPlain(version);
   return (
     <div role="status" className="flex shrink-0 items-center gap-3 border-b border-rule bg-panel px-5 py-2 text-xs">
       <StatusDot color={led} size={7} />
-      <span className={`min-w-0 flex-1 truncate ${status === "error" ? "text-missing" : "text-cream"}`} title={text}>
+      <span className={`min-w-0 flex-1 truncate ${status === "error" ? "text-missing" : "text-cream"}`} title={status === "error" && update.error ? `${text} (${update.error})` : text}>
         {text}
       </span>
       {status === "downloading" && pct !== null && (
@@ -202,18 +224,55 @@ function DemoStrip() {
   );
 }
 
+const stripBtn = "rounded border border-rule-strong px-2 py-0.5 text-body hover:bg-raised hover:text-cream";
+
+/** Stays up while the workspace can't be read or saved (the red banner is
+ * one-off and dismissable; this one isn't), with the ways out: retry,
+ * restore the backup, start fresh (the broken file is kept), show the folder. */
 function NotSavingStrip() {
   const writable = useAppStore((s) => s.workspaceWritable);
   const saveError = useAppStore((s) => s.saveError);
+  const issue = useAppStore((s) => s.workspaceIssue);
+  const demoMode = useAppStore((s) => s.demoMode);
   const retrySave = useAppStore((s) => s.retrySave);
-  if (writable && !saveError) return null;
+  const restoreBackup = useAppStore((s) => s.restoreWorkspaceBackup);
+  const startFresh = useAppStore((s) => s.startFreshWorkspace);
+  const showFolder = useAppStore((s) => s.showConfigFolder);
+  const [busy, setBusy] = useState(false);
+  if (demoMode || (writable && !saveError)) return null;
+  const t = tr(T);
+  const run = (fn: () => Promise<void>) => {
+    setBusy(true);
+    void fn()
+      .catch((e) => useAppStore.setState({ actionError: t.actionFailed(e instanceof Error ? e.message : String(e)) }))
+      .finally(() => setBusy(false));
+  };
+  const text =
+    issue?.kind === "newer" ? t.newer(issue.version) : issue?.kind === "unreadable" ? (issue.hasBackup ? t.unreadableBackup : t.unreadable) : t.notSaving;
   return (
-    <div role="status" className="flex shrink-0 items-center gap-3 border-b border-warn/40 bg-warn/10 px-4 py-1.5 text-xs text-cream">
+    <div role="status" className="flex shrink-0 flex-wrap items-center gap-3 border-b border-warn/40 bg-warn/10 px-4 py-1.5 text-xs text-cream">
       <StatusDot color="var(--color-warn)" size={6} />
-      <span className="flex-1">{tr(T).notSaving}</span>
-      <button onClick={() => void retrySave()} className="rounded border border-rule-strong px-2 py-0.5 text-body hover:bg-raised hover:text-cream">
-        {tr(T).retry}
-      </button>
+      <span className="min-w-0 flex-1" title={issue?.kind === "unreadable" ? issue.detail : (saveError ?? undefined)}>
+        {text}
+      </span>
+      {issue?.kind === "unreadable" && issue.hasBackup && (
+        <button onClick={() => run(restoreBackup)} disabled={busy} className={stripBtn}>
+          {t.restoreBackup}
+        </button>
+      )}
+      {issue?.kind !== "newer" && (
+        <button onClick={() => run(retrySave)} disabled={busy} className={stripBtn}>
+          {t.retry}
+        </button>
+      )}
+      {issue?.kind === "unreadable" && (
+        <ConfirmButton label={t.startFresh} confirmLabel={t.startFreshConfirm} onConfirm={() => run(startFresh)} disabled={busy} className={stripBtn} />
+      )}
+      {issue && (
+        <button onClick={() => run(showFolder)} disabled={busy} className={stripBtn}>
+          {t.showFolder}
+        </button>
+      )}
     </div>
   );
 }
@@ -252,8 +311,9 @@ export default function App() {
   const inCrew = useInCrew();
   const settingsLoaded = useAppStore((s) => s.settingsLoaded);
   const detailPath = useAppStore((s) => s.detailPath);
-  const startupError = useAppStore((s) => s.startupError);
-  const saveError = useAppStore((s) => s.saveError);
+  // One banner, but separate slots: a failed action never hides a load error
+  // (dismissing clears them all). The most urgent one shows.
+  const bannerError = useAppStore((s) => s.saveError ?? s.actionError ?? s.scanError ?? s.startupError);
   const dismissErrors = useAppStore((s) => s.dismissErrors);
   const openFeedback = useAppStore((s) => s.openFeedback);
   // The app's language. Set before rendering; the root is keyed on it, so a
@@ -284,7 +344,17 @@ export default function App() {
   // Closing the window right after an edit: write the pending save first.
   useEffect(() => {
     if (!isTauri()) return;
-    const off = getCurrentWindow().onCloseRequested(() => flushWorkspace());
+    // A failed save keeps the window open once, with the reason in the
+    // banner; closing again quits without those changes.
+    let warned = false;
+    const off = getCurrentWindow().onCloseRequested(async (event) => {
+      if (warned) return;
+      if (await flushWorkspace()) return;
+      warned = true;
+      event.preventDefault();
+      const why = useAppStore.getState().saveError ?? "";
+      useAppStore.setState({ saveError: tr(T).closeSaveFailed(why) });
+    });
     return () => void off.then((unlisten) => unlisten());
   }, []);
 
@@ -354,13 +424,13 @@ export default function App() {
         <RelinkNotice />
         <RenderPanel />
       </div>
-      {(startupError || saveError) && (
+      {bannerError && (
         <div role="alert" className="absolute left-1/2 top-3 z-40 flex max-w-xl -translate-x-1/2 items-start gap-3 rounded-md border border-red-500/40 bg-[#2a1215] px-4 py-2 text-xs text-red-200 shadow-xl">
-          <span>{saveError ?? startupError}</span>
+          <span>{bannerError}</span>
           {/* The in-app form, with this error as the message (only when this build has a backend). */}
           {supabase && (
             <button
-              onClick={() => openFeedback({ category: "bug", message: scrubPaths(saveError ?? startupError ?? "") })}
+              onClick={() => openFeedback({ category: "bug", message: scrubPaths(bannerError) })}
               className="shrink-0 whitespace-nowrap text-red-200/70 underline hover:text-red-100"
             >
               {tr(T).reportThis}
