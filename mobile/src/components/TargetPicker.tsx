@@ -30,6 +30,7 @@ export function TargetPicker({ value, onChange, disabled }: { value: IdeaTarget 
         onPress={() => setOpen(true)}
         style={({ pressed }) => [styles.field, pressed && { backgroundColor: C.raised }, disabled && { opacity: 0.6 }]}
         accessibilityRole="button"
+        accessibilityLabel={value ? `${s().forTarget}: ${label[value.kind]} · ${value.title}` : `${s().forTarget}: ${s().noTarget}`}
       >
         <Text style={[styles.value, !value && { color: C.engrave }]} numberOfLines={1}>
           {value ? `${label[value.kind]} · ${value.title}` : s().noTarget}
@@ -41,12 +42,12 @@ export function TargetPicker({ value, onChange, disabled }: { value: IdeaTarget 
           <Text style={styles.title}>{s().pickTarget}</Text>
           <View style={styles.tabs}>
             {KINDS.map((k) => (
-              <Pressable key={k} onPress={() => setKind(k)} style={[styles.tab, kind === k && styles.tabOn]} accessibilityRole="tab">
+              <Pressable key={k} onPress={() => setKind(k)} style={[styles.tab, kind === k && styles.tabOn]} accessibilityRole="tab" accessibilityState={{ selected: kind === k }}>
                 <Text style={[styles.tabText, kind === k && { color: C.chassis }]}>{label[k]}</Text>
               </Pressable>
             ))}
           </View>
-          <TextInput value={query} onChangeText={setQuery} placeholder={t.search} placeholderTextColor={C.engrave} style={styles.search} autoCorrect={false} />
+          <TextInput value={query} onChangeText={setQuery} placeholder={t.search} placeholderTextColor={C.engrave} accessibilityLabel={t.searchLabel} style={styles.search} autoCorrect={false} />
           <FlatList
             data={list}
             keyExtractor={(i) => `${i.kind}:${i.id}`}

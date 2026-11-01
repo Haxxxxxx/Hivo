@@ -2,13 +2,14 @@ import { useFonts } from "expo-font";
 import { getLocales } from "expo-localization";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Alert, AppState, BackHandler, Linking, Platform, View } from "react-native";
+import { ActivityIndicator, Alert, AppState, BackHandler, Linking, Platform, Text, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
-import { onShare, takeShared, type Shared } from "./modules/hivo-share";
+import { onShare, onShareStart, sweepShareCache, takeShared, type Shared } from "./modules/hivo-share";
 import { setLang, tr } from "./src/lib/i18n";
 import type { IdeaTarget } from "./src/lib/ideas";
-import { parsePairingUrl } from "./src/lib/pairing";
-import { T } from "./src/strings";
+import { parsePairingUrl, type Pairing } from "./src/lib/pairing";
+import { dequeue, enqueue } from "./src/lib/shareQueue";
+import { errorText, T } from "./src/strings";
 import type { Kind } from "./src/lib/sync";
 import { UpdateBanner } from "./src/components/UpdateBanner";
 import { pickFiles } from "./src/files";
@@ -19,27 +20,46 @@ import { PairScreen } from "./src/screens/PairScreen";
 import { RecordScreen } from "./src/screens/RecordScreen";
 import { SettingsScreen } from "./src/screens/SettingsScreen";
 import { ShareScreen, type IncomingShare } from "./src/screens/ShareScreen";
-import { addIdea, flush, flushExtras, getState, load, pair, sync, useApp } from "./src/store";
+import { addIdea, flush, flushExtras, getState, load, pair, requestSync, sync, useApp, verifyPairing } from "./src/store";
 import { C } from "./src/theme";
 
 setLang(getLocales()[0]?.languageCode);
 
-/** A hivo://pair link opened from the system camera (or `simctl openurl`):
- * only when no computer is paired yet, and only after the user says yes
- * (any app or page can open a link; pairing sends notes to that address). */
+/** Checks the computer answers, then saves the pairing and syncs. */
+async function pairChecked(p: Pairing): Promise<void> {
+  const t = tr(T);
+  const v = await verifyPairing(p);
+  if (!v.ok) {
+    Alert.alert(t.pairTitle, t.pairCheckFailed(errorText(v.code)));
+    return;
+  }
+  await pair({ ...p, desktopName: v.desktopName });
+  void sync();
+}
+
+/** A hivo://pair link opened from the system camera (or `simctl openurl`),
+ * only after the user says yes (any app or page can open a link; pairing
+ * sends notes to that address). When already paired, it offers to replace
+ * the pairing (the computer's address changed, or another computer);
+ * unsynced note edits are carried over. */
 function pairFromLink(url: string | null | undefined): void {
-  if (!url || getState().pairing) return;
+  if (!url) return;
   const r = parsePairingUrl(url, { loopback: Platform.OS === "ios" });
   if (!r.ok) return;
   const t = tr(T);
-  const { desktopName, hosts, port } = r.pairing;
-  Alert.alert(t.linkPairTitle, t.linkPairBody(desktopName, `${hosts[0]}:${port}`), [
+  const { desktopName, hosts, port, deviceId } = r.pairing;
+  const current = getState().pairing;
+  if (current?.deviceId === deviceId && current.key === r.pairing.key) return;
+  const title = current ? t.replacePairTitle(desktopName) : t.linkPairTitle;
+  const body = current ? t.replacePairBody(current.desktopName, `${hosts[0]}:${port}`) : t.linkPairBody(desktopName, `${hosts[0]}:${port}`);
+  Alert.alert(title, body, [
     { text: t.cancel, style: "cancel" },
     {
-      text: t.linkPairYes,
+      text: current ? t.replacePairYes : t.linkPairYes,
       onPress: () => {
-        if (getState().pairing) return;
-        void pair(r.pairing).then(() => void sync());
+        // Still the pairing the question was about.
+        if (getState().pairing?.deviceId !== current?.deviceId) return;
+        void pairChecked(r.pairing);
       },
     },
   ]);
@@ -53,7 +73,7 @@ type Route =
   | { name: "record"; target: IdeaTarget | null }
   | { name: "share"; share: IncomingShare; at: number };
 
-const fromNative = (s: Shared): IncomingShare => ({ files: s.files, skipped: s.skipped, text: s.text, subject: s.subject, picked: false });
+const fromNative = (s: Shared): IncomingShare => ({ files: s.files, skipped: s.skipped, text: s.text, subject: s.subject, picked: false, dir: s.dir });
 
 export default function App() {
   const [fontsLoaded, fontError] = useFonts({
@@ -65,40 +85,55 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("prod");
   const routeRef = useRef(route);
   routeRef.current = route;
-  // A share that arrived while recording waits until the take is saved or dropped.
-  const [queuedShare, setQueuedShare] = useState<Shared | null>(null);
+  /** What the hardware Back does on a screen that has its own rule (share, record). */
+  const backRef = useRef<(() => void) | null>(null);
+  // Shares that arrived while recording or while another share is on screen:
+  // each waits its turn, none replaces another.
+  const [queue, setQueue] = useState<Shared[]>([]);
+  const queueRef = useRef(queue);
+  queueRef.current = queue;
+  /** A share's files are being copied (a big export takes a while). */
+  const [copying, setCopying] = useState(false);
   const showShare = (s: Shared) => {
-    if (routeRef.current.name === "record") setQueuedShare(s);
-    else setRoute({ name: "share", share: fromNative(s), at: Date.now() });
+    setCopying(false);
+    setQueue((q) => enqueue(q, s));
   };
   useEffect(() => {
-    if (queuedShare && route.name !== "record") {
-      setRoute({ name: "share", share: fromNative(queuedShare), at: Date.now() });
-      setQueuedShare(null);
-    }
-  }, [queuedShare, route.name]);
+    if (queue.length === 0 || route.name === "record" || route.name === "share") return;
+    const { next, rest } = dequeue(queue);
+    setQueue(rest);
+    if (next) setRoute({ name: "share", share: fromNative(next), at: Date.now() });
+  }, [queue, route.name]);
 
   useEffect(() => {
+    // Shared while Hivo is open (registered first: a share can start copying right away).
+    const share = onShare(showShare);
+    const start = onShareStart(() => setCopying(true));
     void load().then(async () => {
       if (getState().pairing) void sync();
-      else pairFromLink(await Linking.getInitialURL());
+      pairFromLink(await Linking.getInitialURL());
       // Started by "Share to Hivo".
       const shared = await takeShared().catch(() => null);
+      setCopying(false);
       if (shared) showShare(shared);
+      // Copies left by an earlier run (killed mid-share): only this one is still wanted.
+      const onScreen = routeRef.current.name === "share" ? routeRef.current.share.dir : null;
+      void sweepShareCache([shared?.dir, onScreen, ...queueRef.current.map((q) => q.dir)].filter((d): d is string => !!d));
     });
     const link = Linking.addEventListener("url", ({ url }) => {
       if (getState().loaded) pairFromLink(url);
     });
-    // Shared while Hivo is open.
-    const share = onShare(showShare);
     // Sync when the app comes back; save the cache when it leaves.
     const sub = AppState.addEventListener("change", (s) => {
       if (s === "active") {
         if (getState().pairing) void sync();
         // Shared while Hivo was in the background (the intent is waiting).
         void takeShared()
-          .then((shared) => shared && showShare(shared))
-          .catch(() => {});
+          .then((shared) => {
+            setCopying(false);
+            if (shared) showShare(shared);
+          })
+          .catch(() => setCopying(false));
       } else if (s === "background" || s === "inactive") {
         void flush();
         void flushExtras();
@@ -108,6 +143,7 @@ export default function App() {
       sub.remove();
       link.remove();
       share.remove();
+      start.remove();
     };
   }, []);
 
@@ -123,7 +159,7 @@ export default function App() {
     if (toInbox) setTab("inbox");
     if (fromNote) {
       setTimeout(() => {
-        if (Object.keys(getState().sync.pending).length > 0) void sync();
+        if (Object.keys(getState().sync.pending).length > 0) requestSync();
       }, 50);
     }
   }
@@ -131,8 +167,11 @@ export default function App() {
   useEffect(() => {
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
       if (route.name === "library") return false;
-      // Never leave a recording by the back button: Stop first.
-      if (route.name === "record") return true;
+      // Share and record have their own rule (cleanup, never leave a take).
+      if (route.name === "share" || route.name === "record") {
+        backRef.current?.();
+        return true;
+      }
       goBack();
       return true;
     });
@@ -153,18 +192,25 @@ export default function App() {
   }
 
   const ready = loaded && (fontsLoaded || fontError);
+  const t = tr(T);
 
   return (
     <SafeAreaProvider>
       <SafeAreaView style={{ flex: 1, backgroundColor: C.chassis }} edges={["top", "bottom", "left", "right"]}>
         <StatusBar style="light" />
         {ready ? <UpdateBanner /> : null}
+        {ready && copying ? (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingVertical: 8, backgroundColor: C.panel }}>
+            <ActivityIndicator color={C.hot} size="small" />
+            <Text style={{ color: C.cream, fontSize: 14 }}>{t.copyingShare}</Text>
+          </View>
+        ) : null}
         {!ready ? (
           <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
             <ActivityIndicator color={C.hot} />
           </View>
         ) : route.name === "share" ? (
-          <ShareScreen key={route.at} share={route.share} onDone={goBack} onIdea={(id) => setRoute({ name: "idea", id })} />
+          <ShareScreen key={route.at} share={route.share} onDone={goBack} onIdea={(id) => setRoute({ name: "idea", id })} backRef={backRef} />
         ) : route.name === "idea" && !paired ? (
           // An idea kept from a share before pairing: editable now, sent once paired.
           <IdeaScreen key={route.id} id={route.id} onBack={goBack} />
@@ -182,7 +228,7 @@ export default function App() {
         ) : route.name === "idea" ? (
           <IdeaScreen key={route.id} id={route.id} onBack={goBack} />
         ) : route.name === "record" ? (
-          <RecordScreen target={route.target} onDone={goBack} />
+          <RecordScreen target={route.target} onDone={goBack} backRef={backRef} />
         ) : route.name === "settings" ? (
           <SettingsScreen onBack={() => setRoute({ name: "library" })} />
         ) : (

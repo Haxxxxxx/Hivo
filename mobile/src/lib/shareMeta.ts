@@ -75,11 +75,12 @@ export function titleFromShare(share: { subject: string | null; text: string | n
 }
 
 /** The name a shared file keeps: its own, unless it's an id; then the title
- * ("Night Drive.m4a", "Night Drive 2.m4a"), else "BandLab export". */
-export function fileNameFor(name: string, named: boolean, title: string, index: number, count: number): string {
+ * ("Night Drive.m4a", "Night Drive 2.m4a"), else `fallback` (the app
+ * language's "BandLab export"). */
+export function fileNameFor(name: string, named: boolean, title: string, index: number, count: number, fallback = "BandLab export"): string {
   if (named && !isOpaqueName(name)) return name;
   const ext = /\.([a-z0-9]{1,5})$/i.exec(name)?.[1]?.toLowerCase();
-  const base = clip((title.replace(/[/\\:*?"<>|]/g, " ").replace(/\s+/g, " ").trim() || "BandLab export"), 100).trim();
+  const base = clip((title.replace(/[/\\:*?"<>|]/g, " ").replace(/\s+/g, " ").trim() || fallback), 100).trim();
   const stem = count > 1 ? `${base} ${index + 1}` : base;
   return ext ? `${stem}.${ext}` : stem;
 }

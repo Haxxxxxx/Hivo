@@ -128,5 +128,9 @@ export function applyIdeaStatuses(ideas: Idea[], statuses: Map<string, { status:
 export const resetSent = (ideas: Idea[]): Idea[] =>
   ideas.filter((i) => !i.deleted).map((i) => ({ ...i, sentAt: null, status: null, filedTo: null }));
 
+/** Filed or dismissed ideas untouched for `keepMs`: the computer has them, the phone lets go. */
+export const pruneIdeas = (ideas: Idea[], now: number, keepMs: number): Idea[] =>
+  ideas.filter((i) => !(isLocked(i) && i.sentAt !== null && now - Math.max(i.updatedAt, i.sentAt) > keepMs));
+
 /** Newest first, deleted hidden. */
 export const visibleIdeas = (ideas: Idea[]): Idea[] => ideas.filter((i) => !i.deleted).sort((a, b) => b.updatedAt - a.updatedAt);
