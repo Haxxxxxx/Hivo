@@ -52,7 +52,7 @@ Before building or restyling any UI:
 - The code is the source, the artifact follows it: `src/ui` (components), `src/theme.css` (tokens) and
   `.design-sync/conventions.md` (its README). After changing any of them, re-sync the artifact from
   the code (rebuild `components/bundle.js` / `bundle.css`, update the changed types, READMEs and tokens,
-  record the commit in `tokens.json` `meta`). Last re-sync: `main@1098f6e` (#131; `e08774c` before the 2026-10-25 history rewrite), 2026-10-24.
+  record the commit in `tokens.json` `meta`). Last re-sync: `main@c806e26` (round 3: `StatusDot.label`, `ConfirmButton`, `Modal`, `FileRow`, `CheckLine`), 2026-11-02; how to rebuild the bundle in `.design-sync/NOTES.md`.
 
 ## Commands
 - `npm ci && npm run tauri dev`: run the app. Setup per OS: [SETUP.md](SETUP.md).
