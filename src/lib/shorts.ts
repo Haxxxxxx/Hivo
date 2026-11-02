@@ -18,6 +18,8 @@ export interface ShortLayoutInput {
   producers: string;
   key: string;
   releaseDate: string;
+  /** The kit's caption language: the short is posted with those captions. */
+  lang?: "fr" | "en";
   today?: Date;
 }
 
@@ -33,14 +35,18 @@ function seeded(seed: number) {
   return () => ((s = (Math.imul(s, 1103515245) + 12345) >>> 0) / 4294967296);
 }
 
-/** "OUT FRIDAY · DEC 12" before the date, "OUT NOW" from release day on. */
-export function releaseLine(releaseDate: string, today = new Date()): string {
+/** "OUT FRIDAY · DEC 12" before the date, "OUT NOW" from release day on
+ * ("SORTIE VENDREDI · 12 DÉC." / "DISPO MAINTENANT" in French): in the kit's
+ * caption language, not the app's. */
+export function releaseLine(releaseDate: string, today = new Date(), lang: "fr" | "en" = "en"): string {
   const d = parseDate(releaseDate);
   const t = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  if (!d || d <= t) return "OUT NOW";
-  const weekday = d.toLocaleDateString("en-US", { weekday: "long" }).toUpperCase();
-  const day = d.toLocaleDateString("en-US", { month: "short", day: "numeric" }).toUpperCase();
-  return `OUT ${weekday} · ${day}`;
+  const fr = lang === "fr";
+  if (!d || d <= t) return fr ? "DISPO MAINTENANT" : "OUT NOW";
+  const locale = fr ? "fr-FR" : "en-US";
+  const weekday = d.toLocaleDateString(locale, { weekday: "long" }).toLocaleUpperCase(locale);
+  const day = d.toLocaleDateString(locale, { month: "short", day: "numeric" }).toLocaleUpperCase(locale);
+  return fr ? `SORTIE ${weekday} · ${day}` : `OUT ${weekday} · ${day}`;
 }
 
 function wrap(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, maxLines: number): string[] {
@@ -169,7 +175,7 @@ export function drawShortLayout(input: ShortLayoutInput, cover?: (CanvasImageSou
   ctx.fill();
 
   // Release pill.
-  const line = releaseLine(input.releaseDate, input.today);
+  const line = releaseLine(input.releaseDate, input.today, input.lang);
   ctx.font = font(800, 44);
   const pillW = ctx.measureText(line).width + 96;
   ctx.fillStyle = ORANGE;

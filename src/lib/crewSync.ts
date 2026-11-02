@@ -3,7 +3,7 @@ import { cleanTitle } from "./launchKit";
 import { datedRelease } from "./releaseDates";
 import { isKitAccepted } from "./kitState";
 import { lastSaveMs, renderFreshness } from "./songs";
-import { dict, tr } from "../i18n";
+import { dict, plural, tr } from "../i18n";
 
 // Sync between the local workspace and the crew database (docs/ARCHITECTURE.md).
 // Pure functions: what to push for a shared song, which remote stage moves to
@@ -498,15 +498,15 @@ export function syncFingerprint(projects: ProjectInfo[], ws: Workspace, scope: S
 const T_LIMIT = dict(
   {
     share: (n: number) =>
-      `${n} song${n === 1 ? " wasn't" : "s weren't"} shared: a crew takes up to ${SONGS_PER_CREW} songs from each person. Stop sharing some first (Settings → Crew lists what's on the server).`,
-    pushSongs: (n: number) => ` · ${n} new song${n === 1 ? "" : "s"} not shared (share limit reached: stop sharing some to make room)`,
-    pushReleases: (n: number) => ` · ${n} release${n === 1 ? "" : "s"} not shared (the crew has ${RELEASES_PER_CREW}, the most allowed)`,
+      `${n} song${plural(n, " wasn't", "s weren't")} shared: a crew takes up to ${SONGS_PER_CREW} songs from each person. Stop sharing some first (Settings → Crew lists what's on the server).`,
+    pushSongs: (n: number) => ` · ${n} new song${plural(n, "", "s")} not shared (share limit reached: stop sharing some to make room)`,
+    pushReleases: (n: number) => ` · ${n} release${plural(n, "", "s")} not shared (the crew has ${RELEASES_PER_CREW}, the most allowed)`,
   },
   {
     share: (n: number) =>
-      `${n} son${n === 1 ? " n'a pas été partagé" : "s n'ont pas été partagés"} : un crew prend jusqu'à ${SONGS_PER_CREW} sons par personne. Arrête d'en partager d'abord (Réglages → Crew liste ce qui est sur le serveur).`,
-    pushSongs: (n: number) => ` · ${n} nouveau${n === 1 ? " son non partagé" : "x sons non partagés"} (limite de partage atteinte : arrête d'en partager pour faire de la place)`,
-    pushReleases: (n: number) => ` · ${n} sortie${n === 1 ? " non partagée" : "s non partagées"} (le crew en a ${RELEASES_PER_CREW}, le maximum)`,
+      `${n} son${plural(n, " n'a pas été partagé", "s n'ont pas été partagés")} : un crew prend jusqu'à ${SONGS_PER_CREW} sons par personne. Arrête d'en partager d'abord (Réglages → Crew liste ce qui est sur le serveur).`,
+    pushSongs: (n: number) => ` · ${n} nouveau${plural(n, " son non partagé", "x sons non partagés")} (limite de partage atteinte : arrête d'en partager pour faire de la place)`,
+    pushReleases: (n: number) => ` · ${n} sortie${plural(n, " non partagée", "s non partagées")} (le crew en a ${RELEASES_PER_CREW}, le maximum)`,
   },
 );
 

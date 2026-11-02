@@ -31,7 +31,7 @@ export function TargetPicker({ value, onChange, disabled, kinds = KINDS }: { val
         onPress={() => setOpen(true)}
         style={({ pressed }) => [styles.field, pressed && { backgroundColor: C.raised }, disabled && { opacity: 0.6 }]}
         accessibilityRole="button"
-        accessibilityLabel={value ? `${s().forTarget}: ${label[value.kind]} · ${value.title}` : `${s().forTarget}: ${s().noTarget}`}
+        accessibilityLabel={s().forTargetLabel(value ? `${label[value.kind]} · ${value.title}` : s().noTarget)}
       >
         <Text style={[styles.value, !value && { color: C.engrave }]} numberOfLines={1}>
           {value ? `${label[value.kind]} · ${value.title}` : s().noTarget}

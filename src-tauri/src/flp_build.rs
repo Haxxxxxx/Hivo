@@ -19,6 +19,7 @@
 //! Playlist items are 80 bytes since FL 24.2: older templates are refused
 //! ("save it once in FL Studio 2024 or newer").
 
+use crate::error::app_err;
 use std::path::Path;
 
 /// At most this many clips in one project (a sketch holds 20 files at most).
@@ -83,7 +84,7 @@ fn read_varint(data: &[u8], pos: &mut usize) -> Option<usize> {
 }
 
 fn parse_events(data: &[u8]) -> Result<Vec<Event>, String> {
-    let bad = || "The template isn't a readable FL Studio project.".to_string();
+    let bad = || String::from(app_err("template.unreadable", "The template isn't a readable FL Studio project."));
     let mut out = Vec::new();
     let mut pos = 0;
     while pos < data.len() {
@@ -103,7 +104,7 @@ fn parse_events(data: &[u8]) -> Result<Vec<Event>, String> {
 }
 
 fn parse(data: &[u8]) -> Result<Flp, String> {
-    let bad = || "The template isn't a readable FL Studio project.".to_string();
+    let bad = || String::from(app_err("template.unreadable", "The template isn't a readable FL Studio project."));
     if data.len() < 22 || &data[0..4] != b"FLhd" {
         return Err(bad());
     }
@@ -184,16 +185,18 @@ fn u16_of(val: &[u8]) -> Option<u16> {
 /// `bpm` replaces the template's tempo when given (40-300).
 pub fn build(template: &[u8], clips: &[Clip], bpm: Option<f64>) -> Result<Vec<u8>, String> {
     if clips.is_empty() {
-        return Err("No audio to lay out.".to_string());
+        return Err(app_err("sketch.noPlayable", "No audio to lay out.").into());
     }
     if clips.len() > MAX_CLIPS {
-        return Err(format!("{} files: {MAX_CLIPS} at most in one project.", clips.len()));
+        return Err(app_err("template.tooManyClips", format!("{} files: {MAX_CLIPS} at most in one project.", clips.len())).with("count", clips.len()).with("max", MAX_CLIPS).into());
     }
     let mut flp = parse(template)?;
     match version_of(&flp.events) {
         Some(v) if v >= (24, 2) => {}
-        Some((a, b)) => return Err(format!("The template was saved by FL Studio {a}.{b}: open it in FL Studio 2024 or newer and save it once.")),
-        None => return Err("The template has no FL Studio version: open it in FL Studio and save it once.".to_string()),
+        Some((a, b)) => {
+            return Err(app_err("template.old", format!("The template was saved by FL Studio {a}.{b}: open it in FL Studio 2024 or newer and save it once.")).with("version", format!("{a}.{b}")).into())
+        }
+        None => return Err(app_err("template.noVersion", "The template has no FL Studio version: open it in FL Studio and save it once.").into()),
     }
     let ev = &flp.events;
     let channel_ids: Vec<u16> = ev.iter().filter(|(id, _)| *id == ID_CHANNEL_NEW).filter_map(|(_, v)| u16_of(v)).collect();
@@ -202,10 +205,10 @@ pub fn build(template: &[u8], clips: &[Clip], bpm: Option<f64>) -> Result<Vec<u8
         .iter()
         .enumerate()
         .position(|(i, (id, _))| *id == ID_ARRANGEMENT_NEW && last_channel.is_none_or(|l| i > l))
-        .ok_or("The template has no playlist (arrangement): save it once in FL Studio 2024 or newer.")?;
+        .ok_or_else(|| String::from(app_err("template.noPlaylist", "The template has no playlist (arrangement): save it once in FL Studio 2024 or newer.")))?;
     let first_new = channel_ids.iter().max().map_or(0, |m| m + 1);
     if first_new as usize + clips.len() >= PATTERN_BASE as usize || clips.len() > TRACKS as usize {
-        return Err("The template has too many channels.".to_string());
+        return Err(app_err("template.tooManyChannels", "The template has too many channels.").into());
     }
 
     // The tempo the clip lengths are counted at.
@@ -247,9 +250,9 @@ pub fn build(template: &[u8], clips: &[Clip], bpm: Option<f64>) -> Result<Vec<u8
     let arrangement = insert_at + added;
     let playlist = (arrangement..flp.events.len())
         .find(|&i| flp.events[i].0 == ID_PLAYLIST)
-        .ok_or("The template has no playlist: save it once in FL Studio 2024 or newer.")?;
+        .ok_or_else(|| String::from(app_err("template.noPlaylist", "The template has no playlist: save it once in FL Studio 2024 or newer.")))?;
     if flp.events[playlist].1.len() % ITEM_BYTES != 0 {
-        return Err("The template's playlist isn't in the FL Studio 2024+ layout: save it once in FL Studio 2024 or newer.".to_string());
+        return Err(app_err("template.noPlaylist", "The template's playlist isn't in the FL Studio 2024+ layout: save it once in FL Studio 2024 or newer.").into());
     }
     flp.events[playlist].1.extend_from_slice(&items);
     for (k, clip) in clips.iter().enumerate().rev() {

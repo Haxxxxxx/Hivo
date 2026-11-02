@@ -2,6 +2,7 @@
 //! strongest stretches for reels/stories, and cutting those as clips.
 //! Decoding is pure Rust (symphonia), so nothing extra to install.
 
+use crate::error::{app_err, path_err};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -68,12 +69,12 @@ pub struct Snippet {
 pub(crate) fn decode(path: &Path, mut on_chunk: impl FnMut(&[f32], usize, u32) -> bool) -> Result<Option<u32>, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode_unguarded(path, &mut on_chunk))).unwrap_or_else(|_| {
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        Err(format!("{name} couldn't be decoded (damaged or unusual audio file)"))
+        Err(app_err("audio.damaged", format!("{name} couldn't be decoded (damaged or unusual audio file)")).with("name", name).into())
     })
 }
 
 fn decode_unguarded(path: &Path, on_chunk: &mut impl FnMut(&[f32], usize, u32) -> bool) -> Result<Option<u32>, String> {
-    let file = File::open(path).map_err(|e| format!("could not open {}: {e}", path.display()))?;
+    let file = File::open(path).map_err(|e| path_err("io.open", path, format!("could not open {}: {e}", path.display())))?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
     let mut hint = Hint::new();
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
@@ -81,21 +82,21 @@ fn decode_unguarded(path: &Path, on_chunk: &mut impl FnMut(&[f32], usize, u32) -
     }
     let probed = symphonia::default::get_probe()
         .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
-        .map_err(|e| format!("unsupported audio file: {e}"))?;
+        .map_err(|e| app_err("audio.unsupported", format!("unsupported audio file: {e}")))?;
     let mut format = probed.format;
-    let track = format.default_track().ok_or("no audio track in file")?;
+    let track = format.default_track().ok_or_else(|| String::from(app_err("audio.unsupported", "no audio track in file")))?;
     let track_id = track.id;
     let bits_per_sample = track.codec_params.bits_per_sample;
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
-        .map_err(|e| format!("unsupported audio codec: {e}"))?;
+        .map_err(|e| app_err("audio.unsupported", format!("unsupported audio codec: {e}")))?;
 
     loop {
         let packet = match format.next_packet() {
             Ok(p) => p,
             Err(SymError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
             Err(SymError::ResetRequired) => break,
-            Err(e) => return Err(format!("could not read audio: {e}")),
+            Err(e) => return Err(app_err("audio.read", format!("could not read audio: {e}")).into()),
         };
         if packet.track_id() != track_id {
             continue;
@@ -104,7 +105,7 @@ fn decode_unguarded(path: &Path, on_chunk: &mut impl FnMut(&[f32], usize, u32) -
             Ok(d) => d,
             // A corrupt frame: skip it rather than fail the whole file.
             Err(SymError::DecodeError(_)) => continue,
-            Err(e) => return Err(format!("could not decode audio: {e}")),
+            Err(e) => return Err(app_err("audio.read", format!("could not decode audio: {e}")).into()),
         };
         let spec = *decoded.spec();
         let mut buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
@@ -155,7 +156,7 @@ pub fn analyze(path: &Path, bpm: Option<f64>) -> Result<AudioAnalysis, String> {
         energy.push((acc / n as f64).sqrt() as f32);
     }
     if rate == 0 || frames == 0 {
-        return Err("the file has no audio".to_string());
+        return Err(app_err("audio.empty", "the file has no audio").into());
     }
     let peak = energy.iter().cloned().fold(0f32, f32::max);
     if peak > 0.0 {
@@ -353,7 +354,7 @@ pub fn duration_ms(path: &Path) -> Result<f64, String> {
         true
     })?;
     if rate == 0 || frames == 0 {
-        return Err(format!("{} has no audio", path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()));
+        return Err(path_err("audio.empty", path, format!("{} has no audio", path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())));
     }
     Ok(frames as f64 * 1000.0 / rate as f64)
 }
@@ -364,7 +365,7 @@ const MAX_CONVERT_SECS: u64 = 30 * 60;
 /// Decodes `src` (an M4A, AAC…) into a 16-bit WAV at `dst`, streamed, never
 /// over an existing file. Returns the length in milliseconds.
 pub fn convert_to_wav(src: &Path, dst: &Path) -> Result<f64, String> {
-    let file = std::fs::OpenOptions::new().write(true).create_new(true).open(dst).map_err(|e| format!("could not create {}: {e}", dst.display()))?;
+    let file = std::fs::OpenOptions::new().write(true).create_new(true).open(dst).map_err(|e| path_err("io.create", dst, format!("could not create {}: {e}", dst.display())))?;
     let mut w = BufWriter::new(file);
     let (mut frames, mut rate, mut chans) = (0u64, 0u32, 0usize);
     let mut io_err: Option<std::io::Error> = None;
@@ -415,10 +416,10 @@ pub fn convert_to_wav(src: &Path, dst: &Path) -> Result<f64, String> {
             return Err(crate::phone_inbox::io_error(&e, "could not write the WAV"));
         }
         if too_long {
-            return Err(format!("{} is over 30 minutes: not converted", src.display()));
+            return Err(path_err("audio.tooLong", src, format!("{} is over 30 minutes: not converted", src.display())));
         }
         if chans == 0 || frames == 0 {
-            return Err(format!("{} has no audio", src.display()));
+            return Err(path_err("audio.empty", src, format!("{} has no audio", src.display())));
         }
         let data_len = (frames * chans as u64 * 2) as u32;
         w.flush().map_err(|e| crate::phone_inbox::io_error(&e, "could not write the WAV"))?;
@@ -463,9 +464,9 @@ pub fn safe_name_opt(name: &str) -> Option<String> {
 /// as 16-bit PCM with short fades.
 pub fn export_clips(src: &Path, clips: &[Snippet], out_dir: &Path) -> Result<Vec<PathBuf>, String> {
     if crate::kits::is_link(out_dir) {
-        return Err(format!("{} is a link: refusing to write through it", out_dir.display()));
+        return Err(path_err("io.link", out_dir, format!("{} is a link: refusing to write through it", out_dir.display())));
     }
-    fs::create_dir_all(out_dir).map_err(|e| format!("could not create {}: {e}", out_dir.display()))?;
+    fs::create_dir_all(out_dir).map_err(|e| path_err("io.create", out_dir, format!("could not create {}: {e}", out_dir.display())))?;
     let mut buffers: Vec<Vec<f32>> = vec![Vec::new(); clips.len()];
     let (mut frame_index, mut channels, mut rate) = (0u64, 0usize, 0u32);
     let last_end = clips.iter().map(|c| c.start_sec + c.length_sec).fold(0.0, f64::max);
@@ -485,7 +486,7 @@ pub fn export_clips(src: &Path, clips: &[Snippet], out_dir: &Path) -> Result<Vec
         (frame_index as f64 / sr as f64) < last_end
     })?;
     if rate == 0 {
-        return Err("the file has no audio".to_string());
+        return Err(app_err("audio.empty", "the file has no audio").into());
     }
     let fade = (FADE_SEC * rate as f64) as usize;
     let mut written = Vec::new();
@@ -499,8 +500,8 @@ pub fn export_clips(src: &Path, clips: &[Snippet], out_dir: &Path) -> Result<Vec
             }
         }
         let path = out_dir.join(format!("{}.wav", safe_name(&clip.label)));
-        crate::kits::clear_target(&path).map_err(|e| format!("could not write {}: {e}", path.display()))?;
-        write_wav(&path, &buf, channels as u16, rate).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        crate::kits::clear_target(&path).map_err(|e| path_err("io.write", &path, format!("could not write {}: {e}", path.display())))?;
+        write_wav(&path, &buf, channels as u16, rate).map_err(|e| path_err("io.write", &path, format!("could not write {}: {e}", path.display())))?;
         written.push(path);
     }
     Ok(written)
@@ -511,7 +512,7 @@ pub async fn analyze_audio(app: tauri::AppHandle, path: String, bpm: Option<f64>
     let path = crate::scope::Scope::load(&app)?.audio(&path)?;
     tauri::async_runtime::spawn_blocking(move || analyze(&path, bpm))
         .await
-        .map_err(|e| format!("analysis failed: {e}"))?
+        .map_err(|e| app_err("task.failed", format!("analysis failed: {e}")))?
 }
 
 #[derive(Debug, Deserialize)]
@@ -556,11 +557,11 @@ pub async fn read_kit_cover(app: tauri::AppHandle, saved_path: Option<String>, f
     let output = scope.output()?.to_path_buf();
     tauri::async_runtime::spawn_blocking(move || {
         let Some(path) = find_kit_cover(&output, saved_path.as_deref(), &folder_name) else { return Ok(None) };
-        let bytes = fs::read(&path).map_err(|e| format!("could not read the cover concept: {e}"))?;
+        let bytes = fs::read(&path).map_err(|e| path_err("io.read", &path, format!("could not read the cover concept: {e}")))?;
         Ok(Some(base64::engine::general_purpose::STANDARD.encode(bytes)))
     })
     .await
-    .map_err(|e| format!("reading the cover failed: {e}"))?
+    .map_err(|e| app_err("task.failed", format!("reading the cover failed: {e}")))?
 }
 
 const MAX_COVER_BYTES: u64 = 20 * 1024 * 1024;
@@ -589,7 +590,7 @@ fn check_kit_files(files: &[KitFile]) -> Result<(), String> {
         let name = safe_name(&f.name);
         let ext = Path::new(&name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
         if !matches!(ext.as_str(), "txt" | "json" | "csv" | "md") {
-            return Err(format!("a Launch Kit file can't be called {}", f.name));
+            return Err(app_err("kit.badFileName", format!("a Launch Kit file can't be called {}", f.name)).with("name", f.name.as_str()).into());
         }
     }
     Ok(())
@@ -616,7 +617,7 @@ async fn write_launch_kit(
         for f in &files {
             let name = safe_name(&f.name);
             let path = dir.join(&name);
-            kits::write_new(&path, f.content.as_bytes()).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+            kits::write_new(&path, f.content.as_bytes()).map_err(|e| path_err("io.write", &path, format!("could not write {}: {e}", path.display())))?;
             written.push(name);
         }
         if let Some(master) = master {
@@ -627,7 +628,7 @@ async fn write_launch_kit(
             // Copying a file onto itself would destroy it: never do that.
             let same = matches!((src.canonicalize(), dest.canonicalize()), (Ok(a), Ok(b)) if a == b);
             if !same {
-                kits::copy_new(src, &dest).map_err(|e| format!("could not copy the mixdown: {e}"))?;
+                kits::copy_new(src, &dest).map_err(|e| path_err("io.copy", src, format!("could not copy the mixdown: {e}")))?;
             }
             written.push(name);
             if !clips.is_empty() {
@@ -646,7 +647,7 @@ async fn write_launch_kit(
         Ok(dir.to_string_lossy().to_string())
     })
     .await
-    .map_err(|e| format!("export failed: {e}"))?
+    .map_err(|e| app_err("task.failed", format!("export failed: {e}")))?
 }
 
 #[cfg(test)]

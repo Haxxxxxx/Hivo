@@ -6,6 +6,7 @@ import type { SongStatus, TemplateInfo } from "../types";
 import { Modal, btn, btnPrimary, input, sectionLabel } from "./ui";
 import { dict, tr } from "../i18n";
 import { adoptBeat } from "../store/beatToSong";
+import { errorText, errorReason } from "../lib/errors";
 
 const T = dict(
   {
@@ -60,10 +61,10 @@ const T = dict(
     cancel: "Annuler",
     creating: "Création…",
     create: "Créer le son",
-    fromBeat: (name: string) => `À partir de la prod ${name} : ses notes et ses mémos du téléphone passent au son. Le fichier de la prod reste où il est.`,
+    fromBeat: (name: string) => `À partir de la prod ${name} : ses notes et ses mémos du téléphone passent au son. Le fichier de la prod reste où il est.`,
     creditProducer: "Créditer comme producteur",
     producerName: "Producteur",
-    memosFailed: (name: string, list: string) => `${name} est créé, mais ces mémos du téléphone sont restés sur la prod : ${list}. Range-les depuis la boîte du téléphone.`,
+    memosFailed: (name: string, list: string) => `${name} est créé, mais ces mémos du téléphone sont restés sur la prod : ${list}. Range-les depuis la boîte du téléphone.`,
   },
 );
 
@@ -154,13 +155,13 @@ export function NewProjectModal() {
           await api.openInFlStudio(path);
         } catch (e) {
           // The song exists; say so here instead of on a closed modal.
-          setError(tr(T).openFailed(trimmed, e instanceof Error ? e.message : String(e)));
+          setError(tr(T).openFailed(trimmed, errorReason(e)));
           return;
         }
       }
       close();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setBusy(false);
     }

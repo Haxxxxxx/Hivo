@@ -14,6 +14,7 @@
 //! MusicBrainz asks for a descriptive User-Agent and at most one request a
 //! second: both are enforced here.
 
+use crate::error::app_err;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -525,13 +526,14 @@ fn client() -> reqwest::Client {
 }
 
 fn explain(what: &str, e: reqwest::Error) -> String {
-    if e.is_timeout() {
-        format!("{what} didn't answer in time. Try again.")
+    let e = if e.is_timeout() {
+        app_err("lookup.timeout", format!("{what} didn't answer in time. Try again."))
     } else if e.is_connect() {
-        format!("Couldn't reach {what}. Check the connection.")
+        app_err("lookup.offline", format!("Couldn't reach {what}. Check the connection."))
     } else {
-        format!("{what}: {e}")
-    }
+        app_err("lookup.failed", format!("{what}: {e}"))
+    };
+    e.with("service", what).into()
 }
 
 async fn get_json(client: &reqwest::Client, what: &str, url: &str, bearer: Option<&str>) -> Result<Value, String> {
@@ -548,15 +550,18 @@ async fn get_json_status(client: &reqwest::Client, what: &str, url: &str, bearer
     let status = res.status().as_u16();
     let bytes = res.bytes().await.map_err(|e| (0, explain(what, e)))?;
     if bytes.len() > MAX_BODY {
-        return Err((0, format!("{what} sent too much data.")));
+        return Err((0, app_err("lookup.tooMuch", format!("{what} sent too much data.")).with("service", what).into()));
     }
     let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     match status {
         200 => Ok(body),
-        429 | 503 => Err((status, format!("{what} is busy (rate limit). Wait a few seconds and try again."))),
-        404 => Err((status, format!("{what}: not found."))),
-        401 | 403 => Err((status, format!("{what} refused the request ({status}). Check the credentials in Settings."))),
-        _ => Err((status, format!("{what} answered {status}."))),
+        429 | 503 => Err((status, app_err("lookup.busy", format!("{what} is busy (rate limit). Wait a few seconds and try again.")).with("service", what).into())),
+        404 => Err((status, app_err("lookup.notFound", format!("{what}: not found.")).with("service", what).into())),
+        401 | 403 => Err((
+            status,
+            app_err("lookup.refused", format!("{what} refused the request ({status}). Check the credentials in Settings.")).with("service", what).with("status", status).into(),
+        )),
+        _ => Err((status, app_err("lookup.http", format!("{what} answered {status}.")).with("service", what).with("status", status).into())),
     }
 }
 
@@ -630,8 +635,8 @@ struct SpotifySecrets {
 }
 
 fn secrets_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_config_dir().map_err(|e| format!("could not resolve app config dir: {e}"))?;
-    fs::create_dir_all(&dir).map_err(|e| format!("could not create config dir: {e}"))?;
+    let dir = app.path().app_config_dir().map_err(|e| app_err("config.dir", format!("could not resolve app config dir: {e}")))?;
+    fs::create_dir_all(&dir).map_err(|e| app_err("config.dir", format!("could not create config dir: {e}")))?;
     Ok(dir.join("spotify.json"))
 }
 
@@ -665,14 +670,14 @@ fn store_credentials(path: &Path, client_id: Option<String>, client_secret: Opti
         return match fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(format!("could not remove the Spotify credentials: {e}")),
+            Err(e) => Err(app_err("secret.remove", format!("could not remove the Spotify credentials: {e}")).into()),
         };
     };
     if !valid_credential(&id) || !valid_credential(&secret) {
-        return Err("That doesn't look like a Spotify client id and secret (32 characters each, from the Spotify developer dashboard).".to_string());
+        return Err(app_err("spotify.badCredentials", "That doesn't look like a Spotify client id and secret (32 characters each, from the Spotify developer dashboard).").into());
     }
     let raw = serde_json::to_string_pretty(&SpotifySecrets { client_id: Some(id), client_secret: Some(secret) }).map_err(|e| e.to_string())?;
-    crate::cover::write_private(path, raw.as_bytes()).map_err(|e| format!("could not save the Spotify credentials: {e}"))
+    crate::cover::write_private(path, raw.as_bytes()).map_err(|e| app_err("secret.save", format!("could not save the Spotify credentials: {e}")).into())
 }
 
 #[derive(Serialize)]
@@ -746,9 +751,9 @@ async fn spotify_token(client: &reqwest::Client, token_url: &str, id: &str, secr
     let status = res.status().as_u16();
     let v: Value = res.json().await.unwrap_or(Value::Null);
     if status != 200 {
-        return Err(format!("Spotify refused the credentials ({status}). Check the client id and secret in Settings."));
+        return Err(app_err("spotify.refused", format!("Spotify refused the credentials ({status}). Check the client id and secret in Settings.")).with("status", status).into());
     }
-    let token = v.get("access_token").and_then(Value::as_str).filter(|t| !t.is_empty()).ok_or("Spotify sent no token.")?.to_string();
+    let token = v.get("access_token").and_then(Value::as_str).filter(|t| !t.is_empty()).ok_or_else(|| String::from(app_err("spotify.noToken", "Spotify sent no token.")))?.to_string();
     let expires = v.get("expires_in").and_then(Value::as_u64).unwrap_or(3600).saturating_sub(60);
     *token_cache().lock().unwrap_or_else(|e| e.into_inner()) = Some((token.clone(), Instant::now() + Duration::from_secs(expires)));
     Ok(token)
@@ -813,9 +818,9 @@ pub async fn lookup_profile(app: AppHandle, source: CandidateSource, id: String)
     match source {
         CandidateSource::Spotify => {
             if !spotify_id(&id) {
-                return Err("That isn't a Spotify artist id.".to_string());
+                return Err(app_err("lookup.badSpotifyId", "That isn't a Spotify artist id.").into());
             }
-            let sp = spotify_app(&app).ok_or("Set Spotify credentials in Settings first.")?;
+            let sp = spotify_app(&app).ok_or_else(|| String::from(app_err("spotify.noCredentials", "Set Spotify credentials in Settings first.")))?;
             let (name, details) = spotify_artist(&client, SPOTIFY_BASE, &sp, &id).await?;
             let mut links = vec![spotify_link(&id)];
             if !name.is_empty() {
@@ -826,7 +831,7 @@ pub async fn lookup_profile(app: AppHandle, source: CandidateSource, id: String)
         }
         CandidateSource::Musicbrainz => {
             if !valid_mbid(&id) {
-                return Err("That isn't a MusicBrainz id.".to_string());
+                return Err(app_err("lookup.badMbid", "That isn't a MusicBrainz id.").into());
             }
             let (name, mut links) = mb_relations(&client, MB_BASE, &id).await?;
             if !name.is_empty() {
@@ -846,7 +851,7 @@ pub async fn lookup_profile(app: AppHandle, source: CandidateSource, id: String)
                         Ok((_, d)) => (Some(d), None),
                         Err(e) => (None, Some(e)),
                     },
-                    None => (None, Some("no credentials".to_string())),
+                    None => (None, Some(app_err("spotify.noCredentials", "no credentials").into())),
                 },
             };
             Ok(Profile { source, mbid: Some(id), name, links, spotify, spotify_note })
@@ -860,9 +865,9 @@ pub async fn lookup_profile(app: AppHandle, source: CandidateSource, id: String)
 #[tauri::command]
 pub fn classify_profile_link(url: String) -> Result<PlatformLink, String> {
     if url.len() > MAX_URL_CHARS {
-        return Err("That link is too long.".to_string());
+        return Err(app_err("lookup.longLink", "That link is too long.").into());
     }
-    manual_link(&url).ok_or_else(|| "That isn't a profile link (http or https).".to_string())
+    manual_link(&url).ok_or_else(|| app_err("lookup.badLink", "That isn't a profile link (http or https).").into())
 }
 
 pub fn manual_link(url: &str) -> Option<PlatformLink> {

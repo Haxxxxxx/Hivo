@@ -1,3 +1,4 @@
+use crate::error::app_err;
 use crate::daws::{self, Daw};
 use crate::flp_metadata::FlpMetadata;
 use crate::models::{FileEntry, ProjectInfo, SampleInfo, ScanResult, StemsInfo};
@@ -908,7 +909,7 @@ pub async fn scan_projects(app: AppHandle) -> Result<ScanResult, String> {
         (scanned, unreachable_roots(&linked))
     })
         .await
-        .map_err(|e| format!("scan failed: {e}"))?;
+        .map_err(|e| app_err("task.failed", format!("scan failed: {e}")))?;
     let skipped_links = scanned.links.len() as u32;
     let skipped_link_examples = scanned.links.iter().take(3).map(|p| p.to_string_lossy().to_string()).collect();
     Ok(ScanResult { projects: scanned.projects, unreachable, skipped_links, skipped_link_examples })

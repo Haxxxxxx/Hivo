@@ -1,4 +1,4 @@
-import { dict } from "@shared/i18n";
+import { dict, plural } from "@shared/i18n";
 
 // The signed-in crew website in English and French (same system and words
 // as the desktop app: src/i18n, docs/I18N.md). The language follows the page:
@@ -160,7 +160,7 @@ export const W = dict(
     nothingPlanned: "Rien de prévu.",
     released: "Sorties passées",
     owner: "propriétaire",
-    memberLine: (shared: number, active: number) => `${shared} partagé${shared > 1 ? "s" : ""} · ${active} en cours`,
+    memberLine: (shared: number, active: number) => `${shared} partagé${plural(shared, "", "s")} · ${active} en cours`,
     openTheirs: (name: string) => `Ouvrir les sons de ${name} sur le tableau`,
     openYours: "Ouvrir tes sons sur le tableau",
     onlyOf: (name: string) => `Seulement les sons de ${name}`,
@@ -178,7 +178,7 @@ export const W = dict(
     invitesHelp: "Envoie un code à quelqu'un du crew : connexion sur hi-vo.fr ou dans Hivo, puis le code. Un code marche 10 fois pendant 7 jours.",
     newInvite: "Nouveau code d'invitation",
     noInvites: "Aucun code ouvert.",
-    inviteLine: (uses: number, max: number, until: string) => `${uses}/${max} utilisé${uses > 1 ? "s" : ""} · jusqu'au ${until}`,
+    inviteLine: (uses: number, max: number, until: string) => `${uses}/${max} utilisé${plural(uses, "", "s")} · jusqu'au ${until}`,
     copy: "Copier",
     copied: "Copié",
     revoke: "Révoquer",
@@ -191,7 +191,7 @@ export const W = dict(
     save: "Enregistrer",
     deleteTitle: "Supprimer ce crew",
     deleteWhat: (crew: string, n: number) =>
-      `Tout le monde perd l'accès à ${crew} (${n === 1 ? "juste toi" : `${n} membres`})${NB}: son tableau, les releases partagées, les colonnes et les codes d'invitation sont supprimés. Rien n'est touché sur les ordis.`,
+      `Tout le monde perd l'accès à ${crew} (${n === 1 ? "juste toi" : `${n} membres`})${NB}: son tableau, les sorties partagées, les colonnes et les codes d'invitation sont supprimés. Rien n'est touché sur les ordis.`,
     deleteStart: "Supprimer le crew…",
     deleteType: (crew: string) => `Tape ${crew} pour confirmer`,
     deleteConfirm: "Supprimer pour tout le monde",

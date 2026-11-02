@@ -5,7 +5,7 @@ import { formatBpm } from "../../lib/songs";
 import { AddColumn, beforeKeyFor, CardTitle, ColumnHeader, ConflictDot, DropLine, MoveMenu, SourceError, startSongDrag, T_PIPELINE, usePipelineDrop, useSource } from "./shared";
 import { tr } from "../../i18n";
 
-const ROW = "grid grid-cols-[minmax(0,1fr)_7rem_4.5rem_3.5rem_minmax(0,10rem)_7rem] items-center gap-3";
+const ROW = "grid grid-cols-[minmax(0,1fr)_7rem_4.5rem_5rem_minmax(0,10rem)_7rem] items-center gap-3";
 
 /** The board as sections, one per column, one row per song. Same model and
  * drag rules as the board: drag rows to reorder or move them, drag a section

@@ -38,6 +38,7 @@ import type {
 } from "../types";
 
 import type { FeedbackDraft } from "../lib/feedback";
+import { errorReason, errorText, errorTextOr } from "../lib/errors";
 
 const DEFAULT_SETTINGS: Settings = {
   watchedFolders: [],
@@ -439,7 +440,7 @@ const STORE_ERRORS = dict(
     sample: "Ce sont des données d'exemple : lie d'abord un vrai dossier de projets.",
     needFl: "Indique d'abord le chemin de FL Studio dans les Réglages.",
     needExport: "Choisis d'abord un dossier d'export dans les Réglages.",
-    needExportForPackages: "Choisis d'abord un dossier d'export dans les Réglages : les paquets vont dans <dossier d'export>/Packages.",
+    needExportForPackages: "Choisis d'abord un dossier d'export dans les Réglages : les packs zip vont dans <dossier d'export>/Packages.",
     exportRunning: "Un export est déjà en cours.",
     repointReadOnly:
       "Ton espace de travail ne peut pas être enregistré pour l'instant, donc ses sons n'ont pas pu suivre le dossier. Rien n'a changé : règle d'abord le bandeau en haut, puis réessaie.",
@@ -447,7 +448,7 @@ const STORE_ERRORS = dict(
     updateUnsaved: (why: string) => `La mise à jour a été arrêtée parce que tes modifications n'ont pas pu être enregistrées avant. ${why}`,
     packaging: "Paquet déjà en cours.",
     notLoaded: "Ton espace de travail n'est pas encore chargé : réessaie dans un instant.",
-    nothingToPackage: "Rien à empaqueter.",
+    nothingToPackage: "Rien à mettre en pack zip.",
   },
 );
 
@@ -468,12 +469,12 @@ const STORE_TEXT = dict(
   {
     renderFlOnly: (daw: string, tip: string) => `Le rendu depuis Hivo marche avec les projets FL Studio. Exporte celui-ci depuis ${daw} : ${tip}`,
     notFl: (daw: string) => `Pas un projet FL Studio. Exporte-le depuis ${daw}.`,
-    packageFlOnly: (daw: string) => `Les paquets marchent avec les projets FL Studio. Dans ${daw}, utilise sa propre fonction « rassembler et enregistrer ».`,
+    packageFlOnly: (daw: string) => `Les packs zip marchent avec les projets FL Studio. Dans ${daw}, utilise sa propre fonction « rassembler et enregistrer ».`,
     saveFailed: (e: string) => `Impossible d'enregistrer tes modifications (étapes, notes, sorties) : ${e}`,
-    scanFailed: (e: string) => `Échec de l'analyse des dossiers : ${e}`,
+    scanFailed: (e: string) => `Échec de l'analyse des dossiers : ${e}`,
     settingsUnreadable: (e: string) => `Impossible de lire tes réglages, les réglages par défaut sont utilisés pour l'instant : ${e}`,
     settingsReset: (bad: string) =>
-      `Ton fichier de réglages était illisible, Hivo a donc repris les réglages par défaut : relie à nouveau tes dossiers dans les Réglages. L'ancien fichier est gardé sous ${bad}.`,
+      `Ton fichier de réglages était illisible, Hivo a donc repris les réglages par défaut : relie à nouveau tes dossiers dans les Réglages. L'ancien fichier est gardé sous ${bad}.`,
     settingsSaveFailed: (e: string) => `Impossible d'enregistrer ce réglage, il est revenu à ce qui était enregistré : ${e}`,
     droppedEdits: "Ton espace de travail est chargé. Les modifications faites pendant qu'il était illisible n'ont pas été gardées.",
     untitledAlbum: "Album sans titre",
@@ -500,7 +501,7 @@ async function readWorkspace(): Promise<LoadedWorkspace> {
     return fromStored(await api.getWorkspace());
   } catch (e) {
     const files = await api.workspaceFiles().catch(() => null);
-    return { ok: false, detail: String(e), hasBackup: !!files?.hasBackup, canReset: !!files?.canReset };
+    return { ok: false, detail: errorReason(e), hasBackup: !!files?.hasBackup, canReset: !!files?.canReset };
   }
 }
 
@@ -544,7 +545,7 @@ export const useAppStore = create<AppState>((set, get) => {
       })
       .catch((e) => {
         console.error("saving workspace failed", e);
-        const why = tr(STORE_TEXT).saveFailed(String(e));
+        const why = tr(STORE_TEXT).saveFailed(errorReason(e));
         set({ saveError: why, unsavedChanges: why });
       });
     savingNow = write;
@@ -656,7 +657,7 @@ export const useAppStore = create<AppState>((set, get) => {
       .then(() => {
         if (get().scanError) set({ scanError: null });
       })
-      .catch((e) => set({ scanError: tr(STORE_TEXT).scanFailed(String(e)) }));
+      .catch((e) => set({ scanError: tr(STORE_TEXT).scanFailed(errorReason(e)) }));
   }
 
   function mutateAlbum(id: string, fn: (album: Album) => Album) {
@@ -781,7 +782,7 @@ export const useAppStore = create<AppState>((set, get) => {
           set({ update: { status: "idle" } });
           return;
         }
-        set({ update: { status: "error", error: e instanceof Error ? e.message : String(e) } });
+        set({ update: { status: "error", error: errorText(e) } });
       }
     },
 
@@ -800,7 +801,7 @@ export const useAppStore = create<AppState>((set, get) => {
         );
       } catch (e) {
         const blockedBySave = e instanceof UnsavedBeforeUpdate ? { blockedBySave: true } : {};
-        set({ update: { status: "error", version, error: e instanceof Error ? e.message : String(e), ...blockedBySave } });
+        set({ update: { status: "error", version, error: errorText(e), ...blockedBySave } });
       }
     },
 
@@ -830,7 +831,7 @@ export const useAppStore = create<AppState>((set, get) => {
         settings = await api.getSettings();
       } catch (e) {
         settings = { ...DEFAULT_SETTINGS };
-        set({ startupError: tr(STORE_TEXT).settingsUnreadable(String(e)) });
+        set({ startupError: tr(STORE_TEXT).settingsUnreadable(errorReason(e)) });
       }
       // settings.json didn't parse: Rust kept it aside and started from the
       // defaults. Said once, with where the old file is.
@@ -860,9 +861,9 @@ export const useAppStore = create<AppState>((set, get) => {
             const next = new Map(state.renderJobs);
             next.set(event.projectPath, {
               status: event.status,
-              // Errors come worded from Rust; the sample warnings are
-              // counts and paths, worded here in the app's language.
-              message: event.message ?? (event.status === "done" ? renderSampleNote(event.movedSamples, event.missingSamples) : null),
+              // Errors are coded in Rust (render.rs) and translated here; the
+              // sample warnings are counts and paths, worded here too.
+              message: event.message ? errorReason(event.message) : event.status === "done" ? renderSampleNote(event.movedSamples, event.missingSamples) : null,
               outputPath: event.outputPath,
             });
             return { renderJobs: next };
@@ -892,7 +893,7 @@ export const useAppStore = create<AppState>((set, get) => {
         // (Sample-data stars stay in memory.)
         if (saved) set((s) => ({ settings: { ...saved, favorites: realFavorites ? s.settings.favorites : saved.favorites } }));
         if (!report) throw e;
-        set({ actionError: tr(STORE_TEXT).settingsSaveFailed(e instanceof Error ? e.message : String(e)) });
+        set({ actionError: tr(STORE_TEXT).settingsSaveFailed(errorReason(e)) });
       }
     },
 
@@ -907,7 +908,7 @@ export const useAppStore = create<AppState>((set, get) => {
       try {
         set({ detectedFolders: await api.detectDawFolders(), detectError: null });
       } catch (e) {
-        set({ detectedFolders: [], detectError: e instanceof Error ? e.message : String(e) });
+        set({ detectedFolders: [], detectError: errorText(e) });
       }
     },
 
@@ -1050,7 +1051,7 @@ export const useAppStore = create<AppState>((set, get) => {
         const jobs = new Map(get().renderJobs);
         for (const path of projectPaths) {
           const job = jobs.get(path);
-          if (job && (job.status === "queued" || job.status === "rendering")) jobs.set(path, { ...job, status: "error", message: String(e) });
+          if (job && (job.status === "queued" || job.status === "rendering")) jobs.set(path, { ...job, status: "error", message: errorText(e) });
         }
         set({ renderJobs: jobs });
         throw e;
@@ -1137,7 +1138,7 @@ export const useAppStore = create<AppState>((set, get) => {
         set({ packageResults: skippedResults });
         throw new Error(skippedResults[0]?.error ?? tr(STORE_ERRORS).nothingToPackage);
       }
-      const plans = await api.packagePreview(paths);
+      const plans = (await api.packagePreview(paths)).map((p) => ({ ...p, error: errorTextOr(p.error) }));
       set({ packagePlan: { plans, subfolder, skipped: skippedResults }, packageResults: null });
     },
 
@@ -1151,7 +1152,7 @@ export const useAppStore = create<AppState>((set, get) => {
       set({ packaging: true, packageResults: skippedResults, packagePlan: null });
       // Results stream in per song so the panel can show progress.
       const unlisten = await api.onPackageProgress((r) =>
-        set((s) => ({ packageResults: [...(s.packageResults ?? []), r] })),
+        set((s) => ({ packageResults: [...(s.packageResults ?? []), { ...r, error: errorTextOr(r.error) }] })),
       );
       try {
         await api.packageProjects({ projectPaths: paths, subfolder, approved });

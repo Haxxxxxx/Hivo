@@ -133,7 +133,7 @@ const fr: PrivacyCopy = {
         OPERATOR
           ? `Hivo est géré par ${OPERATOR}${operatorAt}, responsable des données décrites ici (le responsable du traitement au sens du RGPD). Il est fait pour un crew de rap et n'a pas de modèle commercial : rien n'est vendu, et aucune donnée n'est vendue ni partagée pour de la pub.`
           : "Hivo est fait et géré par son développeur, un particulier, pour un crew de rap. Ce n'est pas une entreprise et il n'y a pas de modèle commercial : rien n'est vendu, et aucune donnée n'est vendue ni partagée pour de la pub.",
-        CONTACT ? `Contact : ${CONTACT}, ou le bouton de retour dans l'appli de l'ordi.` : "Contact : utilise le bouton de retour dans le menu de l'appli de l'ordi (« Signaler un bug ou donner ton avis »).",
+        CONTACT ? `Contact : ${CONTACT}, ou le bouton de retour dans l'appli de l'ordi.` : "Contact : utilise le bouton de retour dans le menu de l'appli de l'ordi (« Signaler un bug ou donner ton avis »).",
       ],
     },
     {

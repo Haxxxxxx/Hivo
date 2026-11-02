@@ -3,6 +3,7 @@ mod actions;
 mod ai;
 mod audio;
 mod daws;
+mod error;
 mod digger;
 mod cover;
 mod files;

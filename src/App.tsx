@@ -1,5 +1,5 @@
 import { DiggerView } from "./components/DiggerView";
-import { applyLang, dict, resolveLang, tr } from "./i18n";
+import { applyLang, dict, plural, resolveLang, tr } from "./i18n";
 import { CrewBoardView, CrewMembersView, CrewReleasesView, CrewSettingsView } from "./components/CrewViews";
 import { useEffect, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
@@ -30,12 +30,19 @@ import { startSessionBridge } from "./store/sessionBridge";
 import { useCrewStore, useInCrew } from "./store/useCrewStore";
 import { ConfirmButton, StatusDot, btnPrimary, btnQuiet } from "./ui";
 import { RemovedNotice } from "./components/CrewPanel";
+import { detailBehind, errorReason } from "./lib/errors";
 
 const fileName = (p: string) => p.split(/[/\\]/).pop() ?? p;
 
+/** What "Report this" sends: the shown text, plus the raw English behind it. */
+const reportText = (shown: string) => {
+  const detail = detailBehind(shown);
+  return detail ? `${shown}\n\n${detail}` : shown;
+};
+
 const T = dict(
   {
-    kept: (n: number) => `Kept the details of ${n} renamed or moved song${n === 1 ? "" : "s"}`,
+    kept: (n: number) => `Kept the details of ${n} renamed or moved song${plural(n, "", "s")}`,
     ok: "OK",
     moved: (file: string) => `moved (${file})`,
     more: (n: number) => `+${n} more`,
@@ -73,7 +80,7 @@ const T = dict(
   },
   {
     kept: (n: number) =>
-      n === 1 ? "Infos gardées pour 1 son renommé ou déplacé" : `Infos gardées pour ${n} sons renommés ou déplacés`,
+      plural(n, `Infos gardées pour ${n} son renommé ou déplacé`, `Infos gardées pour ${n} sons renommés ou déplacés`),
     ok: "OK",
     moved: (file: string) => `déplacé (${file})`,
     more: (n: number) => `+${n} autres`,
@@ -87,8 +94,8 @@ const T = dict(
     updateDownloading: (v: string, pct: number | null) => `Téléchargement de Hivo ${v}${pct === null ? "…" : ` · ${pct} %`}`,
     updateRestarting: (v: string) => `Hivo ${v} est installé, redémarrage…`,
     updateReadOnly: "Hivo tourne depuis un emplacement en lecture seule (l'image disque, ou la copie que macOS fait d'une appli téléchargée). Déplace-le dans Applications avec le Finder, ouvre-le de là et réessaie.",
-    locationDmg: "Hivo tourne depuis l'image disque : les mises à jour ne peuvent pas s'installer ici. Glisse-le dans Applications avec le Finder et ouvre-le de là.",
-    locationTranslocated: "macOS exécute une copie en quarantaine de Hivo : les mises à jour ne peuvent pas s'installer ici. Déplace-le dans Applications avec le Finder (ou lance la commande de réparation dans le Terminal) et rouvre-le.",
+    locationDmg: "Hivo tourne depuis l'image disque : les mises à jour ne peuvent pas s'installer ici. Glisse-le dans Applications avec le Finder et ouvre-le de là.",
+    locationTranslocated: "macOS exécute une copie en quarantaine de Hivo : les mises à jour ne peuvent pas s'installer ici. Déplace-le dans Applications avec le Finder (ou lance la commande de réparation dans le Terminal) et rouvre-le.",
     copyFix: "Copier la commande de réparation",
     copied: "Copié",
     updateNow: "Mettre à jour et redémarrer",
@@ -102,13 +109,13 @@ const T = dict(
     unreadable: "Ton espace de travail (étapes, notes, sorties) est illisible. Les modifications faites maintenant ne sont gardées que si tu repars de zéro.",
     unreadableBackup: "Ton espace de travail (étapes, notes, sorties) est illisible. Tu peux remettre sa dernière sauvegarde.",
     unreadableIo: (e: string) => `Ton espace de travail (étapes, notes, sorties) ne peut pas être lu pour l'instant : ${e}. Le fichier est peut-être intact, donc rien n'est modifié : règle ça (un disque, une permission), puis Réessayer.`,
-    newer: (v: number) => `Cet espace de travail a été enregistré par un Hivo plus récent (format ${v}). Il est affiché en lecture seule : mets Hivo à jour pour le modifier.`,
+    newer: (v: number) => `Cet espace de travail a été enregistré par un Hivo plus récent (format ${v}). Il est affiché en lecture seule : mets Hivo à jour pour le modifier.`,
     restoreBackup: "Remettre la sauvegarde",
     startFresh: "Repartir de zéro",
-    startFreshConfirm: "Repartir de zéro ? Le fichier illisible est gardé sous workspace.json.bad-<numéro>, à côté.",
+    startFreshConfirm: "Repartir de zéro ? Le fichier illisible est gardé sous workspace.json.bad-<numéro>, à côté.",
     showFolder: "Afficher le dossier",
-    actionFailed: (e: string) => `Ça n'a pas marché : ${e}`,
-    closeSaveFailed: (e: string) => `${e} Hivo est resté ouvert pour ne rien perdre : essaie Réessayer, ou ferme encore pour quitter sans ces modifications.`,
+    actionFailed: (e: string) => `Ça n'a pas marché : ${e}`,
+    closeSaveFailed: (e: string) => `${e} Hivo est resté ouvert pour ne rien perdre : essaie Réessayer, ou ferme encore pour quitter sans ces modifications.`,
   },
 );
 
@@ -249,7 +256,7 @@ function NotSavingStrip() {
   const run = (fn: () => Promise<void>) => {
     setBusy(true);
     void fn()
-      .catch((e) => useAppStore.setState({ actionError: t.actionFailed(e instanceof Error ? e.message : String(e)) }))
+      .catch((e) => useAppStore.setState({ actionError: t.actionFailed(errorReason(e)) }))
       .finally(() => setBusy(false));
   };
   const text =
@@ -442,11 +449,11 @@ export default function App() {
       </div>
       {bannerError && (
         <div role="alert" className="absolute left-1/2 top-3 z-40 flex max-w-xl -translate-x-1/2 items-start gap-3 rounded-md border border-red-500/40 bg-[#2a1215] px-4 py-2 text-xs text-red-200 shadow-xl">
-          <span>{bannerError}</span>
+          <span title={detailBehind(bannerError) ?? undefined}>{bannerError}</span>
           {/* The in-app form, with this error as the message (only when this build has a backend). */}
           {supabase && (
             <button
-              onClick={() => openFeedback({ category: "bug", message: scrubPaths(bannerError) })}
+              onClick={() => openFeedback({ category: "bug", message: scrubPaths(reportText(bannerError)) })}
               className="shrink-0 whitespace-nowrap text-red-200/70 underline hover:text-red-100"
             >
               {tr(T).reportThis}

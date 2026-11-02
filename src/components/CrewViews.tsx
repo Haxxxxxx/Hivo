@@ -9,7 +9,7 @@ import { formatRelative } from "../lib/format";
 import { isFinished, statusInfo } from "../lib/songs";
 import { localDay } from "../lib/crewStats";
 import { StatusDot } from "./ui";
-import { dict, locale, tr } from "../i18n";
+import { dict, locale, plural, tr } from "../i18n";
 
 // The crew pages behind the sidebar's crew section. The board is for every
 // member; members & invites and crew settings are the owner's.
@@ -45,16 +45,16 @@ const T = dict(
   },
   {
     notInCrew: "Tu n'es dans aucun crew. Connecte-toi et rejoins-en un dans Réglages → Crew.",
-    ownerOnly: "Seul le propriétaire du crew gère ça.",
+    ownerOnly: "C'est la personne propriétaire du crew qui gère ça.",
     crew: "Crew",
     boardSub: (crew: string, owner: boolean) =>
       `${crew} · tout le monde dans le crew peut déplacer une carte${owner ? " · c'est toi qui modifies les colonnes" : ""}`,
     you: "Toi",
     formerMember: "Ancien membre",
     releasesSub: (crew: string) => `${crew} · partage les tiennes depuis leur page dans Sorties`,
-    noReleases: "Aucune sortie partagée pour l'instant. Ouvre une des tiennes dans Sorties et clique sur « Partager avec » ton crew.",
+    noReleases: "Aucune sortie partagée pour l'instant. Ouvre une des tiennes dans Sorties et clique sur « Partager avec » ton crew.",
     noDate: "Pas encore de date",
-    finished: (done: number, total: number) => `${done}/${total} terminé${done > 1 ? "s" : ""}`,
+    finished: (done: number, total: number) => `${done}/${total} terminé${plural(done, "", "s")}`,
   },
 );
 

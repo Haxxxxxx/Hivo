@@ -4,7 +4,7 @@ import { usePipelineView, type PipelineScope, type PipelineViewKind } from "../.
 import { cardMoves, stageColor, stageLabel, STAGE_ORDER, NAME_MAX } from "../../lib/pipeline";
 import type { PipelineColumn, SongStatus } from "../../types";
 import { ConfirmButton, StatusDot } from "../ui";
-import { dict, tr } from "../../i18n";
+import { dict, plural, tr } from "../../i18n";
 
 /** Every word of the pipeline pages (board, list, table, yours and the crew's). */
 export const T_PIPELINE = dict(
@@ -96,7 +96,7 @@ export const T_PIPELINE = dict(
     filterPlaceholder: "Filtrer sons, #tags, tonalité",
     filterLabel: "Filtrer les sons",
     clearFilter: "Effacer le filtre",
-    matching: (shown: number, total: number) => `${shown} son${shown > 1 ? "s" : ""} sur ${total}`,
+    matching: (shown: number, total: number) => `${shown} son${plural(shown, "", "s")} sur ${total}`,
     clear: "Effacer",
     noMatch: "Aucun son ne correspond à ta recherche",
     onlyOf: (name: string) => `Seulement les sons de ${name}`,

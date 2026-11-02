@@ -8,7 +8,8 @@ import type { Album, AlbumKind, ProjectInfo, Workspace } from "../types";
 import { ConfirmButton, Modal, StatusDot, StatusSelect, btn, btnPrimary, input, sectionLabel } from "./ui";
 import { MixdownBadge, Stat } from "../ui";
 import { ReleaseShare } from "./CrewPanel";
-import { dict, tr } from "../i18n";
+import { dict, plural, tr } from "../i18n";
+import { errorText } from "../lib/errors";
 
 const T = dict(
   {
@@ -18,7 +19,7 @@ const T = dict(
     create: "Create",
     cancel: "Cancel",
     empty: "No releases yet. Create one and add songs from your library.",
-    cardLine: (tracks: number, done: number) => `${tracks} track${tracks === 1 ? "" : "s"} · ${done} done`,
+    cardLine: (tracks: number, done: number) => `${tracks} track${plural(tracks, "", "s")} · ${done} done`,
     allReleases: "All releases",
     coverColor: (color: string) => `Cover color ${color}`,
     releaseDate: "Release date",
@@ -47,7 +48,7 @@ const T = dict(
     addTo: (title: string) => `Add songs to ${title}`,
     search: "Search songs",
     nothing: "Nothing to add",
-    addPicked: (n: number) => `Add ${n || ""} song${n === 1 ? "" : "s"}`,
+    addPicked: (n: number) => `Add ${n || ""} song${plural(n, "", "s")}`,
     trackUp: (name: string) => `Move ${name} up`,
     trackDown: (name: string) => `Move ${name} down`,
     trackRemove: (name: string) => `Remove ${name} from the release`,
@@ -59,7 +60,7 @@ const T = dict(
     create: "Créer",
     cancel: "Annuler",
     empty: "Pas encore de sortie. Crées-en une et ajoute des sons depuis ta bibliothèque.",
-    cardLine: (tracks: number, done: number) => `${tracks} morceau${tracks === 1 ? "" : "x"} · ${done} fini${done > 1 ? "s" : ""}`,
+    cardLine: (tracks: number, done: number) => `${tracks} morceau${plural(tracks, "", "x")} · ${done} fini${plural(done, "", "s")}`,
     allReleases: "Toutes les sorties",
     coverColor: (color: string) => `Couleur de cover ${color}`,
     releaseDate: "Date de sortie",
@@ -88,7 +89,7 @@ const T = dict(
     addTo: (title: string) => `Ajouter des sons à ${title}`,
     search: "Chercher des sons",
     nothing: "Rien à ajouter",
-    addPicked: (n: number) => (n === 0 ? "Ajouter des sons" : `Ajouter ${n} son${n === 1 ? "" : "s"}`),
+    addPicked: (n: number) => (n === 0 ? "Ajouter des sons" : `Ajouter ${n} son${plural(n, "", "s")}`),
     trackUp: (name: string) => `Monter ${name}`,
     trackDown: (name: string) => `Descendre ${name}`,
     trackRemove: (name: string) => `Retirer ${name} de la sortie`,
@@ -282,7 +283,7 @@ function AlbumDetail({ album }: { album: Album }) {
         { subfolder: album.title, names: numbered.map((t) => t.name) },
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     }
   }
 
@@ -385,7 +386,7 @@ function AlbumDetail({ album }: { album: Album }) {
             <button
               onClick={() =>
                 startPackage(present.map((t) => t.path), album.title).catch((e) =>
-                  setError(e instanceof Error ? e.message : String(e)),
+                  setError(errorText(e)),
                 )
               }
               disabled={demoMode || packaging || present.length === 0}

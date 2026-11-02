@@ -14,6 +14,7 @@ import { converterTemplateFor } from "../lib/converters";
 import type { CaptionLang, RenderFormat, SpotifyStatus, YoutubeStatus } from "../types";
 import { dict, tr } from "../i18n";
 import { StatusDot } from "../ui";
+import { errorText, errorTextOr } from "../lib/errors";
 
 // A stable empty list: a fresh [] in a store selector re-renders forever.
 const NO_FOLDERS: string[] = [];
@@ -143,7 +144,7 @@ const T = dict(
     lookingFfmpeg: "Recherche de ffmpeg…",
     found: (path: string, encoder: string) => `Trouvé : ${path} (${encoder})`,
     ffmpegMissing: "Introuvable. Installe-le puis relance l'appli, ou choisis-le ci-dessous.",
-    foundUnconfirmed: (path: string) => `Trouvé : ${path}. Hivo ne lance qu'un ffmpeg que tu as confirmé : prends celui-ci si c'est bien celui que tu as installé.`,
+    foundUnconfirmed: (path: string) => `Trouvé : ${path}. Hivo ne lance qu'un ffmpeg que tu as confirmé : prends celui-ci si c'est bien celui que tu as installé.`,
     useFound: "Utiliser ce ffmpeg",
     foundAuto: "Trouvé automatiquement",
     auto: "Auto",
@@ -235,12 +236,12 @@ export function SettingsView() {
 
   async function handleAddFolder() {
     setFolderError(null);
-    await addWatchedFolder().catch((e) => setFolderError(e instanceof Error ? e.message : String(e)));
+    await addWatchedFolder().catch((e) => setFolderError(errorText(e)));
   }
 
   async function handleRemoveFolder(folder: string) {
     setFolderError(null);
-    await removeWatchedFolder(folder).catch((e) => setFolderError(e instanceof Error ? e.message : String(e)));
+    await removeWatchedFolder(folder).catch((e) => setFolderError(errorText(e)));
   }
 
   async function handleDetect() {
@@ -249,7 +250,7 @@ export function SettingsView() {
     try {
       if (!(await detectFlStudio())) setFlError(tr(T).flNotFound);
     } catch (e) {
-      setFlError(e instanceof Error ? e.message : String(e));
+      setFlError(errorText(e));
     } finally {
       setDetecting(false);
     }
@@ -259,12 +260,12 @@ export function SettingsView() {
   // Studio) before saving it.
   async function handleBrowseExecutable() {
     setFlError(null);
-    await pickFlStudio().catch((e) => setFlError(e instanceof Error ? e.message : String(e)));
+    await pickFlStudio().catch((e) => setFlError(errorText(e)));
   }
 
   async function handleBrowseOutput() {
     setExportError(null);
-    await pickOutputFolder().catch((e) => setExportError(e instanceof Error ? e.message : String(e)));
+    await pickOutputFolder().catch((e) => setExportError(errorText(e)));
   }
 
   async function handleTestRender() {
@@ -296,7 +297,7 @@ export function SettingsView() {
         setTestState({ status: "error", message: job?.message ?? tr(T).renderFailed });
       }
     } catch (e) {
-      setTestState({ status: "error", message: e instanceof Error ? e.message : String(e) });
+      setTestState({ status: "error", message: errorText(e) });
     }
   }
 
@@ -513,11 +514,11 @@ function ShortsSettings() {
 
   async function browse() {
     setError(null);
-    await pickFfmpeg().catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    await pickFfmpeg().catch((e) => setError(errorText(e)));
   }
   async function confirmFound(found: string) {
     setError(null);
-    await useDetectedFfmpeg(found).catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    await useDetectedFfmpeg(found).catch((e) => setError(errorText(e)));
   }
   const t = tr(T);
 
@@ -534,7 +535,7 @@ function ShortsSettings() {
           ? t.lookingFfmpeg
           : status.encoder
             ? t.found(status.path ?? "", status.encoder)
-            : status.error ?? (status.found ? t.foundUnconfirmed(status.found) : t.ffmpegMissing)}
+            : errorTextOr(status.error) ?? (status.found ? t.foundUnconfirmed(status.found) : t.ffmpegMissing)}
       </div>
       {status && !status.path && status.found && (
         <button onClick={() => void confirmFound(status.found!)} className="mt-2 rounded-md border border-rule-strong px-3 py-2 text-sm text-body hover:bg-raised">
@@ -608,7 +609,7 @@ function AiSettings() {
       setKey("");
       setMessage({ kind: "ok", text: value ? t.keySaved : t.keyRemoved });
     } catch (e) {
-      setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+      setMessage({ kind: "error", text: errorText(e) });
     }
   }
 
@@ -708,7 +709,7 @@ function CoverSettings() {
       setToken("");
       setMessage({ kind: "ok", text: remove ? t.cfRemoved : t.cfSaved });
     } catch (e) {
-      setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+      setMessage({ kind: "error", text: errorText(e) });
     }
   }
 
@@ -837,7 +838,7 @@ function YoutubeSettings() {
       setKey("");
       setMessage({ kind: "ok", text: value ? t.saved : t.removed });
     } catch (e) {
-      setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+      setMessage({ kind: "error", text: errorText(e) });
     }
   }
 
@@ -901,10 +902,10 @@ const T_SPOTIFY = dict(
   },
   {
     title: "Spotify (Personnes, gratuit)",
-    intro: "Permet à « Chercher les profils » sur une personne de chercher directement sur Spotify (les petits artistes y sont bien avant MusicBrainz) et de récupérer la photo d'artiste ; abonnés et popularité viennent aussi quand Spotify les partage avec ton appli (les applis récentes en mode développement ne les ont pas). Sans identifiants, l'ID artiste Spotify vient quand même de MusicBrainz quand il a le lien. Dans le",
+    intro: "Permet à « Chercher les profils » sur une personne de chercher directement sur Spotify (les petits artistes y sont bien avant MusicBrainz) et de récupérer la photo d'artiste ; abonnés et popularité viennent aussi quand Spotify les partage avec ton appli (les applis récentes en mode développement ne les ont pas). Sans identifiants, l'ID artiste Spotify vient quand même de MusicBrainz quand il a le lien. Dans le",
     link: "tableau de bord développeur Spotify",
     steps: ", crée une appli (n'importe quel nom, l'URI de redirection ne sert pas) et copie son Client ID et son Client secret.",
-    off: "Pas d'identifiants : MusicBrainz seulement.",
+    off: "Pas d'identifiants : MusicBrainz seulement.",
     env: "Utilise SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET de l'environnement.",
     on: "Identifiants enregistrés. Les recherches passent aussi par Spotify.",
     clientId: "Client ID",
@@ -946,7 +947,7 @@ function SpotifySettings() {
       setSecret("");
       setMessage({ kind: "ok", text: clear ? t.removed : t.saved });
     } catch (e) {
-      setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+      setMessage({ kind: "error", text: errorText(e) });
     }
   }
 
@@ -1022,13 +1023,13 @@ const T_DIGGER = dict(
     save: "Enregistrer",
     remove: "Retirer",
     saved: "Lien enregistré. Chaque résultat YouTube du Digger a un bouton Convertir, avec l'adresse de la vidéo pré-remplie.",
-    savedPaste: "Lien enregistré. Chaque résultat YouTube du Digger a un bouton Convertir ; Hivo ouvre la page et copie l'adresse de la vidéo pour que tu la colles.",
-    recognizedExample: "Lien de vidéo trouvé dans l'adresse et remplacé par {url} : l'adresse sera pré-remplie sur le site.",
+    savedPaste: "Lien enregistré. Chaque résultat YouTube du Digger a un bouton Convertir ; Hivo ouvre la page et copie l'adresse de la vidéo pour que tu la colles.",
+    recognizedExample: "Lien de vidéo trouvé dans l'adresse et remplacé par {url} : l'adresse sera pré-remplie sur le site.",
     removed: "Lien retiré.",
     howTo:
-      "L'adresse de la page de conversion. Hivo ne peut pas écrire dans la page d'un autre site : l'adresse de la vidéo n'est pré-remplie que si le site la lit dans son propre lien. Le plus simple : colle un lien de vidéo sur le site une fois, puis copie ici la barre d'adresse du navigateur ; si le lien de la vidéo s'y trouve, Hivo le remplace par {url} tout seul. Sinon Hivo ouvre la page et copie l'adresse de la vidéo pour que tu la colles.",
+      "L'adresse de la page de conversion. Hivo ne peut pas écrire dans la page d'un autre site : l'adresse de la vidéo n'est pré-remplie que si le site la lit dans son propre lien. Le plus simple : colle un lien de vidéo sur le site une fois, puis copie ici la barre d'adresse du navigateur ; si le lien de la vidéo s'y trouve, Hivo le remplace par {url} tout seul. Sinon Hivo ouvre la page et copie l'adresse de la vidéo pour que tu la colles.",
     disclosure:
-      "Hivo ouvre ce lien avec l'adresse de la vidéo et rien d'autre. Le site, ses conditions et ce que tu fais du fichier, c'est entre toi et lui ; Hivo ne télécharge jamais d'audio.",
+      "Hivo ouvre ce lien avec l'adresse de la vidéo et rien d'autre. Le site, ses conditions et ce que tu fais du fichier, c'est entre toi et lui ; Hivo ne télécharge jamais d'audio.",
   },
 );
 
@@ -1068,7 +1069,7 @@ function DiggerSettings() {
     } catch (e) {
       // Rust cleared it: keep the store in step, then say why.
       await updateSettings({ converterUrlTemplate: undefined }).catch(() => {});
-      setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+      setMessage({ kind: "error", text: errorText(e) });
     }
   }
 
@@ -1138,7 +1139,7 @@ function BeatFoldersSection() {
 
   function run(action: Promise<void>) {
     setError(null);
-    void action.catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    void action.catch((e) => setError(errorText(e)));
   }
 
   return (
@@ -1176,7 +1177,7 @@ const T_SAMPLES = dict(
   },
   {
     title: "Banques de samples",
-    hint: "Là où tes packs et samples sont rangés sur cet ordi (un dossier Splice, un disque de packs…). Un projet sauvé sur un autre ordi garde ses propres chemins ; un sample du même nom trouvé ici compte comme déplacé plutôt que manquant. Rien dans ces dossiers n'est listé ni joué.",
+    hint: "Là où tes packs et samples sont rangés sur cet ordi (un dossier Splice, un disque de packs…). Un projet sauvé sur un autre ordi garde ses propres chemins ; un sample du même nom trouvé ici compte comme déplacé plutôt que manquant. Rien dans ces dossiers n'est listé ni joué.",
     add: "Ajouter une banque de samples",
     remove: (f: string) => `Retirer ${f}`,
   },
@@ -1194,7 +1195,7 @@ function SampleFoldersSection() {
 
   function run(action: Promise<void>) {
     setError(null);
-    void action.catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    void action.catch((e) => setError(errorText(e)));
   }
 
   return (
@@ -1242,7 +1243,7 @@ const T_UPDATES = dict(
     hint: "Vérifié au lancement, puis une fois par jour tant que Hivo reste ouvert. Une mise à jour se télécharge, s'installe et relance l'appli en un clic.",
     offline: "Impossible de joindre le serveur de mises à jour. Vérifie ta connexion internet et réessaie.",
     failed: "La mise à jour n'est pas passée. Réessaie plus tard.",
-    devBuild: "Version de développement : les mises à jour sont désactivées ici. Installe une release pour les tester.",
+    devBuild: "Version de développement : les mises à jour sont désactivées ici. Installe une release pour les tester.",
     readOnly: "Hivo tourne depuis un emplacement en lecture seule (l'image disque, ou la copie que macOS fait d'une appli téléchargée). Déplace-le dans Applications avec le Finder, ouvre-le de là et réessaie.",
     check: "Vérifier les mises à jour",
     checking: "Vérification…",

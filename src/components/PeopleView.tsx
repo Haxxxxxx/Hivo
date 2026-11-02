@@ -10,7 +10,7 @@ import { OUTCOMES, roleLabel } from "./SongPeople";
 import { Profiles } from "./ProfileLookup";
 import { ConfirmButton, StatusDot, TagEditor, btn, btnPrimary, input, sectionLabel } from "./ui";
 import { Avatar } from "../ui";
-import { dict, tr } from "../i18n";
+import { dict, plural, tr } from "../i18n";
 
 const T = dict(
   {
@@ -20,7 +20,7 @@ const T = dict(
     add: "Add",
     cancel: "Cancel",
     foundInSessions: "Found in your session track names — add who's a real person",
-    songs: (n: number) => `${n} song${n === 1 ? "" : "s"}`,
+    songs: (n: number) => `${n} song${plural(n, "", "s")}`,
     spellingsHint: "Same person under several spellings (NV, Novah…)? Add one, then add the others as aliases on their page.",
     noPeople: "No people yet.",
     aka: (names: string) => `aka ${names}`,
@@ -49,12 +49,12 @@ const T = dict(
     add: "Ajouter",
     cancel: "Annuler",
     foundInSessions: "Trouvés dans les noms de pistes de tes sessions — ajoute ceux qui sont de vraies personnes",
-    songs: (n: number) => `${n} son${n === 1 ? "" : "s"}`,
+    songs: (n: number) => `${n} son${plural(n, "", "s")}`,
     spellingsHint:
       "La même personne sous plusieurs orthographes (NV, Novah…) ? Ajoutes-en une, puis ajoute les autres comme alias sur sa page.",
     noPeople: "Personne pour l'instant.",
     aka: (names: string) => `alias ${names}`,
-    sent: (n: number, won: number) => `${n} envoi${n > 1 ? "s" : ""}${won ? ` · ${won} gagné${won > 1 ? "s" : ""}` : ""}`,
+    sent: (n: number, won: number) => `${n} envoi${plural(n, "", "s")}${won ? ` · ${won} gagné${plural(won, "", "s")}` : ""}`,
     allPeople: "Toutes les personnes",
     alsoAppearsAs: "Apparaît aussi comme",
     aliasHint: "Orthographes utilisées dans les noms de pistes (NV, Novah…). Majuscules ou pas, peu importe.",

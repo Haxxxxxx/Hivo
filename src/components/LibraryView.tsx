@@ -29,7 +29,7 @@ import { detectKey } from "../lib/people";
 import { dawOf } from "../lib/daws";
 import { buildFolderTree, folderPath, hasFolderNode, inFolder, type FolderNode } from "../lib/folderTree";
 import { formatDate } from "../lib/format";
-import { dict, tr } from "../i18n";
+import { dict, plural, tr } from "../i18n";
 import {
   KEYS,
   STATUSES,
@@ -45,6 +45,7 @@ import {
 import type { ProjectInfo, SongStatus } from "../types";
 import { ConfirmButton, StatusDot, StatusSelect, btn, btnPrimary } from "./ui";
 import { Chip, MixdownBadge, Toggle } from "../ui";
+import { errorText } from "../lib/errors";
 
 const T = dict(
   {
@@ -70,7 +71,7 @@ const T = dict(
     shareWith: (crew: string | null) => `Share with ${crew}`,
     stopSharing: "Stop sharing",
     sharedElsewhere: (n: number) =>
-      `${n} song${n === 1 ? " is" : "s are"} shared with another crew: move ${n === 1 ? "it" : "them"} from the song panel.`,
+      `${n} song${plural(n, " is", "s are")} shared with another crew: move ${plural(n, "it", "them")} from the song panel.`,
     archive: "Archive",
     archiveSelected: "Archive selected",
     unarchiveSelected: "Unarchive selected",
@@ -99,13 +100,13 @@ const T = dict(
     template: "template",
     keyFromTrack: "Found in a mixer track name — set it in the song panel",
     pluginsMissing: (names: string) => `Plugins not installed: ${names}`,
-    samplesMissing: (n: number) => `${n} missing sample${n === 1 ? "" : "s"}`,
+    samplesMissing: (n: number) => `${n} missing sample${plural(n, "", "s")}`,
     unreadable: (err: string) => `Couldn't be read: ${err}`,
     folders: "Folders",
     allSongs: "All songs",
     fold: (name: string) => `Fold ${name}`,
     unfold: (name: string) => `Unfold ${name}`,
-    folderIssues: (n: number) => `${n} song${n === 1 ? "" : "s"} with issues`,
+    folderIssues: (n: number) => `${n} song${plural(n, "", "s")} with issues`,
     noFolder: "No project folder linked yet",
     foundFolders: "Found these DAW folders on this computer. Link the ones you use:",
     pointAt:
@@ -133,7 +134,7 @@ const T = dict(
     archived: (n: number) => `Archivés (${n})`,
     templates: (n: number) => `Templates (${n})`,
     all: "Tous",
-    selected: (n: number) => `${n} sélectionné${n === 1 ? "" : "s"}`,
+    selected: (n: number) => `${n} sélectionné${plural(n, "", "s")}`,
     setStatus: "Changer l'étape",
     addToRelease: "Ajouter à une sortie",
     crew: "Crew",
@@ -166,19 +167,19 @@ const T = dict(
     repointTitle: "Choisis le nouvel emplacement du dossier (disque avec une autre lettre, dossier renommé). Les infos de chaque son suivent.",
     unlink: "Délier",
     unlinkConfirm: "Le délier ?",
-    hiddenSelected: (n: number) => `(${n} masqué${n === 1 ? "" : "s"} par les filtres, laissé${n === 1 ? "" : "s"} de côté)`,
+    hiddenSelected: (n: number) => `(${n} masqué${plural(n, "", "s")} par les filtres, laissé${plural(n, "", "s")} de côté)`,
     removeFavorite: "Retirer des favoris",
     addFavorite: "Ajouter aux favoris",
     template: "template",
     keyFromTrack: "Trouvée dans un nom de piste du mixer — règle-la dans le panneau du son",
     pluginsMissing: (names: string) => `Plugins pas installés : ${names}`,
-    samplesMissing: (n: number) => `${n} sample${n === 1 ? " manquant" : "s manquants"}`,
-    unreadable: (err: string) => `Illisible : ${err}`,
+    samplesMissing: (n: number) => `${n} sample${plural(n, " manquant", "s manquants")}`,
+    unreadable: (err: string) => `Illisible : ${err}`,
     folders: "Dossiers",
     allSongs: "Tous les sons",
     fold: (name: string) => `Replier ${name}`,
     unfold: (name: string) => `Déplier ${name}`,
-    folderIssues: (n: number) => `${n} son${n === 1 ? "" : "s"} avec des soucis`,
+    folderIssues: (n: number) => `${n} son${plural(n, "", "s")} avec des soucis`,
     noFolder: "Aucun dossier de projets lié pour l'instant",
     foundFolders: "On a trouvé ces dossiers de DAW sur cet ordi. Lie ceux que tu utilises :",
     pointAt:
@@ -378,7 +379,7 @@ export function LibraryView() {
     try {
       await startRender(selectedPaths);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     }
   }
 
@@ -402,7 +403,7 @@ export function LibraryView() {
         <button
           onClick={() => {
             setError(null);
-            rescan().catch((e) => setError(e instanceof Error ? e.message : String(e)));
+            rescan().catch((e) => setError(errorText(e)));
           }}
           disabled={scanning || demoMode}
           className={btn}
@@ -523,7 +524,7 @@ export function LibraryView() {
             }}
           />
           <button
-            onClick={() => startPackage(selectedPaths).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
+            onClick={() => startPackage(selectedPaths).catch((e) => setError(errorText(e)))}
             disabled={packaging || demoMode || selectedPaths.length === 0}
             className={`${btn} ml-auto py-1 text-xs`}
             title={t.packageTitle}
@@ -552,7 +553,7 @@ export function LibraryView() {
             <button
               onClick={() => {
                 setError(null);
-                rescan().catch((e) => setError(e instanceof Error ? e.message : String(e)));
+                rescan().catch((e) => setError(errorText(e)));
               }}
               disabled={scanning}
               className={`${btn} py-1 text-xs`}
@@ -560,7 +561,7 @@ export function LibraryView() {
               <RefreshCw size={12} /> {t.retry}
             </button>
             <button
-              onClick={() => repointFolder(folder).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
+              onClick={() => repointFolder(folder).catch((e) => setError(errorText(e)))}
               title={t.repointTitle}
               className={`${btn} py-1 text-xs`}
             >
@@ -569,7 +570,7 @@ export function LibraryView() {
             <ConfirmButton
               label={t.unlink}
               confirmLabel={t.unlinkConfirm}
-              onConfirm={() => removeWatchedFolder(folder).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
+              onConfirm={() => removeWatchedFolder(folder).catch((e) => setError(errorText(e)))}
               className={`${btn} py-1 text-xs`}
             />
           </div>
@@ -868,7 +869,7 @@ export function EmptyLibrary() {
   const [error, setError] = useState<string | null>(null);
   const run = (fn: () => Promise<void>) => () => {
     setError(null);
-    fn().catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    fn().catch((e) => setError(errorText(e)));
   };
 
   const t = tr(T);

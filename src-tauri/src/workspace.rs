@@ -1,3 +1,4 @@
+use crate::error::app_err;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
@@ -16,8 +17,8 @@ fn config_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_config_dir()
-        .map_err(|e| format!("could not resolve app config dir: {e}"))?;
-    fs::create_dir_all(&dir).map_err(|e| format!("could not create config dir: {e}"))?;
+        .map_err(|e| app_err("config.dir", format!("could not resolve app config dir: {e}")))?;
+    fs::create_dir_all(&dir).map_err(|e| app_err("config.dir", format!("could not create config dir: {e}")))?;
     Ok(dir)
 }
 
@@ -41,7 +42,8 @@ fn file_label(path: &Path) -> String {
 /// half-written file in place of the old one (settings.json, last-dig.json
 /// and beat-facts.json use it too).
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    crate::cover::write_private(path, bytes).map_err(|e| format!("could not save {}: {e}", file_label(path)))
+    crate::cover::write_private(path, bytes)
+        .map_err(|e| app_err("io.save", format!("could not save {}: {e}", file_label(path))).with("name", file_label(path)).into())
 }
 
 /// `workspace.json` → `workspace.json.bad-<ms>`: an unreadable file is kept
@@ -97,9 +99,12 @@ fn reset_refusal(path: &Path) -> Option<String> {
         return None;
     }
     match fs::read(path) {
-        Err(e) => Some(format!("your workspace can't be read right now ({e}), so nothing was changed. Fix that and try Retry")),
+        Err(e) => Some(
+            app_err("workspace.unreadableNow", format!("your workspace can't be read right now ({e}), so nothing was changed. Fix that and try Retry"))
+                .into(),
+        ),
         Ok(raw) => match serde_json::from_slice::<serde_json::Value>(&raw) {
-            Ok(_) => Some("your workspace reads fine now, so nothing was changed. Try Retry".to_string()),
+            Ok(_) => Some(app_err("workspace.readsFine", "your workspace reads fine now, so nothing was changed. Try Retry").into()),
             Err(_) => None,
         },
     }
@@ -109,8 +114,8 @@ fn read_from(path: &Path) -> Result<serde_json::Value, String> {
     if !path.exists() {
         return Ok(serde_json::Value::Null);
     }
-    let raw = fs::read(path).map_err(|e| format!("could not read workspace: {e}"))?;
-    serde_json::from_slice(&raw).map_err(|e| format!("could not parse workspace: {e}"))
+    let raw = fs::read(path).map_err(|e| app_err("workspace.read", format!("could not read workspace: {e}")))?;
+    serde_json::from_slice(&raw).map_err(|e| app_err("workspace.parse", format!("could not parse workspace: {e}")).into())
 }
 
 /// Saves the workspace; the file being replaced becomes the backup first.
@@ -121,7 +126,7 @@ fn save_to(path: &Path, workspace: &serde_json::Value) -> Result<(), String> {
     let tmp = sibling(path, "tmp");
     crate::cover::write_private_in_place(&tmp, &raw).map_err(|e| {
         let _ = fs::remove_file(&tmp);
-        format!("could not write workspace: {e}")
+        String::from(app_err("workspace.write", format!("could not write workspace: {e}")))
     })?;
     let fresh = fresh_marker(path);
     // After "Start fresh", the backup is the last good copy: it stays until
@@ -141,7 +146,7 @@ fn save_to(path: &Path, workspace: &serde_json::Value) -> Result<(), String> {
     }
     fs::rename(&tmp, path).map_err(|e| {
         let _ = fs::remove_file(&tmp);
-        format!("could not save workspace: {e}")
+        String::from(app_err("workspace.write", format!("could not save workspace: {e}")))
     })
 }
 
@@ -165,7 +170,7 @@ fn move_aside(path: &Path) -> Result<Option<PathBuf>, String> {
         return Ok(None);
     }
     let bad = bad_path(path);
-    fs::rename(path, &bad).map_err(|e| format!("could not move the unreadable workspace aside: {e}"))?;
+    fs::rename(path, &bad).map_err(|e| app_err("workspace.moveAside", format!("could not move the unreadable workspace aside: {e}")))?;
     Ok(Some(bad))
 }
 
@@ -174,10 +179,10 @@ fn move_aside(path: &Path) -> Result<Option<PathBuf>, String> {
 fn restore_from_backup(path: &Path) -> Result<serde_json::Value, String> {
     let bak = sibling(path, "bak");
     if !bak.exists() {
-        return Err("there's no backup of your workspace".to_string());
+        return Err(app_err("workspace.noBackup", "there's no backup of your workspace").into());
     }
-    let raw = fs::read(&bak).map_err(|e| format!("could not read the backup: {e}"))?;
-    let value: serde_json::Value = serde_json::from_slice(&raw).map_err(|e| format!("the backup can't be read either: {e}"))?;
+    let raw = fs::read(&bak).map_err(|e| app_err("workspace.backupUnreadable", format!("could not read the backup: {e}")))?;
+    let value: serde_json::Value = serde_json::from_slice(&raw).map_err(|e| app_err("workspace.backupUnreadable", format!("the backup can't be read either: {e}")))?;
     if let Some(why) = reset_refusal(path) {
         return Err(why);
     }
@@ -243,9 +248,9 @@ pub fn set_aside_workspace(app: AppHandle) -> Result<(), String> {
 pub fn show_config_folder(app: AppHandle) -> Result<(), String> {
     let path = workspace_path(&app)?;
     if path.exists() {
-        tauri_plugin_opener::reveal_item_in_dir(&path).map_err(|e| format!("couldn't show it: {e}"))
+        tauri_plugin_opener::reveal_item_in_dir(&path).map_err(|e| app_err("reveal.failed", format!("couldn't show it: {e}")).into())
     } else {
-        tauri_plugin_opener::open_path(config_dir(&app)?, None::<&str>).map_err(|e| format!("couldn't show it: {e}"))
+        tauri_plugin_opener::open_path(config_dir(&app)?, None::<&str>).map_err(|e| app_err("reveal.failed", format!("couldn't show it: {e}")).into())
     }
 }
 

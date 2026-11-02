@@ -316,7 +316,7 @@ const fr: LandingCopy = {
       ["Mac ou Windows ?", "Les deux : Mac (Apple Silicon et Intel) et Windows 10/11, et le crew peut mélanger les deux."],
       ["Comment j'ai l'appli ?", "Télécharge-la plus bas, pour Mac ou Windows. Pour l'instant c'est réservé au crew : demande à l'admin de Hivo d'ajouter ton email, puis le propriétaire du crew t'envoie un code d'invitation."],
       ["C'est en français ?", "Oui : l'appli, ce site et le tableau du crew sont en français et en anglais (au choix dans les Réglages de l'appli, ou FR | EN ici). Les textes des posts et le README du kit, l'un ou l'autre, kit par kit."],
-      ["Je peux l'utiliser seul ?", "Oui. La bibliothèque, le pipeline et le Launch Kit marchent sans crew ; le partage est optionnel."],
+      ["Je peux l'utiliser sans crew ?", "Oui. La bibliothèque, le pipeline et le Launch Kit marchent sans crew ; le partage est optionnel."],
     ],
   },
   signin: {

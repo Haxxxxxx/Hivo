@@ -6,7 +6,7 @@ import { renderFreshness } from "../lib/songs";
 import { LOW_CONFIDENCE, type Check as KitCheck, type KitField } from "../lib/launchKit";
 import type { AiFieldReview, ProjectInfo } from "../types";
 import { engrave, input, StatusDot } from "./base";
-import { dict, tr } from "../i18n";
+import { dict, plural, tr } from "../i18n";
 
 const T = dict(
   {
@@ -32,7 +32,7 @@ const T = dict(
     check: "AI: worth a look",
     wrong: "AI: looks wrong",
     needYou: (missing: number, warnings: number) =>
-      `${missing} need${missing === 1 ? "s" : ""} you${warnings ? ` · ${warnings} to check` : ""}`,
+      `${missing} need${plural(missing, "s", "")} you${warnings ? ` · ${warnings} to check` : ""}`,
     nextField: "Go to the next field that needs you",
     readyToExport: "Ready to export",
     readyToReview: "Ready to review",

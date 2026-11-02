@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useCrewStore } from "../store/useCrewStore";
 import { btn, input } from "../ui";
 import { dict, tr } from "../i18n";
+import { errorText } from "../lib/errors";
 
 const T = dict(
   {
@@ -18,8 +19,8 @@ const T = dict(
   {
     title: "Supprimer ce crew",
     what: (crew: string, n: number) =>
-      `Tout le monde perd l'accès à ${crew} (${n === 1 ? "juste toi" : `${n} membres`}) : son tableau, les releases partagées, les colonnes et les codes d'invitation sont supprimés du serveur du crew.`,
-    kept: "Rien n'est touché sur les ordis : sons, notes, étapes et releases restent, et chaque app repasse en mode solo.",
+      `Tout le monde perd l'accès à ${crew} (${n === 1 ? "juste toi" : `${n} membres`}) : son tableau, les sorties partagées, les colonnes et les codes d'invitation sont supprimés du serveur du crew.`,
+    kept: "Rien n'est touché sur les ordis : sons, notes, étapes et sorties restent, et chaque app repasse en mode solo.",
     start: "Supprimer le crew…",
     typeName: (crew: string) => `Tape ${crew} pour confirmer`,
     confirm: "Supprimer pour tout le monde",
@@ -48,7 +49,7 @@ export function DeleteCrew() {
     try {
       await deleteCrew(typed);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
       setBusy(false);
     }
   };
