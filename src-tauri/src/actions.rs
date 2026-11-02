@@ -45,10 +45,38 @@ pub(crate) fn free_path(dir: &Path, base: &str, ext: &str) -> PathBuf {
         .expect("unbounded range always yields a free path")
 }
 
+/// Copies `from` to a NEW file `to`: fails if anything (a file, a symlink)
+/// is already there, so a copy can never overwrite or write through a link
+/// that appeared after a check. A half-written copy is removed.
 pub(crate) fn copy_file(from: &Path, to: &Path) -> Result<(), String> {
-    fs::copy(from, to)
-        .map(|_| ())
-        .map_err(|e| format!("could not copy {} → {}: {e}", from.display(), to.display()))
+    copy_new(from, to).map_err(|e| format!("could not copy {} → {}: {e}", from.display(), to.display()))
+}
+
+fn copy_new(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut src = fs::File::open(from)?;
+    let mut dst = fs::OpenOptions::new().write(true).create_new(true).open(to)?;
+    let copied = std::io::copy(&mut src, &mut dst).and_then(|_| dst.sync_all());
+    if copied.is_err() {
+        drop(dst);
+        let _ = fs::remove_file(to);
+    }
+    copied
+}
+
+/// Copies `from` to `<dir>/<base>.<ext>`, or `<base> (2).<ext>`… : the
+/// first name that's free at the moment the file is created (create_new),
+/// not at the moment it was checked.
+fn copy_to_free_path(from: &Path, dir: &Path, base: &str, ext: &str) -> Result<PathBuf, String> {
+    let names = std::iter::once(format!("{base}.{ext}")).chain((2..1000).map(|n| format!("{base} ({n}).{ext}")));
+    for name in names {
+        let to = dir.join(name);
+        match copy_new(from, &to) {
+            Ok(()) => return Ok(to),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("could not copy {} → {}: {e}", from.display(), to.display())),
+        }
+    }
+    Err(format!("no free name for \"{base}.{ext}\" in {}", dir.display()))
 }
 
 /// Where FL keeps its factory templates. Windows: `<install>/Data/Templates`.
@@ -162,7 +190,9 @@ pub fn create_project(app: tauri::AppHandle, template_path: String, parent_folde
     let fl = fl_from_settings(&app);
     let parent = scope.folder_in_roots(&parent_folder)?;
     check_template(&scope, fl, &template_path)?;
-    create_in(&template_path, &parent, &name)
+    // The song folder may already exist (or be a symlink planted there):
+    // what it really points at must still be inside a linked folder.
+    create_in(&template_path, &parent, &name, |dir| scope.folder_in_roots(&dir.to_string_lossy()).map(|_| ()))
 }
 
 /// A template is an .flp from FL's factory templates, FL's own default
@@ -181,19 +211,34 @@ pub(crate) fn check_template(scope: &crate::scope::Scope, fl: Option<String>, te
     Ok(())
 }
 
-fn create_in(template_path: &str, parent_folder: &Path, name: &str) -> Result<String, String> {
+/// `in_scope` is called on the parent folder and on the song folder once it
+/// exists: both resolve (symlinks followed) inside a linked folder, or
+/// nothing is created.
+fn create_in(template_path: &str, parent_folder: &Path, name: &str, in_scope: impl Fn(&Path) -> Result<(), String>) -> Result<String, String> {
     let name = validate_name(name)?;
     let template = Path::new(template_path);
     if !template.is_file() {
         return Err(format!("template not found: {template_path}"));
     }
+    in_scope(parent_folder)?;
     let dir = parent_folder.join(name);
     let target = dir.join(format!("{name}.flp"));
-    if target.exists() {
+    if fs::symlink_metadata(&target).is_ok() {
         return Err(format!("a project named \"{name}\" already exists there"));
     }
-    fs::create_dir_all(&dir).map_err(|e| format!("could not create project folder: {e}"))?;
-    copy_file(template, &target)?;
+    match fs::create_dir(&dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(format!("could not create project folder: {e}")),
+    }
+    in_scope(&dir)?;
+    copy_file(template, &target).map_err(|e| {
+        if target.exists() {
+            format!("a project named \"{name}\" already exists there")
+        } else {
+            e
+        }
+    })?;
     Ok(target.to_string_lossy().to_string())
 }
 
@@ -268,8 +313,7 @@ fn restore(backup_path: String, project_path: String) -> Result<String, String> 
     } else {
         format!("{project_name} - restored {when}")
     };
-    let target = free_path(dir, &base, &ext);
-    copy_file(backup, &target)?;
+    let target = copy_to_free_path(backup, dir, &base, &ext)?;
     Ok(target.to_string_lossy().to_string())
 }
 
@@ -353,8 +397,16 @@ fn check_cleanup(paths: &[String], allow_permanent: bool, listed: impl Fn(&Path)
 /// projects; refuses backups on drives without a Recycle Bin unless
 /// `allow_permanent` (the user confirmed a permanent delete).
 #[tauri::command]
-pub async fn trash_backups(paths: Vec<String>, allow_permanent: Option<bool>) -> Result<u32, String> {
-    check_cleanup(&paths, allow_permanent.unwrap_or(false), crate::scanner::is_listed_backup, may_delete_permanently)?;
+pub async fn trash_backups(app: tauri::AppHandle, paths: Vec<String>, allow_permanent: Option<bool>) -> Result<u32, String> {
+    // Listed by the last scan AND inside a folder that's still linked now
+    // (a folder unlinked since that scan is off limits).
+    let scope = crate::scope::Scope::load(&app)?;
+    trash_listed(paths, allow_permanent, |p| scope.known_file(&p.to_string_lossy()).is_ok()).await
+}
+
+async fn trash_listed(paths: Vec<String>, allow_permanent: Option<bool>, linked: impl Fn(&Path) -> bool) -> Result<u32, String> {
+    let listed = |p: &Path| crate::scanner::is_listed_backup(p) && linked(p);
+    check_cleanup(&paths, allow_permanent.unwrap_or(false), listed, may_delete_permanently)?;
     let count = paths.len() as u32;
     tauri::async_runtime::spawn_blocking(move || {
         #[allow(unused_mut)]
@@ -413,6 +465,43 @@ mod tests {
     }
 
     #[test]
+    fn copies_never_overwrite() {
+        let dir = std::env::temp_dir().join(format!("flsm-copynew-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let from = dir.join("a.flp");
+        let to = dir.join("b.flp");
+        fs::write(&from, b"new").unwrap();
+        fs::write(&to, b"mine").unwrap();
+        assert!(copy_file(&from, &to).is_err());
+        assert_eq!(fs::read(&to).unwrap(), b"mine");
+        let free = copy_to_free_path(&from, &dir, "b", "flp").unwrap();
+        assert!(free.ends_with("b (2).flp"), "{}", free.display());
+        assert_eq!(fs::read(&free).unwrap(), b"new");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_refuses_a_song_folder_linked_out_of_scope() {
+        let dir = std::env::temp_dir().join(format!("flsm-create-link-{}", std::process::id()));
+        let linked = dir.join("linked");
+        let outside = dir.join("outside");
+        fs::create_dir_all(&linked).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let template = dir.join("template.flp");
+        fs::write(&template, b"template bytes").unwrap();
+        std::os::unix::fs::symlink(&outside, linked.join("Envy")).unwrap();
+        let root = linked.canonicalize().unwrap();
+        let in_scope = |p: &Path| {
+            if p.canonicalize().is_ok_and(|r| r.starts_with(&root)) { Ok(()) } else { Err("out of scope".to_string()) }
+        };
+        assert!(create_in(&template.to_string_lossy(), &linked, "Envy", in_scope).is_err());
+        assert!(!outside.join("Envy.flp").exists());
+        assert!(create_in(&template.to_string_lossy(), &linked, "Other", in_scope).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn creates_and_versions_projects_without_clobbering() {
         let dir = std::env::temp_dir().join(format!("flsm-create-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -421,12 +510,12 @@ mod tests {
         let t = template.to_string_lossy().to_string();
         let parent = dir.to_string_lossy().to_string();
 
-        let created = create_in(&t, Path::new(&parent), "Envy").unwrap();
+        let created = create_in(&t, Path::new(&parent), "Envy", |_| Ok(())).unwrap();
         assert!(created.ends_with(&format!("Envy{}Envy.flp", std::path::MAIN_SEPARATOR)), "{created}");
         assert_eq!(fs::read(&created).unwrap(), b"template bytes");
         // Same name again must fail, not overwrite.
         fs::write(&created, b"my work").unwrap();
-        assert!(create_in(&t, Path::new(&parent), "Envy").is_err());
+        assert!(create_in(&t, Path::new(&parent), "Envy", |_| Ok(())).is_err());
         assert_eq!(fs::read(&created).unwrap(), b"my work");
 
         let v2 = duplicate(created.clone(), "Envy v2".into()).unwrap();
@@ -438,12 +527,12 @@ mod tests {
     #[test]
     fn trash_refuses_real_projects() {
         for p in ["D:\\Projects\\Envy\\Envy.flp", "/m/Wave Project/Wave.als", "/m/Tide/Tide.rpp", "/m/Fade/Fade.cpr", "/m/Envy/Backup/cover.png"] {
-            let result = tauri::async_runtime::block_on(trash_backups(vec![p.to_string()], None));
+            let result = tauri::async_runtime::block_on(trash_listed(vec![p.to_string()], None, |_| true));
             assert!(result.is_err(), "{p}");
         }
         // One real project in the batch refuses the whole batch.
         let mixed = vec!["/m/Tide/Tide.rpp-bak".to_string(), "/m/Tide/Tide.rpp".to_string()];
-        assert!(tauri::async_runtime::block_on(trash_backups(mixed, None)).is_err());
+        assert!(tauri::async_runtime::block_on(trash_listed(mixed, None, |_| true)).is_err());
     }
 
     #[test]
@@ -470,7 +559,7 @@ mod tests {
         assert!(!may_trash(&folder, anything));
         // Never-scanned paths are refused by the real command.
         let b = backup.to_string_lossy().to_string();
-        assert!(tauri::async_runtime::block_on(trash_backups(vec![b], Some(true))).is_err());
+        assert!(tauri::async_runtime::block_on(trash_listed(vec![b], Some(true), |_| true)).is_err());
         assert_eq!(fs::read(&backup).unwrap(), b"old");
         let _ = fs::remove_dir_all(&dir);
     }
