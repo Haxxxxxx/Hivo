@@ -1118,105 +1118,109 @@ export interface KitGuide {
   steps: string[];
 }
 
+/** The kit's guide (README.md and the popup), in the kit's language: it's
+ * a generated file, so it follows the caption language, not the app's. */
+const KIT_GUIDE = dict(
+  {
+    sheetWhat: "Every release detail, in the order distributors ask for them.",
+    sheetTodo: "Copy each line into DistroKid, TuneCore, Amuse… while you upload.",
+    masterWhat: "The final mixdown to upload.",
+    masterTodo: "This is the audio file you give the distributor.",
+    snippetsWhat: (clips: string) => `Clips for socials (${clips}).`,
+    snippetsTodo: "Post them as reels, stories and TikToks before release (the teaser first, then the hook).",
+    shortsWhat: "Ready-to-post 9:16 videos, if you rendered them.",
+    shortsTodo: "Post them as they are on Reels, Shorts and TikTok.",
+    captionsWhat: "Post texts: announcement, teaser, release day.",
+    captionsTodo: "Paste each one under the matching post, at the right time.",
+    coverWhat: "Art direction for the cover.",
+    coverTodo: "Give it to the designer (with cover-concept.jpg if you picked one).",
+    checklistWhat: "What's still open before you upload.",
+    checklistTodo: "Tick everything off before you send the release.",
+    metadataWhat: "The same details for a spreadsheet or another tool.",
+    metadataTodo: "Optional: import them if your tool can.",
+    title: (title: string) => `Launch kit: ${title}`,
+    intro: "Everything you need to release this song. Here's what's in the folder and what to do with it.",
+    step1: "Check checklist.md.",
+    step2: "Upload the mixdown to your distributor using distributor-sheet.md (aim for 3-4 weeks before release, for playlist pitching).",
+    step3: "Get the cover made from cover-brief.md.",
+    step4Snippets: "Before release: post the teaser and snippets with the texts from captions.md.",
+    step4: "Before release: post the announcement with the texts from captions.md.",
+    step5: "On release day: post the release-day text.",
+    inFolder: "## In this folder",
+    inOrder: "## In order",
+    madeWith: "_Made with Hivo._",
+  },
+  {
+    sheetWhat: "Toutes les infos de la sortie, dans l'ordre du formulaire du distributeur.",
+    sheetTodo: "Copie chaque ligne dans DistroKid, TuneCore, Amuse… pendant l'upload.",
+    masterWhat: "Le mixdown final à envoyer.",
+    masterTodo: "C'est le fichier audio à donner au distributeur.",
+    snippetsWhat: (clips: string) => `Extraits pour les réseaux (${clips}).`,
+    snippetsTodo: "Poste-les en reels, stories et TikTok avant la sortie (le teaser d'abord, le hook ensuite).",
+    shortsWhat: "Vidéos 9:16 prêtes à poster, si tu les as rendues.",
+    shortsTodo: "Publie-les telles quelles sur Reels, Shorts et TikTok.",
+    captionsWhat: "Les textes des posts\u202f: annonce, teaser, jour de sortie.",
+    captionsTodo: "Colle chaque texte sous le post qui va avec, au bon moment.",
+    coverWhat: "La direction artistique de la cover.",
+    coverTodo: "Donne-la au graphiste (avec cover-concept.jpg si tu en as choisi un).",
+    checklistWhat: "Ce qui reste à vérifier avant l'upload.",
+    checklistTodo: "Coche tout avant d'envoyer la sortie.",
+    metadataWhat: "Les mêmes infos pour un tableur ou un autre outil.",
+    metadataTodo: "Optionnel\u202f: importe-les si ton outil le permet.",
+    title: (title: string) => `Kit de sortie\u202f: ${title}`,
+    intro: "Tout ce qu'il faut pour sortir ce son. Voici ce que contient le dossier et quoi en faire.",
+    step1: "Vérifie checklist.md.",
+    step2: "Upload le mixdown chez ton distributeur avec distributor-sheet.md (vise 3 à 4 semaines avant la sortie pour les playlists).",
+    step3: "Fais la cover à partir de cover-brief.md.",
+    step4Snippets: "Avant la sortie\u202f: poste le teaser et les extraits avec les textes de captions.md.",
+    step4: "Avant la sortie\u202f: poste l'annonce avec les textes de captions.md.",
+    step5: "Le jour J\u202f: poste le texte «\u202fjour de sortie\u202f».",
+    inFolder: "## Dans ce dossier",
+    inOrder: "## Dans l'ordre",
+    madeWith: "_Généré par Hivo._",
+  },
+);
+
 /** One text for the README and the popup, in the kit's language. Shorts and
  * the cover concept are listed too: they land in the same folder when made. */
 export function kitGuide(lang: KitLang, { title, master, snippets }: { title: string; master: string | null; snippets: string[] }): KitGuide {
-  const fr = lang === "fr";
-  const clips = snippets.join(", ");
+  const g = KIT_GUIDE[lang];
   const items: KitGuideItem[] = [
-    {
-      file: "distributor-sheet.md",
-      what: fr ? "Toutes les infos de la sortie, dans l'ordre du formulaire du distributeur." : "Every release detail, in the order distributors ask for them.",
-      todo: fr
-        ? "Copie chaque ligne dans DistroKid, TuneCore, Amuse… pendant l'upload."
-        : "Copy each line into DistroKid, TuneCore, Amuse… while you upload.",
-    },
-    ...(master
-      ? [
-          {
-            file: master,
-            what: fr ? "Le mixdown final à envoyer." : "The final mixdown to upload.",
-            todo: fr ? "C'est le fichier audio à donner au distributeur." : "This is the audio file you give the distributor.",
-          },
-        ]
-      : []),
+    { file: "distributor-sheet.md", what: g.sheetWhat, todo: g.sheetTodo },
+    ...(master ? [{ file: master, what: g.masterWhat, todo: g.masterTodo }] : []),
     // Only snippets that were cut: a kit exported without them doesn't promise any.
-    ...(snippets.length
-      ? [
-          {
-            file: "snippets/",
-            what: fr ? `Extraits pour les réseaux (${clips}).` : `Clips for socials (${clips}).`,
-            todo: fr
-              ? "Poste-les en reels, stories et TikTok avant la sortie (le teaser d'abord, le hook ensuite)."
-              : "Post them as reels, stories and TikToks before release (the teaser first, then the hook).",
-          },
-        ]
-      : []),
-    {
-      file: "shorts/",
-      what: fr ? "Vidéos 9:16 prêtes à poster, si tu les as rendues." : "Ready-to-post 9:16 videos, if you rendered them.",
-      todo: fr ? "Publie-les telles quelles sur Reels, Shorts et TikTok." : "Post them as they are on Reels, Shorts and TikTok.",
-    },
-    {
-      file: "captions.md",
-      what: fr ? "Les textes des posts : annonce, teaser, jour de sortie." : "Post texts: announcement, teaser, release day.",
-      todo: fr ? "Colle chaque texte sous le post qui va avec, au bon moment." : "Paste each one under the matching post, at the right time.",
-    },
-    {
-      file: "cover-brief.md",
-      what: fr ? "La direction artistique de la cover." : "Art direction for the cover.",
-      todo: fr ? "Donne-la au graphiste (avec cover-concept.jpg si tu en as choisi un)." : "Give it to the designer (with cover-concept.jpg if you picked one).",
-    },
-    {
-      file: "checklist.md",
-      what: fr ? "Ce qui reste à vérifier avant l'upload." : "What's still open before you upload.",
-      todo: fr ? "Coche tout avant d'envoyer la sortie." : "Tick everything off before you send the release.",
-    },
-    {
-      file: "metadata.json / metadata.csv",
-      what: fr ? "Les mêmes infos pour un tableur ou un autre outil." : "The same details for a spreadsheet or another tool.",
-      todo: fr ? "Optionnel : importe-les si ton outil le permet." : "Optional: import them if your tool can.",
-    },
+    ...(snippets.length ? [{ file: "snippets/", what: g.snippetsWhat(snippets.join(", ")), todo: g.snippetsTodo }] : []),
+    { file: "shorts/", what: g.shortsWhat, todo: g.shortsTodo },
+    { file: "captions.md", what: g.captionsWhat, todo: g.captionsTodo },
+    { file: "cover-brief.md", what: g.coverWhat, todo: g.coverTodo },
+    { file: "checklist.md", what: g.checklistWhat, todo: g.checklistTodo },
+    { file: "metadata.json / metadata.csv", what: g.metadataWhat, todo: g.metadataTodo },
   ];
   return {
-    title: fr ? `Kit de sortie : ${title}` : `Launch kit: ${title}`,
-    intro: fr ? "Tout ce qu'il faut pour sortir ce son. Voici ce que contient le dossier et quoi en faire." : "Everything you need to release this song. Here's what's in the folder and what to do with it.",
+    title: g.title(title),
+    intro: g.intro,
     items,
-    steps: fr
-      ? [
-          "Vérifie checklist.md.",
-          "Upload le mixdown chez ton distributeur avec distributor-sheet.md (vise 3 à 4 semaines avant la sortie pour les playlists).",
-          "Fais la cover à partir de cover-brief.md.",
-          snippets.length ? "Avant la sortie : poste le teaser et les extraits avec les textes de captions.md." : "Avant la sortie : poste l'annonce avec les textes de captions.md.",
-          "Le jour J : poste le texte « jour de sortie ».",
-        ]
-      : [
-          "Check checklist.md.",
-          "Upload the mixdown to your distributor using distributor-sheet.md (aim for 3-4 weeks before release, for playlist pitching).",
-          "Get the cover made from cover-brief.md.",
-          snippets.length ? "Before release: post the teaser and snippets with the texts from captions.md." : "Before release: post the announcement with the texts from captions.md.",
-          "On release day: post the release-day text.",
-        ],
+    steps: [g.step1, g.step2, g.step3, snippets.length ? g.step4Snippets : g.step4, g.step5],
   };
 }
 
 /** README.md for the kit folder. */
 export function kitReadme(guide: KitGuide, lang: KitLang): string {
-  const fr = lang === "fr";
+  const g = KIT_GUIDE[lang];
   return [
     `# ${guide.title}`,
     "",
     guide.intro,
     "",
-    fr ? "## Dans ce dossier" : "## In this folder",
+    g.inFolder,
     "",
     ...guide.items.map((i) => `- **${i.file}**: ${i.what} ${i.todo}`),
     "",
-    fr ? "## Dans l'ordre" : "## In order",
+    g.inOrder,
     "",
     ...guide.steps.map((s, n) => `${n + 1}. ${s}`),
     "",
-    fr ? "_Généré par Hivo._" : "_Made with Hivo._",
+    g.madeWith,
     "",
   ].join("\n");
 }

@@ -449,7 +449,7 @@ export const useCrewStore = create<CrewState>((set, get) => {
 
   /** move_song_stage: applied only if the song is still at `expected`. */
   async function moveStage(id: string, stage: SongStatus | null, expected: string | null) {
-    if (!supabase) throw new Error("crew sharing is off");
+    if (!supabase) throw new Error(crewText("sharingOff"));
     const { data, error } = await supabase.rpc("move_song_stage", { p_song: id, p_stage: stage, p_expected_at: expected });
     if (error) throw error;
     const r = (Array.isArray(data) ? data[0] : data) as { applied: boolean; stage: SongStatus | null; stage_updated_at: string; stage_updated_by: string | null };
@@ -522,7 +522,7 @@ export const useCrewStore = create<CrewState>((set, get) => {
           if (joinedOnce) void cycle();
           joinedOnce = true;
         } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-          set({ sync: { kind: "error", message: "Live updates paused. Reconnecting…" } });
+          set({ sync: { kind: "error", message: crewText("livePaused") } });
         }
       });
   }
@@ -940,7 +940,7 @@ export const useCrewStore = create<CrewState>((set, get) => {
     },
 
     createInvite: async () => {
-      if (!supabase || !get().activeCrewId) throw new Error("Choose a crew first.");
+      if (!supabase || !get().activeCrewId) throw new Error(crewText("chooseCrew"));
       const { data, error } = await supabase.rpc("create_invite", { p_crew: get().activeCrewId, p_max_uses: 10 });
       if (error) throw new Error(crewErrorMessage(error));
       set({ invite: data as string });
@@ -1109,7 +1109,7 @@ export const useCrewStore = create<CrewState>((set, get) => {
         if (!elsewhere) app.updateAlbum(albumId, { shared: false });
         return none;
       }
-      if (elsewhere && album.shared) throw new Error("This release is shared with another crew. Stop sharing it there first.");
+      if (elsewhere && album.shared) throw new Error(crewText("sharedElsewhere"));
       if (elsewhere) {
         // Unshared there but not synced yet: that crew's row is deleted on its
         // next sync (marker); this crew gets its own id, so the two never mix.

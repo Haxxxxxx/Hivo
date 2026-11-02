@@ -1201,12 +1201,18 @@ function TimeInput({ value, onCommit }: { value: number; onCommit: (seconds: num
 }
 
 
+const T_EXPORTED = dict(
+  { title: "Kit exported", inOrder: "In order", sameText: "The same text is in README.md, in the kit folder.", showFolder: "Show folder", gotIt: "Got it" },
+  { title: "Kit exporté", inOrder: "Dans l'ordre", sameText: "Le même texte est dans README.md, dans le dossier du kit.", showFolder: "Ouvrir le dossier", gotIt: "Compris" },
+);
+
 /** After an export: what's in the kit and what to do with it (same text as README.md). */
 function KitExportedDialog({ guide, lang, dir, onClose }: { guide: KitGuide; lang: KitLang; dir: string; onClose: () => void }) {
-  const fr = lang === "fr";
+  // In the kit's language, like the guide it shows.
+  const t = T_EXPORTED[lang];
   // Modal traps the focus, answers Escape and hands the focus back on close.
   return (
-    <Modal title={fr ? "Kit exporté" : "Kit exported"} onClose={onClose} width="max-w-2xl">
+    <Modal title={t.title} onClose={onClose} width="max-w-2xl">
       <p className="text-sm text-body">{guide.intro}</p>
       <div className="mt-4 text-sm">
         <ul className="flex flex-col gap-2.5">
@@ -1219,7 +1225,7 @@ function KitExportedDialog({ guide, lang, dir, onClose }: { guide: KitGuide; lan
             </li>
           ))}
         </ul>
-        <h3 className="mt-5 text-xs font-semibold uppercase tracking-wider text-engrave">{fr ? "Dans l'ordre" : "In order"}</h3>
+        <h3 className="mt-5 text-xs font-semibold uppercase tracking-wider text-engrave">{t.inOrder}</h3>
         <ol className="mt-2 list-decimal pl-5 text-body">
           {guide.steps.map((s) => (
             <li key={s} className="py-0.5">
@@ -1227,14 +1233,14 @@ function KitExportedDialog({ guide, lang, dir, onClose }: { guide: KitGuide; lan
             </li>
           ))}
         </ol>
-        <p className="mt-4 text-xs text-engrave">{fr ? "Le même texte est dans README.md, dans le dossier du kit." : "The same text is in README.md, in the kit folder."}</p>
+        <p className="mt-4 text-xs text-engrave">{t.sameText}</p>
       </div>
       <div className="mt-5 flex justify-end gap-2 border-t border-rule pt-3">
         <button onClick={() => void api.revealInFileManager(dir)} className={btn}>
-          <FolderOpen size={14} /> {fr ? "Ouvrir le dossier" : "Show folder"}
+          <FolderOpen size={14} /> {t.showFolder}
         </button>
         <button onClick={onClose} className={btnPrimary}>
-          {fr ? "Compris" : "Got it"}
+          {t.gotIt}
         </button>
       </div>
     </Modal>

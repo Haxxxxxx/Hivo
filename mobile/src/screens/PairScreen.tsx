@@ -49,7 +49,9 @@ export function PairScreen() {
       await pair({ ...r.pairing, desktopName: v.desktopName }); // the app switches to the Library
       void sync();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      // Saving the key failed on the phone (secure storage): the raw text is for the log.
+      console.warn("pairing failed:", e instanceof Error ? e.message : String(e));
+      setError(t.pairSaveFailed);
       setBusy(false);
       handled.current = false;
     }

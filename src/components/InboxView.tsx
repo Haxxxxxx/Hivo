@@ -49,6 +49,7 @@ const T = dict(
     memo: "Voice memo",
     sketch: "BandLab export",
     from: (phone: string, when: string) => `From ${phone} · ${when}`,
+    phone: "Phone",
     aimedAt: (title: string) => `Written for ${title}`,
     aimedGone: (title: string) => `Written for ${title}, which isn't on this computer any more: pick another.`,
     pickTarget: "Pick a song, beat or prod",
@@ -114,6 +115,7 @@ const T = dict(
     memo: "Mémo vocal",
     sketch: "Export BandLab",
     from: (phone: string, when: string) => `De ${phone} · ${when}`,
+    phone: "Téléphone",
     aimedAt: (title: string) => `Écrit pour ${title}`,
     aimedGone: (title: string) => `Écrit pour ${title}, qui n'est plus sur cet ordi : choisis-en un autre.`,
     pickTarget: "Choisis un son, une prod ou une prod enregistrée",
@@ -320,7 +322,7 @@ function IncomingList({ items }: { items: IncomingItem[] }) {
           <div className="min-w-0 flex-1">
             <div className="truncate text-cream">{i.title || (i.itemType === "memo" ? t.memo : t.sketch)}</div>
             <div className="text-xs text-engrave">
-              {t.from(i.phoneName || "Phone", formatDateTime(i.updatedAt))} · {t.incomingLine(i.filesDone, i.fileCount, formatBytes(i.receivedBytes), formatBytes(i.totalBytes))}
+              {t.from(i.phoneName || t.phone, formatDateTime(i.updatedAt))} · {t.incomingLine(i.filesDone, i.fileCount, formatBytes(i.receivedBytes), formatBytes(i.totalBytes))}
             </div>
           </div>
           <ConfirmButton
@@ -401,7 +403,7 @@ function InboxCard({ item, options, onNotice }: { item: InboxItem; options: Targ
         <div className="min-w-0 flex-1">
           <div className={engrave}>{kindLabel}</div>
           <div className="truncate font-medium text-cream">{item.title || (item.itemType === "idea" ? item.text.split("\n")[0] : item.itemType === "sketch" ? sketchName(item) : item.files[0]?.name) || kindLabel}</div>
-          <div className="text-xs text-engrave">{t.from(item.phoneName || "Phone", formatDateTime(item.receivedAt ?? item.createdAt))}</div>
+          <div className="text-xs text-engrave">{t.from(item.phoneName || t.phone, formatDateTime(item.receivedAt ?? item.createdAt))}</div>
         </div>
         {!isNew && (
           <span className="flex shrink-0 items-center gap-1.5 text-xs text-body">
