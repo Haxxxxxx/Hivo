@@ -25,7 +25,7 @@ pub struct Scope {
     /// project folders: beats are never projects, songs never beats.
     beat_folders: Vec<PathBuf>,
     beat_roots: Vec<PathBuf>,
-    /// Sample libraries, resolved: walked by the scanner's resolver only.
+    /// Sample libraries, as saved: walked by the scanner's resolver only.
     sample_folders: Vec<PathBuf>,
     fl_studio: Option<String>,
     ffmpeg: Option<String>,
@@ -79,7 +79,10 @@ impl Scope {
             output: s.output_folder.as_deref().and_then(|f| Some((PathBuf::from(f), resolve(Path::new(f))?))),
             beat_folders: s.beat_folders.iter().map(PathBuf::from).filter(|f| resolve(f).is_some()).collect(),
             beat_roots: s.beat_folders.iter().filter_map(|f| resolve(Path::new(f))).collect(),
-            sample_folders: s.sample_folders.iter().filter_map(|f| resolve(Path::new(f))).collect(),
+            // As saved, like the linked folders: a library on a mapped drive
+            // (`Z:\Samples`) resolves to `\\?\UNC\nas\share\Samples`, which
+            // the resolver would refuse to walk as a network path.
+            sample_folders: s.sample_folders.iter().map(PathBuf::from).filter(|f| resolve(f).is_some()).collect(),
             fl_studio: s.fl_studio_path.clone(),
             ffmpeg: s.ffmpeg_path.clone(),
             render_format: s.render_format.clone(),
@@ -185,7 +188,7 @@ impl Scope {
         &self.beat_folders
     }
 
-    /// The sample libraries, resolved.
+    /// The sample libraries, as saved (what the resolver walks).
     pub fn sample_folders(&self) -> &[PathBuf] {
         &self.sample_folders
     }
@@ -246,11 +249,11 @@ pub fn is_ffmpeg(path: &Path) -> bool {
 }
 
 /// One folder name under the export folder (an album's renders or
-/// packages): no separators, no `..`, no leading dots. None if nothing usable is left.
+/// packages), cleaned like a file name (`audio::safe_name`: no separators,
+/// no leading or trailing dots, no reserved Windows names). None if nothing
+/// usable is left.
 pub fn safe_subfolder(sub: &str) -> Option<String> {
-    let name = sub.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
-    let name = name.trim().trim_start_matches('.').trim();
-    (!name.is_empty()).then(|| name.to_string())
+    crate::audio::safe_name_opt(sub)
 }
 
 #[cfg(test)]
@@ -388,6 +391,27 @@ pub mod tests {
         assert_eq!(safe_subfolder(" .hidden ").as_deref(), Some("hidden"));
         assert_eq!(safe_subfolder("Night Run (EP)").as_deref(), Some("Night Run (EP)"));
         assert_eq!(safe_subfolder("   ").as_deref(), None);
+        // Windows would refuse these as folder names (or drop the dots).
+        assert_eq!(safe_subfolder("CON").as_deref(), Some("_CON"));
+        assert_eq!(safe_subfolder("lpt1.ep").as_deref(), Some("_lpt1.ep"));
+        assert_eq!(safe_subfolder("Night Run...").as_deref(), Some("Night Run"));
+        assert_eq!(safe_subfolder("Tape\u{7}").as_deref(), Some("Tape_"));
+    }
+
+    #[test]
+    fn sample_libraries_are_walked_as_saved() {
+        let f = fixture("samples-as-saved");
+        let lib = f.dir.join("Packs");
+        fs::create_dir_all(&lib).unwrap();
+        // Saved through a symlink (a stand-in for a mapped drive): walked by
+        // the saved path, not the resolved one.
+        #[cfg(unix)]
+        {
+            let link = f.dir.join("Z");
+            std::os::unix::fs::symlink(&lib, &link).unwrap();
+            let settings = Settings { sample_folders: vec![s(&link), r"\\nas\share\Samples".to_string()], ..Settings::default() };
+            assert_eq!(Scope::from_settings(&settings).sample_folders(), &[link]);
+        }
     }
 
     /// The checks each command runs before touching anything (render,
