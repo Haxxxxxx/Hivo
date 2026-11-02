@@ -44,7 +44,7 @@ const T = dict(
     daysToGo: (n: number) => `jour${n === 1 ? "" : "s"} avant la sortie`,
     stalledTitle: (days: number) => `À l'arrêt · pas de sauvegarde depuis ${days}+ jours`,
     nothingStuck: (days: number) =>
-      `Rien de bloqué : chaque son pas fini a été sauvegardé dans les ${days} derniers jours.`,
+      `Rien de bloqué : chaque son pas fini a été sauvegardé dans les ${days} derniers jours.`,
     idleDays: (n: number) => `${n}j`,
     more: (n: number) => `+${n} autres`,
     crewTitle: "Crew · qui bosse sur quoi",

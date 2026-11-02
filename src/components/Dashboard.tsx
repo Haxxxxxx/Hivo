@@ -187,7 +187,7 @@ const T = dict(
     inProgress: "En cours",
     finished: "Finis",
     releases: "Sorties",
-    pickUp: "Reprends là où tu t'es arrêté",
+    pickUp: "Reprends là où tu en étais",
     kitToDo: "Launch Kit à faire",
     open: "Ouvrir",
     studioActivity: "Activité studio — sauvegardes par semaine, 12 derniers mois",

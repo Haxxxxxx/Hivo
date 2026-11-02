@@ -54,7 +54,7 @@ const TEXT = {
   },
   fr: {
     subject: (v: string, os: string) => `Retour Hivo (${v}, ${os})`,
-    body: "Ce qui s'est passé :\n\n\nCe que tu attendais :\n\n\n",
+    body: "Ce qui s'est passé :\n\n\nCe que tu attendais :\n\n\n",
   },
 };
 

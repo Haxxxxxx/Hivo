@@ -183,7 +183,7 @@ export const W = dict(
     save: "Enregistrer",
     deleteTitle: "Supprimer ce crew",
     deleteWhat: (crew: string, n: number) =>
-      `Tout le monde perd l'accès à ${crew} (${n === 1 ? "juste toi" : `${n} membres`})${NB}: son tableau, les releases partagées, les colonnes et les codes d'invitation sont supprimés. Rien n'est touché sur les ordis.`,
+      `Tout le monde perd l'accès à ${crew} (${n === 1 ? "juste toi" : `${n} membres`})${NB}: son tableau, les sorties partagées, les colonnes et les codes d'invitation sont supprimés. Rien n'est touché sur les ordis.`,
     deleteStart: "Supprimer le crew…",
     deleteType: (crew: string) => `Tape ${crew} pour confirmer`,
     deleteConfirm: "Supprimer pour tout le monde",

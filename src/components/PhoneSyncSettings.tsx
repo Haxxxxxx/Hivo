@@ -72,9 +72,9 @@ const T = dict(
     unnamed: "Téléphone",
     security:
       "Chaque téléphone a sa propre clé, gardée sur cet ordi dans un fichier réservé à ton compte et jamais réaffichée. Chaque requête est chiffrée et signée avec ; Oublier supprime la clé, et ce téléphone ne peut plus synchroniser. Un téléphone qui ne se connecte pas dans la journée est oublié.",
-    phoneOutdated: "Mets Hivo à jour sur ce téléphone : il est plus ancien que celui de cet ordi.",
+    phoneOutdated: "Mets Hivo à jour sur ce téléphone : il est plus ancien que celui de cet ordi.",
     openFirewall: "Ouvrir les réglages du pare-feu",
-    firewallWindows: "Le téléphone dit qu'il n'est pas sur le même Wi-Fi ? Le pare-feu Windows bloque peut-être Hivo : autorise-le sur les réseaux privés.",
+    firewallWindows: "Le téléphone dit qu'il n'est pas sur le même Wi-Fi ? Le pare-feu Windows bloque peut-être Hivo : autorise-le sur les réseaux privés.",
   },
 );
 

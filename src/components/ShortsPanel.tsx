@@ -49,7 +49,7 @@ const T = dict(
     chooseFolder: "Choisir le dossier d'export",
     needFfmpeg: "Il faut ffmpeg (gratuit, une seule install). Les étapes sont juste en dessous.",
     checkAgain: "Revérifier",
-    confirmFound: (path: string) => `ffmpeg trouvé ici : ${path}. Confirme-le une fois dans les Réglages avant qu'il serve.`,
+    confirmFound: (path: string) => `ffmpeg trouvé ici : ${path}. Confirme-le une fois dans les Réglages avant qu'il serve.`,
     openSettings: "Ouvrir les Réglages",
     heading: "Shorts pour Reels, TikTok et YouTube Shorts",
     previewAlt: "Aperçu de la mise en page 9:16",

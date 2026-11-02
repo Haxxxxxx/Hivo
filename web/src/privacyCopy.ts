@@ -123,7 +123,7 @@ const fr: PrivacyCopy = {
       title: "Qui fait tourner Hivo",
       body: [
         "Hivo est fait et géré par son développeur, un particulier, pour un crew de rap. Ce n'est pas une entreprise et il n'y a pas de modèle commercial : rien n'est vendu, et aucune donnée n'est vendue ni partagée pour de la pub.",
-        CONTACT ? `Contact : ${CONTACT}, ou le bouton de retour dans l'appli de l'ordi.` : "Contact : utilise le bouton de retour dans le menu de l'appli de l'ordi (« Signaler un bug ou donner ton avis »).",
+        CONTACT ? `Contact : ${CONTACT}, ou le bouton de retour dans l'appli de l'ordi.` : "Contact : utilise le bouton de retour dans le menu de l'appli de l'ordi (« Signaler un bug ou donner ton avis »).",
       ],
     },
     {

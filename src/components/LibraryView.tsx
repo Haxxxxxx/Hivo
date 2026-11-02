@@ -162,7 +162,7 @@ const T = dict(
     keyFromTrack: "Trouvée dans un nom de piste du mixer — règle-la dans le panneau du son",
     pluginsMissing: (names: string) => `Plugins pas installés : ${names}`,
     samplesMissing: (n: number) => `${n} sample${plural(n, " manquant", "s manquants")}`,
-    unreadable: (err: string) => `Illisible : ${err}`,
+    unreadable: (err: string) => `Illisible : ${err}`,
     folders: "Dossiers",
     allSongs: "Tous les sons",
     fold: (name: string) => `Replier ${name}`,

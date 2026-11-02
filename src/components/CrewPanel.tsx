@@ -143,7 +143,7 @@ const T = dict(
   },
   {
     privacy:
-      "Partage les sons de ton choix avec ton crew : tout le monde les voit sur le tableau du crew, dans le calendrier et dans « qui bosse sur quoi ». Pour chaque son partagé, le crew voit son titre, son étape, son BPM, sa tonalité, ses tags, ses crédits, sa date de sortie, s'il a un mixdown et s'il est à jour, si son Launch Kit est validé, et quand le projet a été enregistré pour la dernière fois. Il voit aussi le nom du crew et ton nom affiché (pas ton email, que seul le service de connexion garde). Jamais d'audio, de chemins de fichiers, de samples, de notes ni de noms de pistes. Stocké dans l'UE (Irlande).",
+      "Partage les sons de ton choix avec ton crew : tout le monde les voit sur le tableau du crew, dans le calendrier et dans « qui bosse sur quoi ». Pour chaque son partagé, le crew voit son titre, son étape, son BPM, sa tonalité, ses tags, ses crédits, sa date de sortie, s'il a un mixdown et s'il est à jour, si son Launch Kit est validé, et quand le projet a été enregistré pour la dernière fois. Il voit aussi le nom du crew et ton nom affiché (pas ton email, que seul le service de connexion garde). Jamais d'audio, de chemins de fichiers, de samples, de notes ni de noms de pistes. Stocké dans l'UE (Irlande).",
     notConfigured: "Le partage en crew n'est pas activé dans cette version (aucun serveur de crew configuré).",
     loading: "Chargement…",
     loadFailed: (error: string) => `Impossible de charger tes crews : ${error}`,
@@ -201,7 +201,7 @@ const T = dict(
     inviteValid: "Valable 7 jours, jusqu'à 10 personnes.",
     inviteListNote: "Il faut aussi d'abord ajouter leur email à la liste de connexion du crew (tableau de bord Supabase → Authentication → Users).",
     becomesOwner: (name: string) => ` ${name} devient propriétaire.`,
-    lastMember: " Tu es le dernier membre, donc le crew sera supprimé.",
+    lastMember: " Il ne reste que toi, donc le crew sera supprimé.",
     leaveConfirm: (crew: string, note: string) => `Quitter ${crew} ? Tes sons partagés quittent le tableau du crew avec toi.${note}`,
     leaveCrew: "Quitter le crew",
     another: "Rejoindre ou créer un autre crew",
@@ -228,7 +228,7 @@ const T = dict(
     takeOff: (crew: string) => `Le retirer de ${crew} ?`,
     moveIt: "Le déplacer ?",
     onBoard: "Sur le tableau du crew",
-    onlyYou: "Toi seul le vois",
+    onlyYou: "Visible par toi uniquement",
     shareNote: "Partage le titre, l'étape, le BPM, la tonalité, les tags, les crédits et les dates. Jamais d'audio, de chemins de fichiers ni de notes.",
     seesAs: "Le crew le voit comme",
     titleLabel: "Titre que voit le crew",
@@ -237,7 +237,7 @@ const T = dict(
     whichStands: " attendait d'être envoyé. Lequel on garde ?",
     keep: (stage: string) => `Garder ${stage}`,
     removedFrom: (crew: string) =>
-      `Tu ne fais plus partie de ${crew}\u202f: tu as été retiré, ou le crew a été supprimé. Tes sons n'y sont plus partagés, donc rejoindre le crew ne les repartage jamais tout seul.`,
+      `Tu ne fais plus partie de ${crew}\u202f: on t'a retiré du crew, ou il a été supprimé. Tes sons n'y sont plus partagés, donc rejoindre le crew ne les repartage jamais tout seul.`,
     aCrew: "un crew",
     ok: "OK",
     serverTitle: (n: number) => `Tes sons sur le serveur · ${n}`,

@@ -27,6 +27,8 @@ type Msg = (p: ErrorParams) => string;
 
 const s = (p: ErrorParams, k: string) => String(p[k] ?? "");
 const nb = " ";
+/** The characters a file name can't hold (a list, not a sentence). */
+const BAD_CHARS = '/ \\ : * ? " < > |';
 
 const EN: Record<string, Msg> = {
   // Settings, folders, pickers
@@ -79,7 +81,7 @@ const EN: Record<string, Msg> = {
   "http.client": () => "Hivo couldn't start its network connection. Restart the app and try again.",
   // Names, projects, backups, templates
   "name.empty": () => "The name can't be empty.",
-  "name.badChars": () => 'The name can\'t contain / \\ : * ? " < > |',
+  "name.badChars": () => `The name can't contain ${BAD_CHARS}`,
   "name.badEnd": () => "The name can't end with a dot or contain control characters.",
   "name.reserved": (p) => `"${s(p, "name")}" is a name Windows reserves: pick another.`,
   "project.badPath": () => "That project's path isn't valid.",
@@ -323,7 +325,7 @@ const FR: Record<string, Msg> = {
   "task.failed": () => "Ça s'est arrêté avant la fin. Réessaie.",
   "http.client": () => "Hivo n'arrive pas à lancer sa connexion réseau. Redémarre l'app et réessaie.",
   "name.empty": () => "Le nom ne peut pas être vide.",
-  "name.badChars": () => `Le nom ne peut pas contenir / \\ : * ? " < > |`,
+  "name.badChars": () => `Le nom ne peut contenir aucun de ces caractères${nb}: ${BAD_CHARS}`,
   "name.badEnd": () => "Le nom ne peut pas finir par un point ni contenir de caractères de contrôle.",
   "name.reserved": (p) => `«${nb}${s(p, "name")}${nb}» est un nom réservé par Windows${nb}: choisis-en un autre.`,
   "project.badPath": () => "Le chemin de ce projet n'est pas valide.",
@@ -605,7 +607,8 @@ export function errorTextOr(e: unknown): string | null {
 /** For the typography test: every French message, filled with sample params. */
 export function frenchErrorSamples(): string[] {
   const p: ErrorParams = { path: "/x/y", name: "Envy", what: "project", count: 2, max: 3, status: 500, model: "m", fallback: "f", msg: "m", reason: "r", service: "Spotify", version: "21.2", format: "wav", field: "f", names: "a, b" };
-  return Object.values(FR).map((m) => m(p));
+  // The list of forbidden characters is data, not French prose.
+  return Object.values(FR).map((m) => m(p).replace(BAD_CHARS, ""));
 }
 
 /** For the tests: codes with an English sentence but no French one, or the other way round. */

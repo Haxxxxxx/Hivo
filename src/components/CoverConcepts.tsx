@@ -106,7 +106,7 @@ const T = dict(
     draftsNote: (size: string) =>
       `Les concepts sont des brouillons en ${size} px. Les distributeurs veulent du 3000 × 3000 : un graphiste (ou un upscaler) fait la version finale à partir de ton choix et ajoute le titre et le nom de l'artiste, que FLUX laisse de côté exprès.`,
     quotaNote: (perImage: number, perDay: number) =>
-      `Chaque concept utilise environ ${perImage} des ${FREE_NEURONS_PER_DAY.toLocaleString(locale())} neurons gratuits par jour de Cloudflare (environ ${perDay} images par jour). Seul le prompt de l'image part chez Cloudflare : le concept du brief, l'imagerie, la palette, les tags et le texte libre que tu ajoutes, sans le titre, les noms d'artistes ni la ligne Notes (vois-le sous « Prompt envoyé à FLUX »).`,
+      `Chaque concept utilise environ ${perImage} des ${FREE_NEURONS_PER_DAY.toLocaleString(locale())} neurons gratuits par jour de Cloudflare (environ ${perDay} images par jour). Seul le prompt de l'image part chez Cloudflare : le concept du brief, l'imagerie, la palette, les tags et le texte libre que tu ajoutes, sans le titre, les noms d'artistes ni la ligne Notes (vois-le sous « Prompt envoyé à FLUX »).`,
   },
 );
 

@@ -432,7 +432,7 @@ const STORE_ERRORS = dict(
     sample: "Ce sont des données d'exemple : lie d'abord un vrai dossier de projets.",
     needFl: "Indique d'abord le chemin de FL Studio dans les Réglages.",
     needExport: "Choisis d'abord un dossier d'export dans les Réglages.",
-    needExportForPackages: "Choisis d'abord un dossier d'export dans les Réglages : les paquets vont dans <dossier d'export>/Packages.",
+    needExportForPackages: "Choisis d'abord un dossier d'export dans les Réglages : les packs zip vont dans <dossier d'export>/Packages.",
     exportRunning: "Un export est déjà en cours.",
     repointReadOnly:
       "Ton espace de travail ne peut pas être enregistré pour l'instant, donc ses sons n'ont pas pu suivre le dossier. Rien n'a changé : règle d'abord le bandeau en haut, puis réessaie.",
@@ -440,7 +440,7 @@ const STORE_ERRORS = dict(
     updateUnsaved: (why: string) => `La mise à jour a été arrêtée parce que tes modifications n'ont pas pu être enregistrées avant. ${why}`,
     packaging: "Paquet déjà en cours.",
     notLoaded: "Ton espace de travail n'est pas encore chargé : réessaie dans un instant.",
-    nothingToPackage: "Rien à empaqueter.",
+    nothingToPackage: "Rien à mettre en pack zip.",
   },
 );
 
@@ -461,12 +461,12 @@ const STORE_TEXT = dict(
   {
     renderFlOnly: (daw: string, tip: string) => `Le rendu depuis Hivo marche avec les projets FL Studio. Exporte celui-ci depuis ${daw} : ${tip}`,
     notFl: (daw: string) => `Pas un projet FL Studio. Exporte-le depuis ${daw}.`,
-    packageFlOnly: (daw: string) => `Les paquets marchent avec les projets FL Studio. Dans ${daw}, utilise sa propre fonction « rassembler et enregistrer ».`,
+    packageFlOnly: (daw: string) => `Les packs zip marchent avec les projets FL Studio. Dans ${daw}, utilise sa propre fonction « rassembler et enregistrer ».`,
     saveFailed: (e: string) => `Impossible d'enregistrer tes modifications (étapes, notes, sorties) : ${e}`,
-    scanFailed: (e: string) => `Échec de l'analyse des dossiers : ${e}`,
+    scanFailed: (e: string) => `Échec de l'analyse des dossiers : ${e}`,
     settingsUnreadable: (e: string) => `Impossible de lire tes réglages, les réglages par défaut sont utilisés pour l'instant : ${e}`,
     settingsReset: (bad: string) =>
-      `Ton fichier de réglages était illisible, Hivo a donc repris les réglages par défaut : relie à nouveau tes dossiers dans les Réglages. L'ancien fichier est gardé sous ${bad}.`,
+      `Ton fichier de réglages était illisible, Hivo a donc repris les réglages par défaut : relie à nouveau tes dossiers dans les Réglages. L'ancien fichier est gardé sous ${bad}.`,
     settingsSaveFailed: (e: string) => `Impossible d'enregistrer ce réglage, il est revenu à ce qui était enregistré : ${e}`,
     droppedEdits: "Ton espace de travail est chargé. Les modifications faites pendant qu'il était illisible n'ont pas été gardées.",
     untitledAlbum: "Album sans titre",

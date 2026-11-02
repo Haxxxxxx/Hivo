@@ -61,10 +61,10 @@ const T = dict(
     cancel: "Annuler",
     creating: "Création…",
     create: "Créer le son",
-    fromBeat: (name: string) => `À partir de la prod ${name} : ses notes et ses mémos du téléphone passent au son. Le fichier de la prod reste où il est.`,
+    fromBeat: (name: string) => `À partir de la prod ${name} : ses notes et ses mémos du téléphone passent au son. Le fichier de la prod reste où il est.`,
     creditProducer: "Créditer comme producteur",
     producerName: "Producteur",
-    memosFailed: (name: string, list: string) => `${name} est créé, mais ces mémos du téléphone sont restés sur la prod : ${list}. Range-les depuis la boîte du téléphone.`,
+    memosFailed: (name: string, list: string) => `${name} est créé, mais ces mémos du téléphone sont restés sur la prod : ${list}. Range-les depuis la boîte du téléphone.`,
   },
 );
 

@@ -71,7 +71,7 @@ const T = dict(
     followers: (n: number) => `${new Intl.NumberFormat("fr-FR").format(n)} abonnés`,
     popularity: (n: number) => `popularité ${n}/100`,
     noStats: "Profil Spotify trouvé. Les abonnés et la popularité ne sont pas partagés avec cette appli (Spotify les garde pour les applis récentes en mode développement).",
-    spotifyOff: "La recherche et les stats Spotify demandent des identifiants d'appli :",
+    spotifyOff: "La recherche et les stats Spotify demandent des identifiants d'appli :",
     spotifySettings: "ajoute-les dans Réglages",
     spotifyOffShort: "Les stats Spotify demandent des identifiants dans Réglages.",
     lookedUp: (when: string) => `Cherché le ${when}`,
@@ -84,16 +84,16 @@ const T = dict(
     other: "Autres",
     via: (s: string) => (s === "manual" ? "ajouté par toi" : `via ${s === "musicbrainz" ? "MusicBrainz" : s === "deezer" ? "Deezer" : "iTunes"}`),
     unverified: "Non vérifié",
-    unverifiedTitle: "Trouvé par le nom seulement : ce peut être un autre artiste du même nom. Vérifie, puis confirme. Son ID n'est pas utilisé avant.",
+    unverifiedTitle: "Trouvé par le nom seulement : ce peut être un autre artiste du même nom. Vérifie, puis confirme. Son ID n'est pas utilisé avant.",
     confirm: "C'est bien lui",
     remove: "Retirer",
     fans: (n: number) => `${new Intl.NumberFormat("fr-FR").format(n)} fans`,
     albums: (n: number) => `${n} album${plural(n, "", "s")}`,
-    top: (s: string) => `top : ${s}`,
+    top: (s: string) => `top : ${s}`,
     addLink: "Ajouter un lien",
     addPlaceholder: "https://… (une page de profil)",
     add: "Ajouter",
-    aliases: "Essayer aussi :",
+    aliases: "Essayer aussi :",
   },
 );
 
@@ -247,7 +247,7 @@ function LinkRow({ link, onConfirm, onRemove }: { link: PlatformLink; onConfirm:
   };
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-rule px-3 py-2 text-xs last:border-0">
-      <span className="w-28 shrink-0 truncate text-cream" title={link.url}>
+      <span className="w-36 shrink-0 truncate text-cream" title={`${link.label} · ${link.url}`}>
         {link.label}
       </span>
       <span className={`min-w-0 flex-1 truncate font-mono text-[11px] ${verified ? "text-engrave" : "italic text-engrave"}`} title={link.url}>

@@ -182,7 +182,7 @@ const T = dict(
       const what = [missing && `${missing} champ${plural(missing, "", "s")} à compléter`, flagged && `l'IA en a signalé ${flagged}`].filter(Boolean).join(" et ");
       return `${what[0].toUpperCase()}${what.slice(1)}. Exporter quand même ? Ce qui reste ouvert va dans checklist.md et la fiche distributeur.`;
     },
-    answerFirst: "Réponds d'abord aux champs marqués « À compléter »",
+    answerFirst: "Réponds d'abord aux champs marqués « À compléter »",
     markReviewed: "Marque toutes les valeurs pré-remplies comme relues",
     accepted: "Accepté",
     acceptAll: "Tout accepter",
@@ -194,7 +194,7 @@ const T = dict(
     artistIdsHint: (artists: { name: string; profiles: unknown[] }[]) =>
       artists.length === 0
         ? "Personne n'est crédité sur ce son pour l'instant (crédite des personnes dans le panneau du son)."
-        : `Ajoute artist-ids.md et une section « Profils artistes » à la fiche distributeur : ${artists.map((a) => `${a.name} (${a.profiles.length} ID${plural(a.profiles.length, "", "s")})`).join(", ")}. Cherche les profils dans Personnes pour les remplir.`,
+        : `Ajoute artist-ids.md et une section « Profils artistes » à la fiche distributeur : ${artists.map((a) => `${a.name} (${a.profiles.length} ID${plural(a.profiles.length, "", "s")})`).join(", ")}. Cherche les profils dans Personnes pour les remplir.`,
     exported: (open: number) => `Kit exporté${open ? `, avec ${open} point${plural(open, "", "s")} ouvert${plural(open, "", "s")} dans checklist.md` : ""}.`,
     showFolder: "Ouvrir le dossier",
     useSuggestions: (n: number) => plural(n, "Utiliser la suggestion de l'IA", `Utiliser les ${n} suggestions de l'IA`),
@@ -203,7 +203,7 @@ const T = dict(
     exportAnyway: "Exporter quand même",
     cancel: "Annuler",
     resetAll: "Annuler toutes les modifs",
-    blankConfirm: "Vider toutes les valeurs pré-remplies pour remplir le kit à la main ? (« Annuler toutes les modifs » les remet.)",
+    blankConfirm: "Vider toutes les valeurs pré-remplies pour remplir le kit à la main ? (« Annuler toutes les modifs » les remet.)",
     startBlank: "Partir de zéro",
     metadata: "Métadonnées",
     releaseTiming: "Quand ça sort",
