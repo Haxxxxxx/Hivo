@@ -62,10 +62,11 @@ const T = dict(
     updateFailedPlain: (v: string) => `Couldn't update to Hivo ${v}. Try again later.`,
     unreadable: "Your workspace (stages, notes, releases) couldn't be read. Changes made now are only kept if you start fresh.",
     unreadableBackup: "Your workspace (stages, notes, releases) couldn't be read. You can put back its last backup.",
+    unreadableIo: (e: string) => `Your workspace (stages, notes, releases) can't be read right now: ${e}. The file may be fine, so nothing is changed: fix that (a disk, a permission), then Retry.`,
     newer: (v: number) => `This workspace was saved by a newer Hivo (format ${v}). It's shown read-only: update Hivo to edit it.`,
     restoreBackup: "Restore backup",
     startFresh: "Start fresh",
-    startFreshConfirm: "Start fresh? The unreadable file is kept as workspace.json.bad.",
+    startFreshConfirm: "Start fresh? The unreadable file is kept next to it as workspace.json.bad-<number>.",
     showFolder: "Show folder",
     actionFailed: (e: string) => `That didn't work: ${e}`,
     closeSaveFailed: (e: string) => `${e} Hivo stayed open so nothing is lost: try Retry, or close again to quit without these changes.`,
@@ -100,10 +101,11 @@ const T = dict(
     updateFailedPlain: (v: string) => `Impossible de passer à Hivo ${v}. Réessaie plus tard.`,
     unreadable: "Ton espace de travail (étapes, notes, sorties) est illisible. Les modifications faites maintenant ne sont gardées que si tu repars de zéro.",
     unreadableBackup: "Ton espace de travail (étapes, notes, sorties) est illisible. Tu peux remettre sa dernière sauvegarde.",
+    unreadableIo: (e: string) => `Ton espace de travail (étapes, notes, sorties) ne peut pas être lu pour l'instant : ${e}. Le fichier est peut-être intact, donc rien n'est modifié : règle ça (un disque, une permission), puis Réessayer.`,
     newer: (v: number) => `Cet espace de travail a été enregistré par un Hivo plus récent (format ${v}). Il est affiché en lecture seule : mets Hivo à jour pour le modifier.`,
     restoreBackup: "Remettre la sauvegarde",
     startFresh: "Repartir de zéro",
-    startFreshConfirm: "Repartir de zéro ? Le fichier illisible est gardé sous workspace.json.bad.",
+    startFreshConfirm: "Repartir de zéro ? Le fichier illisible est gardé sous workspace.json.bad-<numéro>, à côté.",
     showFolder: "Afficher le dossier",
     actionFailed: (e: string) => `Ça n'a pas marché : ${e}`,
     closeSaveFailed: (e: string) => `${e} Hivo est resté ouvert pour ne rien perdre : essaie Réessayer, ou ferme encore pour quitter sans ces modifications.`,
@@ -128,7 +130,9 @@ function UpdateNotice() {
         ? tr(T).updateDownloading(version, pct)
         : status === "ready"
           ? tr(T).updateRestarting(version)
-          : updateErrorKind(update.error) === "readOnly"
+          : update.blockedBySave && update.error
+            ? update.error
+            : updateErrorKind(update.error) === "readOnly"
             ? tr(T).updateReadOnly
             : updateErrorKind(update.error) === "network"
               ? tr(T).updateOffline
@@ -232,7 +236,7 @@ const stripBtn = "rounded border border-rule-strong px-2 py-0.5 text-body hover:
  * restore the backup, start fresh (the broken file is kept), show the folder. */
 function NotSavingStrip() {
   const writable = useAppStore((s) => s.workspaceWritable);
-  const saveError = useAppStore((s) => s.saveError);
+  const unsaved = useAppStore((s) => s.unsavedChanges);
   const issue = useAppStore((s) => s.workspaceIssue);
   const demoMode = useAppStore((s) => s.demoMode);
   const retrySave = useAppStore((s) => s.retrySave);
@@ -240,7 +244,7 @@ function NotSavingStrip() {
   const startFresh = useAppStore((s) => s.startFreshWorkspace);
   const showFolder = useAppStore((s) => s.showConfigFolder);
   const [busy, setBusy] = useState(false);
-  if (demoMode || (writable && !saveError)) return null;
+  if (demoMode || (writable && !unsaved)) return null;
   const t = tr(T);
   const run = (fn: () => Promise<void>) => {
     setBusy(true);
@@ -249,14 +253,22 @@ function NotSavingStrip() {
       .finally(() => setBusy(false));
   };
   const text =
-    issue?.kind === "newer" ? t.newer(issue.version) : issue?.kind === "unreadable" ? (issue.hasBackup ? t.unreadableBackup : t.unreadable) : t.notSaving;
+    issue?.kind === "newer"
+      ? t.newer(issue.version)
+      : issue?.kind === "unreadable"
+        ? !issue.canReset
+          ? t.unreadableIo(issue.detail)
+          : issue.hasBackup
+            ? t.unreadableBackup
+            : t.unreadable
+        : t.notSaving;
   return (
     <div role="status" className="flex shrink-0 flex-wrap items-center gap-3 border-b border-warn/40 bg-warn/10 px-4 py-1.5 text-xs text-cream">
       <StatusDot color="var(--color-warn)" size={6} />
-      <span className="min-w-0 flex-1" title={issue?.kind === "unreadable" ? issue.detail : (saveError ?? undefined)}>
+      <span className="min-w-0 flex-1" title={issue?.kind === "unreadable" ? issue.detail : (unsaved ?? undefined)}>
         {text}
       </span>
-      {issue?.kind === "unreadable" && issue.hasBackup && (
+      {issue?.kind === "unreadable" && issue.canReset && issue.hasBackup && (
         <button onClick={() => run(restoreBackup)} disabled={busy} className={stripBtn}>
           {t.restoreBackup}
         </button>
@@ -266,7 +278,7 @@ function NotSavingStrip() {
           {t.retry}
         </button>
       )}
-      {issue?.kind === "unreadable" && (
+      {issue?.kind === "unreadable" && issue.canReset && (
         <ConfirmButton label={t.startFresh} confirmLabel={t.startFreshConfirm} onConfirm={() => run(startFresh)} disabled={busy} className={stripBtn} />
       )}
       {issue && (
@@ -353,7 +365,7 @@ export default function App() {
       if (await flushWorkspace()) return;
       warned = true;
       event.preventDefault();
-      const why = useAppStore.getState().saveError ?? "";
+      const why = useAppStore.getState().unsavedChanges ?? "";
       useAppStore.setState({ saveError: tr(T).closeSaveFailed(why) });
     });
     return () => void off.then((unlisten) => unlisten());

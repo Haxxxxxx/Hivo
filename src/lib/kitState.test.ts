@@ -42,6 +42,13 @@ describe("Accepted (W9)", () => {
     expect(isKitAccepted(p, { ...m, credits: [{ personId: "b", role: "Artist" }] }, [album])).toBe(false);
     expect(isKitAccepted(p, m, [{ ...album, releaseDate: "2026-12-11" }])).toBe(false);
   });
+  it("holds when the song's folder moved with its master (r2 #5)", () => {
+    const p = project([wav]);
+    const m = meta(p, [album]);
+    const moved = { ...p, path: "/q/Night Run.flp", renders: [file("/q/Night Run.wav", 100)] } as ProjectInfo;
+    const movedAlbum = { ...album, trackPaths: ["/q/Night Run.flp"] };
+    expect(isKitAccepted(moved, m, [movedAlbum])).toBe(true);
+  });
   it("kits accepted before the fingerprint existed stay accepted", () => {
     expect(isKitAccepted(project([wav]), { launchKit: { acceptedAtMs: 1 } }, [])).toBe(true);
     expect(isKitAccepted(project([wav]), {}, [])).toBe(false);
