@@ -8,8 +8,9 @@ voice memos, files, ideas inbox, session view (step 4), mDNS discovery.
 
 ## Security model
 **Since protocol 1.2 (2026-11), pairing, answer binding and the replay set
-work as described in "v1.2" at the end of this file**; what follows is v1,
-still accurate for phones paired before 1.2.
+work as described in "v1.2" at the end of this file** (with its confirmation
+code and computer id, "v1.2 addition"); what follows is v1, still accurate
+for phones paired before 1.2.
 - Opt-in: Settings → Phone sync, **off by default**. The HTTP listener exists
   only while it's on; turning it off closes the port.
 - Pairing: the desktop generates a random 32-byte key per pairing and shows a
@@ -402,13 +403,15 @@ nonce), same request AAD, same paths, same bare statuses.
   the pairing either. A phone whose `/v1/pair` answer was lost (no answer,
   `busy`) sends it once more a second later with the same key, and gets an
   answer (the desktop opens it with the key it stored).
-- Who can still pair: whoever scans the QR first within 5 minutes. A
-  second phone with the same code gets `expired`; one that pairs in your
-  place shows up under Paired phones, and your phone says `expired`. Same
-  advice as before: show the QR only to your own phone.
+- Who can pair: whoever scans the QR first within 5 minutes, but since
+  the "v1.2 addition" below nothing works until the user confirms on the
+  desktop that both screens show the same code. A second phone with the
+  same QR gets `expired`; one that pairs in your place shows a code your
+  phone doesn't (yours says `expired`): "Not my phone" drops it.
 
 ### Version negotiation and compatibility
-- `/v1/hello` (and `/v1/pair`) answer `{"desktopName", "hivoVersion", "protocol": "1.2"}`.
+- `/v1/hello` (and `/v1/pair`) answer `{"desktopName", "hivoVersion", "protocol": "1.2", "computerId"}`
+  (`computerId` and `/v1/pair`'s `"confirm": "pending"`: "v1.2 addition" below).
 - **New pairings always use v1.2** (the desktop only makes `v=2` QRs).
   A 1.1 phone scanning one says "This link is for another version of
   Hivo. Update the app." (`version`).
@@ -455,6 +458,88 @@ the request is refused as `busy` (fail closed). Nonces are printable ASCII
   `nuf6rptKkMpoSSsZ3ooSuRlVMKdcr0uHlFRRwqLz8bQ` (also checked with
   Node's own X25519 + HKDF).
 - `scripts/e2e-phone-sync.sh`: the real Rust server shows a `v=2` QR, the
-  phone's real client pairs with it, a second use is refused, then it
-  syncs, sends ideas and a sketch; an old-style pairing still works and
-  gets bound answers.
+  phone's real client pairs with it, a second use is refused, every request
+  gets `pending` until the code is confirmed on the desktop side (a test
+  hook: the phone test writes `<deviceId> <code>` to `confirm`, the server
+  confirms only when that's the code it shows; a wrong code is refused),
+  then it syncs, sends ideas and a sketch; an old-style pairing still works
+  and gets bound answers, with the same `computerId`.
+
+## v1.2 addition: confirmation code, computer id (2026-11)
+
+Documented as part of 1.2, not a new version: 1.2 had not shipped in a
+release yet (last tag v0.6.1), so no 1.2 phone exists without it. The
+protocol string stays `"1.2"`, the QR stays `v=2`, the key derivation and
+its test vector don't change.
+
+### Confirmation code
+Closes the gap left in 1.2: whoever scanned the QR first within its 5
+minutes paired in your place.
+- Both sides compute, never send, a 6-digit code from the pairing transcript:
+  ```
+  code = HKDF-SHA256(salt = token, ikm = desktop pub || phone pub (64 bytes),
+                     info = "hivo-sync-v1.2|confirm|" + deviceId, length = 4)
+         read as a big-endian u32, mod 1 000 000, zero-padded to 6 digits
+  ```
+  (`confirm_code` in `phone_sync.rs`, `confirmCode` in
+  `mobile/src/lib/handshake.ts`). Shown as `123 456`. The token is secret
+  (salt), so nobody without the QR can predict a code, and the phone's
+  public key is in it: a phone other than yours (or someone swapping the
+  key on the Wi-Fi) shows another code than the desktop, or none.
+- After a first `/v1/pair` opens, the QR is burnt as before, but the phone
+  is **not stored**: it waits in memory (`Confirming`: its key, the code,
+  the name it sent) and the `/v1/pair` answer adds `"confirm": "pending"`.
+  The phone shows the code ("Check the code on your computer",
+  `ConfirmPairing.tsx`) and asks `/v1/hello` every 2 s.
+- Until confirmed, every request opened with that key, on every path, gets
+  the sealed, bound `{"ok": false, "error": "pending"}` (the phone's
+  `pending` error); nothing reaches the webview or the inbox. A retried
+  `/v1/pair` gets the pair answer with `"confirm": "pending"` again.
+- Desktop (Settings → Phone sync): the code, the phone's name, **Confirm**
+  and **Not my phone** (`phone_sync_confirm`, `accept` true / false;
+  `status.confirming`). Confirm opens a native dialog repeating the code
+  (the webview can't confirm a phone by itself, like "Pair a phone"); only
+  then is the device stored in `phone-sync.json` with its key, name and
+  app version, and its requests work. Not my phone (or Forget) drops it.
+- A pairing not confirmed within 5 minutes (`CONFIRM_TTL_MS` = 300 000,
+  paired in `phone_sync.rs` and `mobile/src/lib/confirm.ts`), or still
+  waiting when Hivo quits, is dropped: its key opens nothing, the phone gets
+  a bare 401 and says `not-confirmed` ("pair again and check that both
+  codes match"). A user cancelling on the phone saves nothing either.
+- A re-pair ("Re-pair this phone"): the new key waits the same way while
+  the old key keeps working; Confirm replaces it, Not my phone keeps the
+  old one. A new pairing waiting counts against the 20-phone limit.
+- Unaffected: phones paired before 1.2 and phones already paired (stored)
+  never see `pending`.
+
+### Computer id
+- `phone-sync.json` holds `computerId`: 16 random bytes, base64url, made
+  once per install the first time a phone asks (same owner-only, atomic
+  file; not a secret). `/v1/hello` and `/v1/pair` return it.
+- The phone keeps it with the pairing (`Pairing.computerId`, also learned
+  from the first hello of a pairing made before). Pairing again:
+  - **same computer id** as the current pairing (a re-pair, or a new QR
+    from the same computer): the library cache, the notes waiting to sync
+    and the conflicts stay as they are (`carryOver` in `confirm.ts`);
+  - another id (or none): as before, only the phone's own text is kept and
+    re-based on the new computer's first snapshot.
+- Ideas and memos are bound to `computer:<id>` instead of the device id
+  (`extrasBinding`): pairing again with the same computer, even after
+  "Unpair", sends nothing again; another computer gets everything still on
+  the phone, as before. A binding saved by device id moves to the computer
+  id on the first sync after the update, without re-sending.
+- Limit: the desktop's inbox is keyed by device id, so after pairing again
+  with a new device id, statuses ("filed") of items sent under the old one
+  stop updating on the phone (they keep the last one they had). An
+  explicit "Unpair" still drops the library cache (the phone's own text
+  stays).
+
+### Tests (addition)
+- Rust: `confirmation_code_test_vector`, `a_pairing_is_pending_until_confirmed`,
+  `not_my_phone_and_a_timeout_drop_the_pairing` (reject, timeout, refused
+  re-pair, restart), `the_computer_id_is_stable_across_restarts`.
+- Phone: the same vector in `handshake.test.ts` (and a pending fake
+  desktop), `confirm.test.ts` (waiting, not-confirmed, timeout, cancel,
+  same-computer carry-over, extras binding).
+- Shared vector (same inputs as the key vector): code `654180` (also
+  checked with Node's HKDF).

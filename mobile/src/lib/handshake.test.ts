@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { fromB64url, toB64url } from "./bytes";
 import { createClient, openAnswer, SyncError, type Transport } from "./client";
 import { open, aad, openRequestFull, ReplayGuard, sealCall, sealResponse, type Reply } from "./envelope";
-import { completePairing, deriveDeviceKey, phoneDerive } from "./handshake";
+import { completePairing, confirmCode, deriveDeviceKey, phoneDerive, spacedCode } from "./handshake";
 import { parsePairingUrl, type PairOffer, type Pairing } from "./pairing";
 
 const rnd = (n: number) => new Uint8Array(randomBytes(n));
@@ -24,6 +24,21 @@ describe("pairing key derivation", () => {
     // The desktop's side gives the same key.
     const deskKey = deriveDeviceKey(x25519.getSharedSecret(desk, phonePub), fromB64url(token)!, deviceId, deskPub, phonePub);
     expect(toB64url(deskKey)).toBe(toB64url(key));
+  });
+
+  it("the confirmation code matches the desktop's test vector (phone_sync.rs confirmation_code_test_vector)", () => {
+    const deviceId = toB64url(new Uint8Array(16).fill(7));
+    const token = new Uint8Array(32).fill(0x55);
+    const deskPub = x25519.getPublicKey(seq(1));
+    const phonePub = x25519.getPublicKey(seq(0x21));
+    expect(confirmCode(token, deviceId, deskPub, phonePub)).toBe("654180");
+    expect(spacedCode("654180")).toBe("654 180");
+    // Another phone key, token or device: another code.
+    expect(confirmCode(token, deviceId, deskPub, new Uint8Array(32).fill(9))).not.toBe("654180");
+    expect(confirmCode(new Uint8Array(32).fill(0x56), deviceId, deskPub, phonePub)).not.toBe("654180");
+    expect(confirmCode(token, "other", deskPub, phonePub)).not.toBe("654180");
+    // Always 6 digits (leading zeros kept).
+    for (let i = 0; i < 50; i++) expect(confirmCode(rnd(32), "d", rnd(32), rnd(32))).toMatch(/^\d{6}$/);
   });
 
   it("refuses a low-order desktop key", () => {
@@ -47,14 +62,17 @@ describe("v2 pairing links", () => {
   });
 });
 
-/** A 1.2 desktop: one pending QR (`/v1/pair`, single use), then hello. */
-function desktop12(now = Date.now) {
+/** A 1.2 desktop: one pending QR (`/v1/pair`, single use), then hello.
+ * `confirm`: it keeps the pairing waiting (answers "pending") until `confirmed()`. */
+function desktop12(now = Date.now, confirm = false) {
   const secret = rnd(32);
   const desktopPub = x25519.getPublicKey(secret);
   const deviceId = toB64url(rnd(16));
   const token = rnd(32);
   let pending = true;
   let deviceKey: Uint8Array | null = null;
+  let waiting = false;
+  let code: string | null = null;
   const guard = new ReplayGuard();
   const offer: PairOffer = { deviceId, token: toB64url(token), desktopKey: toB64url(desktopPub), hosts: ["192.168.1.20"], port: 1, desktopName: "QR name" };
   const transport: Transport = async (url, init) => {
@@ -75,11 +93,14 @@ function desktop12(now = Date.now) {
     if (path === "/v1/pair" && pending) {
       pending = false;
       deviceKey = key;
+      waiting = confirm;
+      code = confirmCode(token, deviceId, desktopPub, fromB64url(env.x!)!);
     }
-    const reply: Reply = { ok: true, body: { desktopName: "Studio", hivoVersion: "0.7.0", protocol: "1.2", phone: req.body } };
+    const base = { desktopName: "Studio", hivoVersion: "0.7.0", protocol: "1.2", computerId: "computer-0123456789", phone: req.body };
+    const reply: Reply = waiting && path !== "/v1/pair" ? { ok: false, error: "pending" } : { ok: true, body: waiting ? { ...base, confirm: "pending" } : base };
     return { status: 200, text: async () => JSON.stringify(sealResponse(key, deviceId, path, reply, rnd, req.nonce)) };
   };
-  return { offer, transport, key: () => deviceKey };
+  return { offer, transport, key: () => deviceKey, code: () => code, confirmed: () => (waiting = false) };
 }
 
 describe("completePairing (v1.2)", () => {
@@ -96,6 +117,22 @@ describe("completePairing (v1.2)", () => {
     // The paired phone syncs.
     const call = createClient({ pairing: r.pairing, transport: desk.transport, random: rnd, now: Date.now });
     expect(await call("/v1/hello", {})).toMatchObject({ protocol: "1.2" });
+  });
+
+  it("a computer that waits for the code: the phone shows the same code, gets pending until it's confirmed", async () => {
+    const desk = desktop12(Date.now, true);
+    const r = await completePairing(desk.offer, opts(desk.transport));
+    expect(r.pending).toBe(true);
+    expect(r.code).toBe(desk.code());
+    expect(r.pairing.computerId).toBe("computer-0123456789");
+    const call = createClient({ pairing: r.pairing, transport: desk.transport, random: rnd, now: Date.now });
+    await expect(call("/v1/hello", {})).rejects.toMatchObject({ code: "pending" });
+    await expect(call("/v1/notes", { changes: [] })).rejects.toMatchObject({ code: "pending" });
+    desk.confirmed();
+    expect(await call("/v1/hello", {})).toMatchObject({ protocol: "1.2" });
+    // A computer that doesn't wait: not pending.
+    const plain = desktop12();
+    expect((await completePairing(plain.offer, opts(plain.transport))).pending).toBe(false);
   });
 
   it("an answer lost after the QR was burnt: sent again with the same key, answered", async () => {

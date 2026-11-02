@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import QRCode from "qrcode";
 import * as api from "../lib/tauri";
 import { formatDateTime } from "../lib/format";
-import type { PhonePairing, PhoneSyncStatus } from "../types";
+import type { PhoneConfirming, PhonePairing, PhoneSyncStatus } from "../types";
 import { usePhoneInbox } from "../store/usePhoneInbox";
 import { dict, tr } from "../i18n";
 import { errorText, errorReason } from "../lib/errors";
@@ -40,10 +40,16 @@ const T = dict(
     needsQr: "This computer listens on a new port now: this phone needs the new QR. Re-pair it.",
     unnamed: "Phone",
     security:
-      "Each phone gets its own key, made by the phone and this computer together when it pairs: the QR code only holds a one-time code, so a photo of it is useless afterwards. The key is kept on this computer in an owner-only file. Every request and answer is encrypted and signed with it; Forget deletes the key, and that phone can't sync any more.",
+      "Each phone gets its own key, made by the phone and this computer together when it pairs: the QR code only holds a one-time code, so a photo of it is useless afterwards. The key is kept on this computer in an owner-only file. Every request and answer is encrypted and signed with it; Forget deletes the key, and that phone can't sync any more. After the scan, the phone and this computer show the same 6-digit code: it works only once you confirm it here.",
     phoneOutdated: "Update Hivo on this phone: it's older than this computer's.",
     openFirewall: "Open the firewall settings",
     firewallWindows: "Phone says it's not on the same Wi-Fi? Windows Firewall may be blocking Hivo: allow it on private networks.",
+    confirmTitle: "Check the code",
+    confirmBody: (name: string) => `${name} scanned the code. Confirm only if your phone shows this same code: until then it can't sync.`,
+    confirmRepair: "Once you confirm, this phone's old key stops working.",
+    confirmYes: "Confirm",
+    confirmNo: "Not my phone",
+    confirmDropped: "Not confirmed within 5 minutes, the pairing is dropped.",
   },
   {
     title: "Synchro téléphone",
@@ -77,10 +83,16 @@ const T = dict(
     needsQr: "Cet ordi écoute maintenant sur un autre port : ce téléphone a besoin du nouveau QR. Réappaire-le.",
     unnamed: "Téléphone",
     security:
-      "Chaque téléphone a sa propre clé, créée par le téléphone et cet ordi ensemble à l'appairage : le QR code ne contient qu'un code à usage unique, donc une photo ne sert plus à rien ensuite. La clé est gardée sur cet ordi dans un fichier réservé à ton compte. Chaque requête et chaque réponse sont chiffrées et signées avec ; Oublier supprime la clé, et ce téléphone ne peut plus synchroniser.",
+      "Chaque téléphone a sa propre clé, créée par le téléphone et cet ordi ensemble à l'appairage : le QR code ne contient qu'un code à usage unique, donc une photo ne sert plus à rien ensuite. La clé est gardée sur cet ordi dans un fichier réservé à ton compte. Chaque requête et chaque réponse sont chiffrées et signées avec ; Oublier supprime la clé, et ce téléphone ne peut plus synchroniser. Après le scan, le téléphone et cet ordi affichent le même code à 6 chiffres\u202f: il ne marche qu'une fois confirmé ici.",
     phoneOutdated: "Mets Hivo à jour sur ce téléphone : il est plus ancien que celui de cet ordi.",
     openFirewall: "Ouvrir les réglages du pare-feu",
     firewallWindows: "Le téléphone dit qu'il n'est pas sur le même Wi-Fi ? Le pare-feu Windows bloque peut-être Hivo : autorise-le sur les réseaux privés.",
+    confirmTitle: "Vérifie le code",
+    confirmBody: (name: string) => `${name} a scanné le code. Ne confirme que si ton téléphone affiche ce même code\u202f: d'ici là, il ne peut pas synchroniser.`,
+    confirmRepair: "Dès que tu confirmes, l'ancienne clé de ce téléphone ne marche plus.",
+    confirmYes: "Confirmer",
+    confirmNo: "Pas mon téléphone",
+    confirmDropped: "Sans confirmation dans les 5 minutes, l'appairage est abandonné.",
   },
 );
 
@@ -102,15 +114,17 @@ export function PhoneSyncSettings() {
     };
   }, []);
 
-  // While the QR is up, watch for the phone's first hello.
+  const confirming = status?.confirming ?? [];
+  const waitingConfirm = confirming.length > 0;
+  // While the QR is up or a phone waits for "Confirm", watch for the phone (and the timeout).
   useEffect(() => {
-    if (!pairing) return;
+    if (!pairing && !waitingConfirm) return;
     const id = setInterval(() => {
       setNow(Date.now());
       api.phoneSyncStatus().then(setStatus).catch(() => {});
     }, 2000);
     return () => clearInterval(id);
-  }, [pairing]);
+  }, [pairing, waitingConfirm]);
 
   async function run(fn: () => Promise<PhoneSyncStatus>) {
     setBusy(true);
@@ -157,7 +171,42 @@ export function PhoneSyncSettings() {
   const paired = status?.devices ?? [];
   // Paired with this QR: stored (again, for a re-pair) since it was shown.
   const justPaired = pairing ? paired.find((d) => d.id === pairing.deviceId && d.lastSeenMs && d.pairedAtMs >= pairing.issuedAtMs) : undefined;
-  const expired = !!pairing && !justPaired && now > pairing.expiresAtMs;
+  // The phone of this QR scanned it and waits for "Confirm" (the QR is burnt).
+  const waitingThis = pairing ? confirming.find((c) => c.id === pairing.deviceId) : undefined;
+  const expired = !!pairing && !justPaired && !waitingThis && now > pairing.expiresAtMs;
+  const others = confirming.filter((c) => c.id !== waitingThis?.id);
+
+  const confirmBlock = (c: PhoneConfirming) => (
+    <div key={c.id} className="mt-3 rounded-lg border border-rule bg-raised p-4">
+      <div className="text-xs font-semibold text-cream">{t.confirmTitle}</div>
+      <p className="mt-1 text-xs leading-relaxed text-body">{t.confirmBody(c.name ?? t.unnamed)}</p>
+      <div className="mt-3 font-mono text-3xl tracking-[0.2em] text-cream" aria-live="polite">
+        {c.code.length === 6 ? `${c.code.slice(0, 3)} ${c.code.slice(3)}` : c.code}
+      </div>
+      {c.repair && <p className="mt-2 text-[11px] text-engrave">{t.confirmRepair}</p>}
+      <p className="mt-2 text-[11px] text-engrave">{t.confirmDropped}</p>
+      <div className="mt-3 flex gap-2">
+        <button
+          onClick={() => void run(() => api.phoneSyncConfirm(c.id, true))}
+          disabled={busy}
+          className="rounded-md bg-orange-500 px-3 py-2 text-sm font-medium text-chassis hover:bg-orange-400 disabled:opacity-40"
+        >
+          {t.confirmYes}
+        </button>
+        <button
+          onClick={() => {
+            // Its QR is burnt: nothing left to show in the pairing panel.
+            if (pairing?.deviceId === c.id) setPairing(null);
+            void run(() => api.phoneSyncConfirm(c.id, false));
+          }}
+          disabled={busy}
+          className="rounded-md border border-rule-strong px-3 py-2 text-sm text-body hover:bg-raised disabled:opacity-40"
+        >
+          {t.confirmNo}
+        </button>
+      </div>
+    </div>
+  );
 
   return (
     <section id="phone-sync">
@@ -199,7 +248,9 @@ export function PhoneSyncSettings() {
       {pairing && (
         <div className="mt-3 rounded-lg border border-rule bg-panel p-4">
           <p className="text-xs leading-relaxed text-body">{t.scan}</p>
-          {expired ? (
+          {waitingThis ? (
+            confirmBlock(waitingThis)
+          ) : expired ? (
             <div className="mt-3 text-xs text-warn">
               {t.expired}{" "}
               <button
@@ -218,7 +269,7 @@ export function PhoneSyncSettings() {
             </>
           )}
           <div className={`mt-2 text-xs ${justPaired ? "text-emerald-300" : "text-engrave"}`}>
-            {justPaired ? t.connected(justPaired.name ?? t.unnamed) : expired ? null : t.waiting}
+            {justPaired ? t.connected(justPaired.name ?? t.unnamed) : expired || waitingThis ? null : t.waiting}
           </div>
           <div className="mt-3 flex gap-2">
             <button
@@ -235,6 +286,8 @@ export function PhoneSyncSettings() {
           </div>
         </div>
       )}
+
+      {others.map(confirmBlock)}
 
       {error && <div className="mt-2 text-xs text-red-300">{error}</div>}
 

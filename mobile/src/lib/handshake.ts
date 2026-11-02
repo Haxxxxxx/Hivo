@@ -16,6 +16,32 @@ import type { RandomBytes } from "./envelope";
 import type { PairOffer, Pairing } from "./pairing";
 
 export const PAIR_INFO_PREFIX = "hivo-sync-v1.2|pair|";
+/** HKDF info prefix for the confirmation code (then the device id). */
+export const CONFIRM_INFO_PREFIX = "hivo-sync-v1.2|confirm|";
+
+/**
+ * The 6-digit code the phone and the computer both show after `/v1/pair`
+ * (same as `confirm_code` in phone_sync.rs): HKDF-SHA256(salt = token,
+ * ikm = desktop pub || phone pub, info = prefix + deviceId, 4 bytes) as a
+ * big-endian number, mod 1 000 000, zero-padded. Each side computes it; it's
+ * never sent. The user confirms on the computer that both match.
+ */
+export function confirmCode(token: Uint8Array, deviceId: string, desktopPub: Uint8Array, phonePub: Uint8Array): string {
+  const ikm = new Uint8Array(64);
+  ikm.set(desktopPub, 0);
+  ikm.set(phonePub, 32);
+  const b = hkdf(sha256, ikm, token, utf8(CONFIRM_INFO_PREFIX + deviceId), 4);
+  const n = ((b[0] << 24) >>> 0) + (b[1] << 16) + (b[2] << 8) + b[3];
+  return String(n % 1_000_000).padStart(6, "0");
+}
+
+/** `123456` -> `123 456`, as both screens show it. */
+export const spacedCode = (code: string): string => (code.length === 6 ? `${code.slice(0, 3)} ${code.slice(3)}` : code);
+
+/** A computer id from an answer (16 random bytes, b64url), or undefined. */
+export function computerIdOf(v: unknown): string | undefined {
+  return typeof v === "string" && /^[A-Za-z0-9_-]{16,64}$/.test(v) ? v : undefined;
+}
 
 /** The device key (same as `derive_device_key` in phone_sync.rs). */
 export function deriveDeviceKey(shared: Uint8Array, token: Uint8Array, deviceId: string, desktopPub: Uint8Array, phonePub: Uint8Array): Uint8Array {
@@ -34,7 +60,9 @@ export function phoneDerive(secret: Uint8Array, offer: Pick<PairOffer, "deviceId
   return { key: deriveDeviceKey(shared, token, offer.deviceId, desktopPub, phonePub), phonePub };
 }
 
-export type PairResult = { pairing: Pairing; desktopName: string; desktopVersion: string | null };
+/** `code`: what this phone shows. `pending`: the computer waits for the
+ * user to confirm that code there (every request gets "pending" until then). */
+export type PairResult = { pairing: Pairing; desktopName: string; desktopVersion: string | null; code: string; pending: boolean };
 
 /**
  * Pairs with the computer from a v1.2 QR: `/v1/pair` with the phone's
@@ -55,6 +83,7 @@ export async function completePairing(
   } finally {
     secret.fill(0);
   }
+  const code = confirmCode(fromB64url(offer.token)!, offer.deviceId, fromB64url(offer.desktopKey)!, derived.phonePub);
   const pairing: Pairing = {
     deviceId: offer.deviceId,
     key: toB64url(derived.key),
@@ -65,7 +94,7 @@ export async function completePairing(
   };
   const call = createClient({ pairing, transport: opts.transport, random: opts.random, now: opts.now, pairWith: toB64url(derived.phonePub) });
   const hello = { phoneName: opts.phoneName, appVersion: opts.appVersion };
-  let h: { desktopName?: unknown; hivoVersion?: unknown } | null;
+  let h: { desktopName?: unknown; hivoVersion?: unknown; computerId?: unknown; confirm?: unknown } | null;
   try {
     h = (await call(PAIR_PATH, hello)) as typeof h;
   } catch (e) {
@@ -76,5 +105,12 @@ export async function completePairing(
     h = (await call(PAIR_PATH, hello)) as typeof h;
   }
   const name = h && typeof h.desktopName === "string" && h.desktopName.trim() ? h.desktopName.trim().slice(0, 80) : offer.desktopName;
-  return { pairing: { ...pairing, desktopName: name }, desktopName: name, desktopVersion: h && typeof h.hivoVersion === "string" ? h.hivoVersion.slice(0, 20) : null };
+  const computerId = computerIdOf(h?.computerId);
+  return {
+    pairing: { ...pairing, desktopName: name, ...(computerId ? { computerId } : {}) },
+    desktopName: name,
+    desktopVersion: h && typeof h.hivoVersion === "string" ? h.hivoVersion.slice(0, 20) : null,
+    code,
+    pending: h?.confirm === "pending",
+  };
 }
