@@ -36,11 +36,10 @@ export interface CrewMember {
   /** Still being made (not Prep or later). */
   active: number;
   byStage: Partial<Record<SongStatus | "unsorted", number>>;
-  /** Last FL save across their songs, or 0. */
-  lastSessionMs: number;
 }
 
-/** Each person and their songs, most recently active first. */
+/** Each person and their songs, by name. No last-session time and no
+ * "most active first" ranking (guardrail 3): a row opens the person. */
 export function crewActivity(people: Person[], songs: ProjectInfo[], ws: Workspace): CrewMember[] {
   return people
     .map((person) => {
@@ -55,8 +54,7 @@ export function crewActivity(people: Person[], songs: ProjectInfo[], ws: Workspa
         songs: theirs,
         active: theirs.filter((s) => !isFinished(ws.songs[s.path]?.status)).length,
         byStage,
-        lastSessionMs: Math.max(0, ...theirs.map(lastSaveMs)),
       };
     })
-    .sort((a, b) => b.lastSessionMs - a.lastSessionMs);
+    .sort((a, b) => a.person.name.localeCompare(b.person.name));
 }

@@ -13,6 +13,7 @@
 //!
 //! Search only: no downloading, ever (YouTube terms, docs/GUARDRAILS.md).
 
+use crate::error::app_err;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -41,8 +42,8 @@ struct YoutubeSecrets {
 }
 
 fn secrets_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_config_dir().map_err(|e| format!("could not resolve app config dir: {e}"))?;
-    fs::create_dir_all(&dir).map_err(|e| format!("could not create config dir: {e}"))?;
+    let dir = app.path().app_config_dir().map_err(|e| app_err("config.dir", format!("could not resolve app config dir: {e}")))?;
+    fs::create_dir_all(&dir).map_err(|e| app_err("config.dir", format!("could not create config dir: {e}")))?;
     Ok(dir.join("youtube.json"))
 }
 
@@ -75,14 +76,14 @@ fn store_key(path: &Path, key: Option<String>) -> Result<(), String> {
         return match fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(format!("could not remove the YouTube key: {e}")),
+            Err(e) => Err(app_err("secret.remove", format!("could not remove the YouTube key: {e}")).into()),
         };
     };
     if !valid_key(&key) {
-        return Err("That doesn't look like a Google API key. Copy it again, without spaces.".to_string());
+        return Err(app_err("youtube.badKey", "That doesn't look like a Google API key. Copy it again, without spaces.").into());
     }
     let raw = serde_json::to_string_pretty(&YoutubeSecrets { api_key: Some(key) }).map_err(|e| e.to_string())?;
-    crate::cover::write_private(path, raw.as_bytes()).map_err(|e| format!("could not save the YouTube key: {e}"))
+    crate::cover::write_private(path, raw.as_bytes()).map_err(|e| app_err("secret.save", format!("could not save the YouTube key: {e}")).into())
 }
 
 #[derive(Serialize)]
@@ -125,13 +126,13 @@ pub struct YoutubeVideo {
 pub fn clean_query(q: &str) -> Result<String, String> {
     let q = q.split_whitespace().collect::<Vec<_>>().join(" ");
     if q.is_empty() {
-        return Err("Type something to search for.".to_string());
+        return Err(app_err("youtube.emptyQuery", "Type something to search for.").into());
     }
     if q.chars().count() > MAX_QUERY_CHARS {
-        return Err(format!("That search is too long ({MAX_QUERY_CHARS} characters max)."));
+        return Err(app_err("youtube.longQuery", format!("That search is too long ({MAX_QUERY_CHARS} characters max).")).with("max", MAX_QUERY_CHARS).into());
     }
     if q.chars().any(char::is_control) {
-        return Err("That search has characters YouTube won't take.".to_string());
+        return Err(app_err("youtube.badQuery", "That search has characters YouTube won't take.").into());
     }
     Ok(q)
 }
@@ -198,21 +199,25 @@ fn error_reason(v: &Value) -> String {
 fn explain_error(status: u16, v: &Value) -> String {
     let reason = error_reason(v);
     let message = v.pointer("/error/message").and_then(Value::as_str).unwrap_or_default().to_lowercase();
-    match (status, reason.as_str()) {
-        (_, "quotaExceeded" | "dailyLimitExceeded" | "rateLimitExceeded") => {
-            "Today's free YouTube quota (about 100 searches) is used up. It resets at midnight Pacific time. The YouTube search links still work.".to_string()
-        }
-        (_, "keyInvalid") => "YouTube rejected the API key. Check it in Settings → YouTube search.".to_string(),
-        (400, _) if message.contains("api key not valid") => "YouTube rejected the API key. Check it in Settings → YouTube search.".to_string(),
-        (_, "accessNotConfigured" | "SERVICE_DISABLED") => {
-            "This key's Google Cloud project doesn't have the YouTube Data API v3 turned on. Enable it in the Google Cloud console, then try again.".to_string()
-        }
-        (403, "ipRefererBlocked" | "forbidden" | "PERMISSION_DENIED") => {
-            "This key isn't allowed to call the YouTube Data API. Check its API restrictions in the Google Cloud console.".to_string()
-        }
-        (500..=599, _) => format!("YouTube is having trouble ({status}). Try again in a minute."),
-        _ => format!("YouTube search failed (HTTP {status})."),
-    }
+    let e = match (status, reason.as_str()) {
+        (_, "quotaExceeded" | "dailyLimitExceeded" | "rateLimitExceeded") => app_err(
+            "youtube.quota",
+            "Today's free YouTube quota (about 100 searches) is used up. It resets at midnight Pacific time. The YouTube search links still work.",
+        ),
+        (_, "keyInvalid") => app_err("youtube.keyRejected", "YouTube rejected the API key. Check it in Settings → YouTube search."),
+        (400, _) if message.contains("api key not valid") => app_err("youtube.keyRejected", "YouTube rejected the API key. Check it in Settings → YouTube search."),
+        (_, "accessNotConfigured" | "SERVICE_DISABLED") => app_err(
+            "youtube.apiOff",
+            "This key's Google Cloud project doesn't have the YouTube Data API v3 turned on. Enable it in the Google Cloud console, then try again.",
+        ),
+        (403, "ipRefererBlocked" | "forbidden" | "PERMISSION_DENIED") => app_err(
+            "youtube.keyNotAllowed",
+            "This key isn't allowed to call the YouTube Data API. Check its API restrictions in the Google Cloud console.",
+        ),
+        (500..=599, _) => app_err("youtube.trouble", format!("YouTube is having trouble ({status}). Try again in a minute.")),
+        _ => app_err("youtube.http", format!("YouTube search failed (HTTP {status}).")),
+    };
+    e.with("status", status).into()
 }
 
 type Cache = Mutex<HashMap<String, (Instant, Vec<YoutubeVideo>)>>;
@@ -241,14 +246,14 @@ fn remember(query: &str, videos: &[YoutubeVideo]) {
 /// One search call. `base` is injectable so tests can point it at a local server.
 async fn search_at(client: &reqwest::Client, base: &str, key: &str, query: &str) -> Result<Vec<YoutubeVideo>, String> {
     if !valid_key(key) {
-        return Err("The YouTube API key isn't valid. Fix it in Settings → YouTube search.".to_string());
+        return Err(app_err("youtube.badKey", "The YouTube API key isn't valid. Fix it in Settings → YouTube search.").into());
     }
     let max = MAX_RESULTS.to_string();
     let url = reqwest::Url::parse_with_params(
         &format!("{base}/search"),
         [("part", "snippet"), ("type", "video"), ("videoEmbeddable", "true"), ("videoCategoryId", MUSIC_CATEGORY), ("maxResults", max.as_str()), ("q", query)],
     )
-    .map_err(|e| format!("Couldn't build the YouTube search: {e}"))?;
+    .map_err(|e| app_err("youtube.badQuery", format!("Couldn't build the YouTube search: {e}")))?;
     let res = client
         .get(url)
         .header("X-Goog-Api-Key", key)
@@ -257,9 +262,9 @@ async fn search_at(client: &reqwest::Client, base: &str, key: &str, query: &str)
         .await
         .map_err(|e| {
             if e.is_timeout() {
-                "YouTube took too long to answer. Try again.".to_string()
+                String::from(app_err("youtube.timeout", "YouTube took too long to answer. Try again."))
             } else {
-                format!("Couldn't reach YouTube. Are you online? ({})", e.without_url())
+                app_err("youtube.offline", format!("Couldn't reach YouTube. Are you online? ({})", e.without_url())).into()
             }
         })?;
     let status = res.status().as_u16();
@@ -277,7 +282,7 @@ pub async fn search(app: &AppHandle, query: &str) -> Result<Vec<YoutubeVideo>, S
     if let Some(hit) = cached(&query) {
         return Ok(hit);
     }
-    let (key, _) = api_key(app).ok_or("No YouTube API key yet. Add one in Settings → YouTube search.")?;
+    let (key, _) = api_key(app).ok_or_else(|| String::from(app_err("youtube.noKey", "No YouTube API key yet. Add one in Settings → YouTube search.")))?;
     let videos = search_at(&reqwest::Client::new(), API_BASE, &key, &query).await?;
     remember(&query, &videos);
     Ok(videos)

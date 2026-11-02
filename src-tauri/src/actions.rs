@@ -1,3 +1,4 @@
+use crate::error::app_err;
 use crate::daws::{self, Daw};
 use crate::models::TemplateInfo;
 use std::fs;
@@ -6,22 +7,22 @@ use std::path::{Path, PathBuf};
 pub(crate) fn validate_name(name: &str) -> Result<&str, String> {
     let name = name.trim();
     if name.is_empty() {
-        return Err("name can't be empty".to_string());
+        return Err(app_err("name.empty", "name can't be empty").into());
     }
     if name.chars().any(|c| matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
         || name == "."
         || name == ".."
     {
-        return Err(r#"name can't contain / \ : * ? " < > |"#.to_string());
+        return Err(app_err("name.badChars", r#"name can't contain / \ : * ? " < > |"#).into());
     }
     // Windows drops a trailing dot or space from a file name (so "Envy."
     // would become another file than the one asked for), and refuses its
     // device names ("CON", "nul.flp") in any folder.
     if name.ends_with('.') || name.chars().any(char::is_control) {
-        return Err("name can't end with a dot or contain control characters".to_string());
+        return Err(app_err("name.badEnd", "name can't end with a dot or contain control characters").into());
     }
     if is_reserved_on_windows(name) {
-        return Err(format!("\"{name}\" is a name Windows reserves; pick another"));
+        return Err(app_err("name.reserved", format!("\"{name}\" is a name Windows reserves; pick another")).with("name", name).into());
     }
     Ok(name)
 }
@@ -49,7 +50,7 @@ pub(crate) fn free_path(dir: &Path, base: &str, ext: &str) -> PathBuf {
 /// is already there, so a copy can never overwrite or write through a link
 /// that appeared after a check. A half-written copy is removed.
 pub(crate) fn copy_file(from: &Path, to: &Path) -> Result<(), String> {
-    copy_new(from, to).map_err(|e| format!("could not copy {} → {}: {e}", from.display(), to.display()))
+    copy_new(from, to).map_err(|e| copy_failed(from, to, e))
 }
 
 fn copy_new(from: &Path, to: &Path) -> std::io::Result<()> {
@@ -73,10 +74,16 @@ fn copy_to_free_path(from: &Path, dir: &Path, base: &str, ext: &str) -> Result<P
         match copy_new(from, &to) {
             Ok(()) => return Ok(to),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(format!("could not copy {} → {}: {e}", from.display(), to.display())),
+            Err(e) => return Err(copy_failed(from, &to, e)),
         }
     }
-    Err(format!("no free name for \"{base}.{ext}\" in {}", dir.display()))
+    Err(app_err("io.noFreeName", format!("no free name for \"{base}.{ext}\" in {}", dir.display())).with("name", format!("{base}.{ext}")).into())
+}
+
+pub(crate) fn copy_failed(from: &Path, to: &Path, e: std::io::Error) -> String {
+    app_err("io.copy", format!("could not copy {} → {}: {e}", from.display(), to.display()))
+        .with("name", from.file_name().unwrap_or_default().to_string_lossy().to_string())
+        .into()
 }
 
 /// Where FL keeps its factory templates. Windows: `<install>/Data/Templates`.
@@ -200,13 +207,13 @@ pub fn create_project(app: tauri::AppHandle, template_path: String, parent_folde
 pub(crate) fn check_template(scope: &crate::scope::Scope, fl: Option<String>, template_path: &str) -> Result<(), String> {
     let template = Path::new(template_path);
     let is_flp = template.extension().is_some_and(|e| e.eq_ignore_ascii_case("flp"));
-    let real = template.canonicalize().map_err(|_| format!("template not found: {template_path}"))?;
+    let real = template.canonicalize().map_err(|_| template_missing(template_path))?;
     let factory = fl.as_deref().and_then(factory_templates_dir).and_then(|d| d.canonicalize().ok());
     let allowed = factory.is_some_and(|d| real.starts_with(d))
         || default_template_for(fl).is_some_and(|d| Path::new(&d).canonicalize().is_ok_and(|d| d == real))
         || scope.fl_project(template_path).is_ok();
     if !is_flp || !allowed {
-        return Err(format!("not an FL Studio template: {template_path}"));
+        return Err(app_err("template.notFl", format!("not an FL Studio template: {template_path}")).with("path", template_path).into());
     }
     Ok(())
 }
@@ -218,23 +225,23 @@ fn create_in(template_path: &str, parent_folder: &Path, name: &str, in_scope: im
     let name = validate_name(name)?;
     let template = Path::new(template_path);
     if !template.is_file() {
-        return Err(format!("template not found: {template_path}"));
+        return Err(template_missing(template_path));
     }
     in_scope(parent_folder)?;
     let dir = parent_folder.join(name);
     let target = dir.join(format!("{name}.flp"));
     if fs::symlink_metadata(&target).is_ok() {
-        return Err(format!("a project named \"{name}\" already exists there"));
+        return Err(project_exists(name));
     }
     match fs::create_dir(&dir) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(format!("could not create project folder: {e}")),
+        Err(e) => return Err(app_err("project.mkdir", format!("could not create project folder: {e}")).into()),
     }
     in_scope(&dir)?;
     copy_file(template, &target).map_err(|e| {
         if target.exists() {
-            format!("a project named \"{name}\" already exists there")
+            project_exists(name)
         } else {
             e
         }
@@ -242,9 +249,17 @@ fn create_in(template_path: &str, parent_folder: &Path, name: &str, in_scope: im
     Ok(target.to_string_lossy().to_string())
 }
 
+fn template_missing(path: &str) -> String {
+    app_err("template.missing", format!("template not found: {path}")).with("path", path).into()
+}
+
+fn project_exists(name: &str) -> String {
+    app_err("project.exists", format!("a project named \"{name}\" already exists there")).with("name", name).into()
+}
+
 /// The project file's own extension, as written (`flp`, `als`, `RPP`…).
 fn project_ext(path: &Path) -> Result<String, String> {
-    Daw::of_project(path).ok_or_else(|| format!("not a project file: {}", path.display()))?;
+    Daw::of_project(path).ok_or_else(|| String::from(app_err("scope.notProject", format!("not a project file: {}", path.display())).with("path", path.display().to_string())))?;
     Ok(path.extension().unwrap_or_default().to_string_lossy().to_string())
 }
 
@@ -259,11 +274,11 @@ pub fn duplicate_project(app: tauri::AppHandle, project_path: String, new_name: 
 fn duplicate(project_path: String, new_name: String) -> Result<String, String> {
     let new_name = validate_name(&new_name)?;
     let src = Path::new(&project_path);
-    let dir = src.parent().ok_or("invalid project path")?;
+    let dir = src.parent().ok_or_else(|| String::from(app_err("project.badPath", "invalid project path")))?;
     let ext = project_ext(src)?;
     let target = dir.join(format!("{new_name}.{ext}"));
     if target.exists() {
-        return Err(format!("\"{new_name}.{ext}\" already exists in that folder"));
+        return Err(app_err("project.nameTaken", format!("\"{new_name}.{ext}\" already exists in that folder")).with("name", format!("{new_name}.{ext}")).into());
     }
     copy_file(src, &target)?;
     Ok(target.to_string_lossy().to_string())
@@ -280,7 +295,7 @@ pub fn restore_backup(app: tauri::AppHandle, backup_path: String, project_path: 
     scope.project(&project_path)?;
     // Only a backup the last scan listed (the scan only walks linked folders).
     if !crate::scanner::is_listed_backup(Path::new(&backup_path)) || scope.known_file(&backup_path).is_err() {
-        return Err(format!("not a backup of a linked project: {backup_path}"));
+        return Err(app_err("backup.notListed", format!("not a backup of a linked project: {backup_path}")).with("path", backup_path.as_str()).into());
     }
     restore(backup_path, project_path)
 }
@@ -288,12 +303,12 @@ pub fn restore_backup(app: tauri::AppHandle, backup_path: String, project_path: 
 fn restore(backup_path: String, project_path: String) -> Result<String, String> {
     let backup = Path::new(&backup_path);
     let project = Path::new(&project_path);
-    let dir = project.parent().ok_or("invalid project path")?;
+    let dir = project.parent().ok_or_else(|| String::from(app_err("project.badPath", "invalid project path")))?;
     let project_name = project.file_stem().unwrap_or_default().to_string_lossy();
     let ext = project_ext(project)?;
     let daw = Daw::of_backup_file(backup)
         .or_else(|| Daw::of_project(backup))
-        .ok_or_else(|| format!("not a backup file: {backup_path}"))?;
+        .ok_or_else(|| String::from(app_err("backup.notBackup", format!("not a backup file: {backup_path}")).with("path", backup_path.as_str())))?;
 
     let when = if daw == Daw::FlStudio {
         let stem = backup.file_stem().unwrap_or_default().to_string_lossy().to_string();
@@ -382,11 +397,11 @@ pub fn backups_on_risky_volumes(paths: Vec<String>) -> Vec<String> {
 /// only with the user's explicit OK.
 fn check_cleanup(paths: &[String], allow_permanent: bool, listed: impl Fn(&Path) -> bool, risky: impl Fn(&Path) -> bool) -> Result<(), String> {
     if let Some(p) = paths.iter().find(|p| !may_trash(Path::new(p), &listed)) {
-        return Err(format!("refusing to delete non-backup file: {p}"));
+        return Err(app_err("backup.notListed", format!("refusing to delete non-backup file: {p}")).with("path", p.as_str()).into());
     }
     if !allow_permanent {
         if let Some(p) = paths.iter().find(|p| risky(Path::new(p))) {
-            return Err(format!("{p} is on a removable or network drive, where it would be deleted permanently"));
+            return Err(app_err("backup.permanent", format!("{p} is on a removable or network drive, where it would be deleted permanently")).with("path", p.as_str()).into());
         }
     }
     Ok(())
@@ -421,8 +436,8 @@ async fn trash_listed(paths: Vec<String>, allow_permanent: Option<bool>, linked:
         ctx.delete_all(&paths)
     })
     .await
-    .map_err(|e| format!("cleanup failed: {e}"))?
-    .map_err(|e| format!("could not move backups to the Recycle Bin: {e}"))?;
+    .map_err(|e| app_err("backup.trash", format!("cleanup failed: {e}")))?
+    .map_err(|e| app_err("backup.trash", format!("could not move backups to the Recycle Bin: {e}")))?;
     Ok(count)
 }
 

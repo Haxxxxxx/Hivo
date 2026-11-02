@@ -93,6 +93,14 @@ describe("digger links", () => {
     expect(titleKey("Éclair_Prod (2024)!")).toBe("éclair prod 2024");
   });
 
+  it("matches a decomposed (macOS) file name to a composed title", () => {
+    const nfd = "Été Beat";
+    const nfc = "Été Beat";
+    expect(titleKey(nfd)).toBe(titleKey(nfc));
+    expect(titleKey(nfd)).toBe("été beat");
+    expect(matchBeat({ title: nfc }, [{ name: nfd }])).toEqual({ name: nfd });
+  });
+
   it("lets the user's own link win over the name match", () => {
     const beats = [{ name: "Night", path: "/b/night.mp3" }, { name: "Other", path: "/b/other.mp3" }];
     expect(matchBeat({ title: "Night" }, beats)).toBe(beats[0]);

@@ -7,6 +7,7 @@
 //! Results are cached per (path, modified time, size) in `beat-facts.json`
 //! in the config dir, so a beat is decoded once.
 
+use crate::error::app_err;
 use crate::digger::{analyze_beat, BeatFacts};
 use crate::scope::{is_beat_file, is_unsupported_audio, Scope};
 use serde::{Deserialize, Serialize};
@@ -125,7 +126,7 @@ pub async fn scan_beats(app: AppHandle) -> Result<BeatScan, String> {
     }
     tauri::async_runtime::spawn_blocking(move || list_beats(&folders))
         .await
-        .map_err(|e| format!("beat scan failed: {e}"))
+        .map_err(|e| app_err("task.failed", format!("beat scan failed: {e}")).into())
 }
 
 // ---------------------------------------------------------------- analysis
@@ -167,7 +168,7 @@ pub fn facts_for(cache: &mut FactsCache, path: &str, modified_at_ms: i64, size_b
     }
     let entry = match analyse() {
         Ok(f) => CachedFacts { modified_at_ms, size_bytes, facts: Some(f), error: None },
-        Err(e) => CachedFacts { modified_at_ms, size_bytes, facts: None, error: Some(e.chars().take(300).collect()) },
+        Err(e) => CachedFacts { modified_at_ms, size_bytes, facts: None, error: Some(crate::error::clip(&e, 300)) },
     };
     if cache.len() >= MAX_CACHED && !cache.contains_key(path) {
         // Drop entries for files that are gone; the cache stays bounded either way.
@@ -186,8 +187,8 @@ fn cache() -> &'static Mutex<Option<FactsCache>> {
 }
 
 fn cache_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_config_dir().map_err(|e| format!("could not resolve app config dir: {e}"))?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create config dir: {e}"))?;
+    let dir = app.path().app_config_dir().map_err(|e| app_err("config.dir", format!("could not resolve app config dir: {e}")))?;
+    std::fs::create_dir_all(&dir).map_err(|e| app_err("config.dir", format!("could not create config dir: {e}")))?;
     Ok(dir.join(CACHE_FILE))
 }
 
@@ -201,7 +202,7 @@ fn read_cache(path: &Path) -> FactsCache {
 #[tauri::command]
 pub async fn analyze_beats(app: AppHandle, paths: Vec<String>) -> Result<Vec<BeatAnalysis>, String> {
     if paths.len() > MAX_ANALYZE {
-        return Err(format!("{MAX_ANALYZE} beats per call max."));
+        return Err(app_err("beats.tooMany", format!("{MAX_ANALYZE} beats per call max.")).with("max", MAX_ANALYZE).into());
     }
     let scope = Scope::load(&app)?;
     let file = cache_path(&app)?;
@@ -221,7 +222,7 @@ pub async fn analyze_beats(app: AppHandle, paths: Vec<String>) -> Result<Vec<Bea
                     Err(e) => return BeatAnalysis { path, facts: None, error: Some(e) },
                 };
                 let Ok(meta) = std::fs::metadata(&real) else {
-                    return BeatAnalysis { path, facts: None, error: Some("The file is gone.".to_string()) };
+                    return BeatAnalysis { path, facts: None, error: Some(app_err("beats.gone", "The file is gone.").into()) };
                 };
                 let (entry, fresh) = facts_for(cache, &path, mtime_ms(&meta), meta.len(), || analyze_beat(&real, false).map(|(f, _)| f));
                 changed |= fresh;
@@ -237,7 +238,7 @@ pub async fn analyze_beats(app: AppHandle, paths: Vec<String>) -> Result<Vec<Bea
         out
     })
     .await
-    .map_err(|e| format!("beat analysis stopped: {e}"))
+    .map_err(|e| app_err("task.failed", format!("beat analysis stopped: {e}")).into())
 }
 
 #[cfg(test)]

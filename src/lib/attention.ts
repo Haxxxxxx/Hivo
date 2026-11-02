@@ -1,5 +1,5 @@
 import type { ProjectInfo, SongStatus, Workspace } from "../types";
-import { dict, tr } from "../i18n";
+import { dict, plural, tr } from "../i18n";
 import { isFinished, missingPlugins, missingSamples, renderFreshness } from "./songs";
 
 // The dashboard's "Needs attention" carousel: songs with something to fix,
@@ -24,14 +24,14 @@ const T = dict(
   {
     noMixdown: "Finished, but no mixdown yet",
     staleMixdown: "Mixdown is older than the project",
-    missingSamples: (n: number) => `${n} sample${n === 1 ? "" : "s"} missing`,
-    missingPlugins: (n: number) => `${n} plugin${n === 1 ? "" : "s"} not installed here`,
+    missingSamples: (n: number) => `${n} sample${plural(n, "", "s")} missing`,
+    missingPlugins: (n: number) => `${n} plugin${plural(n, "", "s")} not installed here`,
   },
   {
     noMixdown: "Fini, mais pas encore de mixdown",
     staleMixdown: "Le mixdown est plus vieux que le projet",
-    missingSamples: (n: number) => `${n} sample${n === 1 ? "" : "s"} manquant${n === 1 ? "" : "s"}`,
-    missingPlugins: (n: number) => `${n} plugin${n === 1 ? "" : "s"} pas installé${n === 1 ? "" : "s"} ici`,
+    missingSamples: (n: number) => `${n} sample${plural(n, "", "s")} manquant${plural(n, "", "s")}`,
+    missingPlugins: (n: number) => `${n} plugin${plural(n, "", "s")} pas installé${plural(n, "", "s")} ici`,
   },
 );
 

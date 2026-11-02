@@ -7,6 +7,7 @@
 //! settings themselves only change through native pickers or detection run
 //! in Rust (settings.rs), so the webview can't widen them either.
 
+use crate::error::app_err;
 use crate::daws::Daw;
 use crate::models::Settings;
 use crate::paths::is_remote_or_device;
@@ -25,7 +26,7 @@ pub struct Scope {
     /// project folders: beats are never projects, songs never beats.
     beat_folders: Vec<PathBuf>,
     beat_roots: Vec<PathBuf>,
-    /// Sample libraries, resolved: walked by the scanner's resolver only.
+    /// Sample libraries, as saved: walked by the scanner's resolver only.
     sample_folders: Vec<PathBuf>,
     fl_studio: Option<String>,
     ffmpeg: Option<String>,
@@ -67,8 +68,14 @@ pub fn is_unsupported_audio(path: &Path) -> bool {
     matches!(ext.as_str(), "opus" | "aac" | "wma" | "aif" | "aiff" | "webm" | "weba" | "alac" | "ape")
 }
 
-fn denied(what: &str, path: &str) -> String {
-    format!("{what} isn't inside a folder linked in Settings: {path}")
+fn denied(what: &'static str, path: &str) -> String {
+    let noun = match what {
+        "project" => "That project",
+        "folder" => "That folder",
+        "lead" => "That lead",
+        _ => "That file",
+    };
+    app_err("scope.denied", format!("{noun} isn't inside a folder linked in Settings: {path}")).with("what", what).with("path", path).into()
 }
 
 impl Scope {
@@ -79,7 +86,10 @@ impl Scope {
             output: s.output_folder.as_deref().and_then(|f| Some((PathBuf::from(f), resolve(Path::new(f))?))),
             beat_folders: s.beat_folders.iter().map(PathBuf::from).filter(|f| resolve(f).is_some()).collect(),
             beat_roots: s.beat_folders.iter().filter_map(|f| resolve(Path::new(f))).collect(),
-            sample_folders: s.sample_folders.iter().filter_map(|f| resolve(Path::new(f))).collect(),
+            // As saved, like the linked folders: a library on a mapped drive
+            // (`Z:\Samples`) resolves to `\\?\UNC\nas\share\Samples`, which
+            // the resolver would refuse to walk as a network path.
+            sample_folders: s.sample_folders.iter().map(PathBuf::from).filter(|f| resolve(f).is_some()).collect(),
             fl_studio: s.fl_studio_path.clone(),
             ffmpeg: s.ffmpeg_path.clone(),
             render_format: s.render_format.clone(),
@@ -114,9 +124,9 @@ impl Scope {
 
     /// A DAW project file inside a linked folder.
     pub fn project(&self, path: &str) -> Result<PathBuf, String> {
-        let real = resolve(Path::new(path)).filter(|p| self.in_roots(p)).ok_or_else(|| denied("That project", path))?;
+        let real = resolve(Path::new(path)).filter(|p| self.in_roots(p)).ok_or_else(|| denied("project", path))?;
         if Daw::of_project(&real).is_none() || !real.is_file() {
-            return Err(format!("not a project file: {path}"));
+            return Err(app_err("scope.notProject", format!("not a project file: {path}")).with("path", path).into());
         }
         Ok(PathBuf::from(path))
     }
@@ -125,7 +135,7 @@ impl Scope {
     pub fn fl_project(&self, path: &str) -> Result<PathBuf, String> {
         let p = self.project(path)?;
         if Daw::of_project(&p) != Some(Daw::FlStudio) {
-            return Err(format!("not an FL Studio project: {path}"));
+            return Err(app_err("scope.notFlProject", format!("not an FL Studio project: {path}")).with("path", path).into());
         }
         Ok(p)
     }
@@ -135,7 +145,7 @@ impl Scope {
         resolve(Path::new(path))
             .filter(|p| self.in_roots(p) && p.is_dir())
             .map(|_| PathBuf::from(path))
-            .ok_or_else(|| denied("That folder", path))
+            .ok_or_else(|| denied("folder", path))
     }
 
     /// Any file in a linked folder or the export folder (what the app shows,
@@ -145,15 +155,15 @@ impl Scope {
         resolve(Path::new(path))
             .filter(|p| self.in_roots(p) || self.in_output(p) || self.in_beat_leads(p) || self.in_beat_memos(p))
             .map(|_| PathBuf::from(path))
-            .ok_or_else(|| denied("That file", path))
+            .ok_or_else(|| denied("file", path))
     }
 
     /// A lead file in a beats folder's `_leads` (the one file the app may
     /// delete there).
     pub fn lead_file(&self, path: &str) -> Result<PathBuf, String> {
-        let real = resolve(Path::new(path)).filter(|p| self.in_beat_leads(p)).ok_or_else(|| denied("That lead", path))?;
+        let real = resolve(Path::new(path)).filter(|p| self.in_beat_leads(p)).ok_or_else(|| denied("lead", path))?;
         if real.extension().and_then(|e| e.to_str()) != Some("md") || !real.is_file() {
-            return Err(format!("not a lead file: {path}"));
+            return Err(app_err("scope.notLead", format!("not a lead file: {path}")).with("path", path).into());
         }
         Ok(real)
     }
@@ -163,7 +173,7 @@ impl Scope {
         let p = self.known_file(path)?;
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
         if !matches!(ext.as_str(), "wav" | "mp3" | "ogg" | "flac") {
-            return Err(format!("not a mixdown: {path}"));
+            return Err(app_err("scope.notMixdown", format!("not a mixdown: {path}")).with("path", path).into());
         }
         Ok(p)
     }
@@ -172,9 +182,9 @@ impl Scope {
     pub fn beat(&self, path: &str) -> Result<PathBuf, String> {
         let real = resolve(Path::new(path))
             .filter(|p| self.beat_roots.iter().any(|r| inside(p, r)))
-            .ok_or_else(|| format!("That beat isn't inside a beats folder linked in Settings: {path}"))?;
+            .ok_or_else(|| String::from(app_err("scope.beatDenied", format!("That beat isn't inside a beats folder linked in Settings: {path}")).with("path", path)))?;
         if !is_beat_file(&real) || !real.is_file() {
-            return Err(format!("not a beat (mp3, wav, ogg, flac or m4a): {path}"));
+            return Err(app_err("scope.notBeat", format!("not a beat (mp3, wav, ogg, flac or m4a): {path}")).with("path", path).into());
         }
         // The resolved path: what was checked is what gets opened.
         Ok(real)
@@ -185,14 +195,14 @@ impl Scope {
         &self.beat_folders
     }
 
-    /// The sample libraries, resolved.
+    /// The sample libraries, as saved (what the resolver walks).
     pub fn sample_folders(&self) -> &[PathBuf] {
         &self.sample_folders
     }
 
     /// The export folder from Settings, as saved.
     pub fn output(&self) -> Result<&Path, String> {
-        self.output.as_ref().map(|(o, _)| o.as_path()).ok_or_else(|| "Set an export folder in Settings first.".to_string())
+        self.output.as_ref().map(|(o, _)| o.as_path()).ok_or_else(|| app_err("scope.noOutput", "Set an export folder in Settings first.").into())
     }
 
     /// The linked folders, as saved (what the scan walks).
@@ -206,8 +216,8 @@ impl Scope {
 
     /// The FL Studio executable from Settings, if it is one.
     pub fn fl_studio(&self) -> Result<PathBuf, String> {
-        let set = self.fl_studio.as_deref().ok_or("FL Studio isn't set (see Settings).")?;
-        fl_studio_binary(Path::new(set)).ok_or_else(|| format!("The FL Studio path in Settings isn't FL Studio: {set}"))
+        let set = self.fl_studio.as_deref().ok_or_else(|| String::from(app_err("scope.noFlStudio", "FL Studio isn't set (see Settings).")))?;
+        fl_studio_binary(Path::new(set)).ok_or_else(|| app_err("scope.badFlStudio", format!("The FL Studio path in Settings isn't FL Studio: {set}")).with("path", set).into())
     }
 
     /// The ffmpeg path from Settings, if it is ffmpeg.
@@ -246,11 +256,11 @@ pub fn is_ffmpeg(path: &Path) -> bool {
 }
 
 /// One folder name under the export folder (an album's renders or
-/// packages): no separators, no `..`, no leading dots. None if nothing usable is left.
+/// packages), cleaned like a file name (`audio::safe_name`: no separators,
+/// no leading or trailing dots, no reserved Windows names). None if nothing
+/// usable is left.
 pub fn safe_subfolder(sub: &str) -> Option<String> {
-    let name = sub.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
-    let name = name.trim().trim_start_matches('.').trim();
-    (!name.is_empty()).then(|| name.to_string())
+    crate::audio::safe_name_opt(sub)
 }
 
 #[cfg(test)]
@@ -388,6 +398,27 @@ pub mod tests {
         assert_eq!(safe_subfolder(" .hidden ").as_deref(), Some("hidden"));
         assert_eq!(safe_subfolder("Night Run (EP)").as_deref(), Some("Night Run (EP)"));
         assert_eq!(safe_subfolder("   ").as_deref(), None);
+        // Windows would refuse these as folder names (or drop the dots).
+        assert_eq!(safe_subfolder("CON").as_deref(), Some("_CON"));
+        assert_eq!(safe_subfolder("lpt1.ep").as_deref(), Some("_lpt1.ep"));
+        assert_eq!(safe_subfolder("Night Run...").as_deref(), Some("Night Run"));
+        assert_eq!(safe_subfolder("Tape\u{7}").as_deref(), Some("Tape_"));
+    }
+
+    #[test]
+    fn sample_libraries_are_walked_as_saved() {
+        let f = fixture("samples-as-saved");
+        let lib = f.dir.join("Packs");
+        fs::create_dir_all(&lib).unwrap();
+        // Saved through a symlink (a stand-in for a mapped drive): walked by
+        // the saved path, not the resolved one.
+        #[cfg(unix)]
+        {
+            let link = f.dir.join("Z");
+            std::os::unix::fs::symlink(&lib, &link).unwrap();
+            let settings = Settings { sample_folders: vec![s(&link), r"\\nas\share\Samples".to_string()], ..Settings::default() };
+            assert_eq!(Scope::from_settings(&settings).sample_folders(), &[link]);
+        }
     }
 
     /// The checks each command runs before touching anything (render,

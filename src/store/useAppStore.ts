@@ -7,11 +7,12 @@ import { ALBUM_COLORS, EMPTY_WORKSPACE, migrateWorkspace, newId, newerWorkspaceV
 import { logStageChanges } from "../lib/stageLog";
 import { addColumn, moveCard, moveColumn, removeColumn, renameColumn } from "../lib/pipeline";
 import type { DashboardLayout } from "../lib/dashboardLayout";
-import { applyRelinks, findRelinks, isUnder, rootRelinks, type Relink } from "../lib/relink";
+import { applyRelinks, emptyScanMemory, isUnder, relinksAfterScan, rootRelinks, type Relink, type ScanMemory } from "../lib/relink";
 import { setNote } from "../lib/notes";
 import { relinkBeatNotes } from "../lib/digger";
 import { addRenames } from "../lib/phoneSync";
 import { canRenderInApp, dawOf, splitRenderable } from "../lib/daws";
+import { renderSampleNote } from "../lib/renderNotes";
 import type {
   DetectedFolder,
   CaptionLang,
@@ -37,6 +38,7 @@ import type {
 } from "../types";
 
 import type { FeedbackDraft } from "../lib/feedback";
+import { errorReason, errorText, errorTextOr } from "../lib/errors";
 
 const DEFAULT_SETTINGS: Settings = {
   watchedFolders: [],
@@ -161,6 +163,9 @@ interface AppState {
   /** Linked folders the last scan couldn't read (unplugged drive, unmounted
    * share): their songs are missing for now, never taken for moved. */
   unreachable: string[];
+  /** Symlinked folders / junctions under the linked folders the last scan
+   * didn't follow (how many, a few of them). */
+  skippedLinks: { count: number; examples: string[] };
   /** A linked folder that moved: pick its new place (native picker in Rust);
    * every song's data under it follows. */
   repointFolder: (folder: string) => Promise<void>;
@@ -408,6 +413,10 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null;
 /** The daily update re-check (started once by init). */
 let updateTimer: ReturnType<typeof setInterval> | null = null;
 let scanSeq = 0;
+/** What the relink check remembers between scans (lib/relink.ts): a record
+ * moves only once its file was missing from two scans in a row. */
+let scanMemory: ScanMemory = emptyScanMemory();
+const NO_LINKS = { count: 0, examples: [] as string[] };
 
 /** Errors the store throws (shown as they are in the UI). */
 const STORE_ERRORS = dict(
@@ -431,7 +440,7 @@ const STORE_ERRORS = dict(
     sample: "Ce sont des données d'exemple : lie d'abord un vrai dossier de projets.",
     needFl: "Indique d'abord le chemin de FL Studio dans les Réglages.",
     needExport: "Choisis d'abord un dossier d'export dans les Réglages.",
-    needExportForPackages: "Choisis d'abord un dossier d'export dans les Réglages : les paquets vont dans <dossier d'export>/Packages.",
+    needExportForPackages: "Choisis d'abord un dossier d'export dans les Réglages : les packs zip vont dans <dossier d'export>/Packages.",
     exportRunning: "Un export est déjà en cours.",
     repointReadOnly:
       "Ton espace de travail ne peut pas être enregistré pour l'instant, donc ses sons n'ont pas pu suivre le dossier. Rien n'a changé : règle d'abord le bandeau en haut, puis réessaie.",
@@ -439,7 +448,7 @@ const STORE_ERRORS = dict(
     updateUnsaved: (why: string) => `La mise à jour a été arrêtée parce que tes modifications n'ont pas pu être enregistrées avant. ${why}`,
     packaging: "Paquet déjà en cours.",
     notLoaded: "Ton espace de travail n'est pas encore chargé : réessaie dans un instant.",
-    nothingToPackage: "Rien à empaqueter.",
+    nothingToPackage: "Rien à mettre en pack zip.",
   },
 );
 
@@ -460,12 +469,12 @@ const STORE_TEXT = dict(
   {
     renderFlOnly: (daw: string, tip: string) => `Le rendu depuis Hivo marche avec les projets FL Studio. Exporte celui-ci depuis ${daw} : ${tip}`,
     notFl: (daw: string) => `Pas un projet FL Studio. Exporte-le depuis ${daw}.`,
-    packageFlOnly: (daw: string) => `Les paquets marchent avec les projets FL Studio. Dans ${daw}, utilise sa propre fonction « rassembler et enregistrer ».`,
+    packageFlOnly: (daw: string) => `Les packs zip marchent avec les projets FL Studio. Dans ${daw}, utilise sa propre fonction « rassembler et enregistrer ».`,
     saveFailed: (e: string) => `Impossible d'enregistrer tes modifications (étapes, notes, sorties) : ${e}`,
-    scanFailed: (e: string) => `Échec de l'analyse des dossiers : ${e}`,
+    scanFailed: (e: string) => `Échec de l'analyse des dossiers : ${e}`,
     settingsUnreadable: (e: string) => `Impossible de lire tes réglages, les réglages par défaut sont utilisés pour l'instant : ${e}`,
     settingsReset: (bad: string) =>
-      `Ton fichier de réglages était illisible, Hivo a donc repris les réglages par défaut : relie à nouveau tes dossiers dans les Réglages. L'ancien fichier est gardé sous ${bad}.`,
+      `Ton fichier de réglages était illisible, Hivo a donc repris les réglages par défaut : relie à nouveau tes dossiers dans les Réglages. L'ancien fichier est gardé sous ${bad}.`,
     settingsSaveFailed: (e: string) => `Impossible d'enregistrer ce réglage, il est revenu à ce qui était enregistré : ${e}`,
     droppedEdits: "Ton espace de travail est chargé. Les modifications faites pendant qu'il était illisible n'ont pas été gardées.",
     untitledAlbum: "Album sans titre",
@@ -492,7 +501,7 @@ async function readWorkspace(): Promise<LoadedWorkspace> {
     return fromStored(await api.getWorkspace());
   } catch (e) {
     const files = await api.workspaceFiles().catch(() => null);
-    return { ok: false, detail: String(e), hasBackup: !!files?.hasBackup, canReset: !!files?.canReset };
+    return { ok: false, detail: errorReason(e), hasBackup: !!files?.hasBackup, canReset: !!files?.canReset };
   }
 }
 
@@ -536,7 +545,7 @@ export const useAppStore = create<AppState>((set, get) => {
       })
       .catch((e) => {
         console.error("saving workspace failed", e);
-        const why = tr(STORE_TEXT).saveFailed(String(e));
+        const why = tr(STORE_TEXT).saveFailed(errorReason(e));
         set({ saveError: why, unsavedChanges: why });
       });
     savingNow = write;
@@ -648,7 +657,7 @@ export const useAppStore = create<AppState>((set, get) => {
       .then(() => {
         if (get().scanError) set({ scanError: null });
       })
-      .catch((e) => set({ scanError: tr(STORE_TEXT).scanFailed(String(e)) }));
+      .catch((e) => set({ scanError: tr(STORE_TEXT).scanFailed(errorReason(e)) }));
   }
 
   function mutateAlbum(id: string, fn: (album: Album) => Album) {
@@ -713,6 +722,7 @@ export const useAppStore = create<AppState>((set, get) => {
     projects: [],
     scanning: false,
     unreachable: [],
+    skippedLinks: NO_LINKS,
     rescanOrReport: () => scanOrReport(),
     repointFolder: async (folder) => {
       if (get().demoMode) throw new Error(tr(STORE_ERRORS).sample);
@@ -772,7 +782,7 @@ export const useAppStore = create<AppState>((set, get) => {
           set({ update: { status: "idle" } });
           return;
         }
-        set({ update: { status: "error", error: e instanceof Error ? e.message : String(e) } });
+        set({ update: { status: "error", error: errorText(e) } });
       }
     },
 
@@ -791,7 +801,7 @@ export const useAppStore = create<AppState>((set, get) => {
         );
       } catch (e) {
         const blockedBySave = e instanceof UnsavedBeforeUpdate ? { blockedBySave: true } : {};
-        set({ update: { status: "error", version, error: e instanceof Error ? e.message : String(e), ...blockedBySave } });
+        set({ update: { status: "error", version, error: errorText(e), ...blockedBySave } });
       }
     },
 
@@ -821,7 +831,7 @@ export const useAppStore = create<AppState>((set, get) => {
         settings = await api.getSettings();
       } catch (e) {
         settings = { ...DEFAULT_SETTINGS };
-        set({ startupError: tr(STORE_TEXT).settingsUnreadable(String(e)) });
+        set({ startupError: tr(STORE_TEXT).settingsUnreadable(errorReason(e)) });
       }
       // settings.json didn't parse: Rust kept it aside and started from the
       // defaults. Said once, with where the old file is.
@@ -851,7 +861,9 @@ export const useAppStore = create<AppState>((set, get) => {
             const next = new Map(state.renderJobs);
             next.set(event.projectPath, {
               status: event.status,
-              message: event.message,
+              // Errors are coded in Rust (render.rs) and translated here; the
+              // sample warnings are counts and paths, worded here too.
+              message: event.message ? errorReason(event.message) : event.status === "done" ? renderSampleNote(event.movedSamples, event.missingSamples) : null,
               outputPath: event.outputPath,
             });
             return { renderJobs: next };
@@ -881,7 +893,7 @@ export const useAppStore = create<AppState>((set, get) => {
         // (Sample-data stars stay in memory.)
         if (saved) set((s) => ({ settings: { ...saved, favorites: realFavorites ? s.settings.favorites : saved.favorites } }));
         if (!report) throw e;
-        set({ actionError: tr(STORE_TEXT).settingsSaveFailed(e instanceof Error ? e.message : String(e)) });
+        set({ actionError: tr(STORE_TEXT).settingsSaveFailed(errorReason(e)) });
       }
     },
 
@@ -896,7 +908,7 @@ export const useAppStore = create<AppState>((set, get) => {
       try {
         set({ detectedFolders: await api.detectDawFolders(), detectError: null });
       } catch (e) {
-        set({ detectedFolders: [], detectError: e instanceof Error ? e.message : String(e) });
+        set({ detectedFolders: [], detectError: errorText(e) });
       }
     },
 
@@ -953,7 +965,8 @@ export const useAppStore = create<AppState>((set, get) => {
       if (get().demoMode) return;
       const folders = get().settings.watchedFolders;
       if (folders.length === 0) {
-        set({ projects: [], unreachable: [] });
+        scanMemory = emptyScanMemory();
+        set({ projects: [], unreachable: [], skippedLinks: NO_LINKS });
         return;
       }
       // Scans can overlap (window focus + adding a folder); only the newest
@@ -961,18 +974,22 @@ export const useAppStore = create<AppState>((set, get) => {
       const id = ++scanSeq;
       set({ scanning: true });
       try {
-        const { projects, unreachable } = await api.scanProjects();
+        const { projects, unreachable, skippedLinks, skippedLinkExamples } = await api.scanProjects();
         if (id === scanSeq && !get().demoMode) {
           // Renamed/moved .flp files keep their stage, tags, notes, credits,
           // crew share and album slot (lib/relink.ts). Only on the real,
           // writable workspace, never sample data. Songs under a linked
-          // folder that's unreachable right now are missing, not moved.
-          const relinks = get().workspaceWritable ? findRelinks(projects, get().workspace, folders, unreachable) : [];
-          if (relinks.length) {
-            followRelinks(relinks);
-            set({ relinked: [...get().relinked, ...relinks] });
+          // folder that's unreachable right now are missing, not moved; a
+          // file missing from one scan only (FL saving it) isn't moved yet.
+          if (get().workspaceWritable) {
+            const after = relinksAfterScan(projects, get().workspace, folders, unreachable, scanMemory);
+            scanMemory = after.memory;
+            if (after.relinks.length) {
+              followRelinks(after.relinks);
+              set({ relinked: [...get().relinked, ...after.relinks] });
+            }
           }
-          set({ projects, unreachable });
+          set({ projects, unreachable, skippedLinks: { count: skippedLinks ?? 0, examples: skippedLinkExamples ?? [] } });
         }
       } finally {
         if (id === scanSeq) set({ scanning: false });
@@ -1034,7 +1051,7 @@ export const useAppStore = create<AppState>((set, get) => {
         const jobs = new Map(get().renderJobs);
         for (const path of projectPaths) {
           const job = jobs.get(path);
-          if (job && (job.status === "queued" || job.status === "rendering")) jobs.set(path, { ...job, status: "error", message: String(e) });
+          if (job && (job.status === "queued" || job.status === "rendering")) jobs.set(path, { ...job, status: "error", message: errorText(e) });
         }
         set({ renderJobs: jobs });
         throw e;
@@ -1121,7 +1138,7 @@ export const useAppStore = create<AppState>((set, get) => {
         set({ packageResults: skippedResults });
         throw new Error(skippedResults[0]?.error ?? tr(STORE_ERRORS).nothingToPackage);
       }
-      const plans = await api.packagePreview(paths);
+      const plans = (await api.packagePreview(paths)).map((p) => ({ ...p, error: errorTextOr(p.error) }));
       set({ packagePlan: { plans, subfolder, skipped: skippedResults }, packageResults: null });
     },
 
@@ -1135,7 +1152,7 @@ export const useAppStore = create<AppState>((set, get) => {
       set({ packaging: true, packageResults: skippedResults, packagePlan: null });
       // Results stream in per song so the panel can show progress.
       const unlisten = await api.onPackageProgress((r) =>
-        set((s) => ({ packageResults: [...(s.packageResults ?? []), r] })),
+        set((s) => ({ packageResults: [...(s.packageResults ?? []), { ...r, error: errorTextOr(r.error) }] })),
       );
       try {
         await api.packageProjects({ projectPaths: paths, subfolder, approved });

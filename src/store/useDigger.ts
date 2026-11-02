@@ -3,6 +3,7 @@ import * as api from "../lib/tauri";
 import { canonicalUrl, deeperExclude, foundTitles, leadHash, likedTitles, restoreDig, searchesDone, toggleLiked, withFallbackQueries, type KeptDig, type Liked } from "../lib/digger";
 import { useAppStore } from "./useAppStore";
 import type { BeatFacts, BeatFile, DigResult, Lead, SavedLead, WebLink, YoutubeVideo } from "../types";
+import { errorReason, errorText } from "../lib/errors";
 
 // The Digger: raw beats from the beats folders, up to 5 picked to dig for
 // similar ones (docs/GUARDRAILS.md: a deliberate addition for the Creation
@@ -211,7 +212,7 @@ export const useDigger = create<DiggerState>((set, get) => ({
       useAppStore.getState().syncBeatNotes(beats, !scan.capped && !(scan.unreachable > 0));
       void get().analyseBeats();
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      set({ error: errorText(e) });
     } finally {
       set({ loading: false });
     }
@@ -240,7 +241,7 @@ export const useDigger = create<DiggerState>((set, get) => ({
       if (get().webQuery === query) set({ searchedFor: query, roundResults: withRound(get().roundResults, round, { query, videos }) });
     } catch (e) {
       // The round keeps what it had; the error shows above it.
-      if (get().webQuery === query) set({ searchedFor: null, searchError: e instanceof Error ? e.message : String(e) });
+      if (get().webQuery === query) set({ searchedFor: null, searchError: errorText(e) });
     } finally {
       if (get().webQuery === query) set({ searching: false });
     }
@@ -280,7 +281,7 @@ export const useDigger = create<DiggerState>((set, get) => ({
         if (youtube) void get().searchYoutube(first);
       }
     } catch (e) {
-      set({ digError: e instanceof Error ? e.message : String(e) });
+      set({ digError: errorText(e) });
     } finally {
       set({ digging: false });
     }
@@ -307,7 +308,7 @@ export const useDigger = create<DiggerState>((set, get) => ({
         const rounds = [...get().rounds, { links: round.web, queries: round.queries, seeds }];
         set({ rounds, shownRound: rounds.length });
       }
-      if (round.webError) set({ deeperError: round.webError });
+      if (round.webError) set({ deeperError: errorReason(round.webError) });
       // The menu dot means "something new to look at", not "a round ran".
       if (brought) markUnseen(set);
       // Same as runDig: the first new search runs right away.
@@ -317,7 +318,7 @@ export const useDigger = create<DiggerState>((set, get) => ({
         if (youtube) void get().searchYoutube(first);
       }
     } catch (e) {
-      set({ deeperError: e instanceof Error ? e.message : String(e) });
+      set({ deeperError: errorText(e) });
     } finally {
       set({ diggingDeeper: false });
     }
@@ -352,7 +353,7 @@ export const useDigger = create<DiggerState>((set, get) => ({
       // The list reads the file back (its date, the clipped facts).
       await get().loadLeads();
     } catch (e) {
-      set({ leadError: e instanceof Error ? e.message : String(e) });
+      set({ leadError: errorText(e) });
     }
   },
   deleteLead: async (path) => {
@@ -361,7 +362,7 @@ export const useDigger = create<DiggerState>((set, get) => ({
       await api.deleteLead(path);
       await get().loadLeads();
     } catch (e) {
-      set({ leadError: e instanceof Error ? e.message : String(e) });
+      set({ leadError: errorText(e) });
     }
   },
   leadError: null,

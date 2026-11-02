@@ -15,14 +15,16 @@ const ms = (iso: string | null | undefined) => (iso ? Date.parse(iso) || 0 : 0);
 /** Latest sign of life: a save in FL or a stage move. */
 export const lastActivityMs = (s: CrewSongRow) => Math.max(ms(s.last_saved_at), ms(s.stage_updated_at));
 
+/** One member's shared songs, as counts only. No activity times and no
+ * ranking (guardrail 3: coordination, never monitoring): each row is a way
+ * into that member's songs on the crew board (`songsOfMember`). */
 export interface CrewMemberStats {
   userId: string;
   name: string;
   songs: number;
+  /** Still being made (Unsorted, Creation, Production). */
+  making: number;
   finished: number;
-  /** Songs this member last moved within RECENT_DAYS (latest move only is stored). */
-  recentMoves: number;
-  lastActivityMs: number;
 }
 
 export interface CrewStats {
@@ -66,12 +68,12 @@ export function crewStats(songs: CrewSongRow[], members: CrewMemberRow[], now = 
       userId: m.user_id,
       name: m.display_name,
       songs: own.length,
+      making: own.filter((s) => !isFinished(s.stage ?? undefined)).length,
       finished: own.filter((s) => isFinished(s.stage ?? undefined)).length,
-      recentMoves: songs.filter((s) => s.stage_updated_by === m.user_id && ms(s.stage_updated_at) >= recent).length,
-      lastActivityMs: own.reduce((t, s) => Math.max(t, lastActivityMs(s)), 0),
     };
   });
-  memberStats.sort((a, b) => b.lastActivityMs - a.lastActivityMs || a.name.localeCompare(b.name));
+  // By name: the crew in a fixed order, never "most active first".
+  memberStats.sort((a, b) => a.name.localeCompare(b.name));
 
   return {
     total: songs.length,
@@ -84,6 +86,12 @@ export function crewStats(songs: CrewSongRow[], members: CrewMemberRow[], now = 
     upcoming,
     members: memberStats,
   };
+}
+
+/** The songs one member shares (the crew board's member filter); every
+ * song when `memberId` is null. */
+export function songsOfMember<S extends Pick<CrewSongRow, "owner_id">>(songs: S[], memberId: string | null): S[] {
+  return memberId ? songs.filter((s) => s.owner_id === memberId) : songs;
 }
 
 export function localDay(now: number): string {

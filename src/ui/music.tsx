@@ -6,7 +6,7 @@ import { renderFreshness } from "../lib/songs";
 import { LOW_CONFIDENCE, type Check as KitCheck, type KitField } from "../lib/launchKit";
 import type { AiFieldReview, ProjectInfo } from "../types";
 import { engrave, input, StatusDot } from "./base";
-import { dict, tr } from "../i18n";
+import { dict, plural, tr } from "../i18n";
 
 const T = dict(
   {
@@ -20,6 +20,9 @@ const T = dict(
     noneLabel: "No mixdown",
     noneTitle: "No mixdown found for this song",
     showInFolder: "Show in folder",
+    checkMissing: "Missing",
+    revealLabel: (what: string) => `Show ${what} in its folder`,
+    checkWarning: "To check",
     detected: "Detected",
     suggested: "Suggested",
     ai: "AI draft",
@@ -29,7 +32,7 @@ const T = dict(
     check: "AI: worth a look",
     wrong: "AI: looks wrong",
     needYou: (missing: number, warnings: number) =>
-      `${missing} need${missing === 1 ? "s" : ""} you${warnings ? ` · ${warnings} to check` : ""}`,
+      `${missing} need${plural(missing, "s", "")} you${warnings ? ` · ${warnings} to check` : ""}`,
     nextField: "Go to the next field that needs you",
     readyToExport: "Ready to export",
     readyToReview: "Ready to review",
@@ -59,6 +62,9 @@ const T = dict(
     noneLabel: "Pas de mixdown",
     noneTitle: "Aucun mixdown trouvé pour ce son",
     showInFolder: "Afficher dans le dossier",
+    checkMissing: "Manquant",
+    revealLabel: (what: string) => `Afficher ${what} dans son dossier`,
+    checkWarning: "À vérifier",
     detected: "Détecté",
     suggested: "Suggéré",
     ai: "Brouillon IA",
@@ -153,7 +159,12 @@ export function FileRow({ icon, label, detail, onReveal }: { icon: React.ReactNo
         {detail}
       </span>
       {onReveal && (
-        <button onClick={onReveal} title={tr(T).showInFolder} className="shrink-0 rounded p-0.5 text-engrave opacity-0 hover:bg-rule hover:text-cream group-hover:opacity-100">
+        <button
+          onClick={onReveal}
+          title={tr(T).showInFolder}
+          aria-label={tr(T).revealLabel(label)}
+          className="shrink-0 rounded p-0.5 text-engrave opacity-0 hover:bg-rule hover:text-cream focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
+        >
           <FolderOpen size={12} />
         </button>
       )}
@@ -235,7 +246,11 @@ export function CheckLine({ check }: { check: KitCheck }) {
   return (
     <div className="flex items-start gap-2 text-xs text-cream">
       <span className="flex h-4 shrink-0 items-center">
-        <StatusDot color={check.level === "missing" ? "#ff4040" : "#ffc233"} size={7} />
+        <StatusDot
+          color={check.level === "missing" ? "#ff4040" : "#ffc233"}
+          size={7}
+          label={check.level === "missing" ? tr(T).checkMissing : tr(T).checkWarning}
+        />
       </span>
       <span>{check.message}</span>
     </div>

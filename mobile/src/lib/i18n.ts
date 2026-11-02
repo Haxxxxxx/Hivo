@@ -20,6 +20,12 @@ export function tr<T>(d: { en: T; fr: T }): T {
   return current === "fr" ? d.fr : d.en;
 }
 
+/** The singular or the plural for `n`: French takes the singular for 0 and 1,
+ * English only for 1 (same as the desktop's src/i18n `plural`). */
+export function plural(n: number, one: string, other: string, l: Lang = current): string {
+  return new Intl.PluralRules(l === "fr" ? "fr-FR" : "en-US").select(n) === "one" ? one : other;
+}
+
 const NNBSP = "\u202f";
 
 /** "just now", "3 min ago", "2 h ago", "4 days ago" (and the French). */
@@ -32,5 +38,5 @@ export function ago(then: number, now: number): string {
   const h = Math.round(m / 60);
   if (h < 24) return fr ? `il y a ${h}${NNBSP}h` : `${h} h ago`;
   const d = Math.round(h / 24);
-  return fr ? `il y a ${d}${NNBSP}jour${d === 1 ? "" : "s"}` : `${d} day${d === 1 ? "" : "s"} ago`;
+  return fr ? `il y a ${d}${NNBSP}${plural(d, "jour", "jours", "fr")}` : `${d} ${plural(d, "day", "days", "en")} ago`;
 }

@@ -5,6 +5,7 @@
 //! through events (src/store/sessionBridge.ts): no file access, no commands
 //! of its own (capabilities/session.json).
 
+use crate::error::app_err;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub const LABEL: &str = "session";
@@ -39,7 +40,7 @@ pub async fn open_session_window(app: AppHandle, title: String) -> Result<(), St
         .always_on_top(true)
         .disable_drag_drop_handler()
         .build()
-        .map_err(|e| format!("could not open the session window: {e}"))?;
+        .map_err(|e| app_err("session.open", format!("could not open the session window: {e}")))?;
     Ok(())
 }
 

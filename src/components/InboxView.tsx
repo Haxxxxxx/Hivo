@@ -24,7 +24,8 @@ import { isSketchAudioName } from "../lib/sketch";
 import type { BeatFile, FiledSketch, IncomingItem, InboxItem, InboxTarget, SavedLead } from "../types";
 import { ConfirmButton, btn, btnPrimary, btnQuiet, engrave, input } from "./ui";
 import { StatusDot } from "../ui";
-import { dict, tr } from "../i18n";
+import { dict, plural, tr } from "../i18n";
+import { errorText } from "../lib/errors";
 
 // The phone inbox (docs/PHONE-SYNC.md v1.1): ideas, voice memos and BandLab
 // exports sent from the phone. Each card files its item: an idea into a
@@ -38,7 +39,7 @@ const T = dict(
     filterNew: (n: number) => `New (${n})`,
     filterFiled: "Filed",
     filterAll: "All",
-    receiving: (n: number) => (n === 1 ? "Receiving 1 item from the phone…" : `Receiving ${n} items from the phone…`),
+    receiving: (n: number) => plural(n, "Receiving 1 item from the phone…", `Receiving ${n} items from the phone…`),
     sample: "Sample data is on screen: the phone inbox is off. Switch to your library to receive.",
     notPaired: "No phone paired yet. Turn on Phone sync in Settings and scan the QR code with the Hivo phone app.",
     openSettings: "Open Phone sync",
@@ -48,6 +49,7 @@ const T = dict(
     memo: "Voice memo",
     sketch: "BandLab export",
     from: (phone: string, when: string) => `From ${phone} · ${when}`,
+    phone: "Phone",
     aimedAt: (title: string) => `Written for ${title}`,
     aimedGone: (title: string) => `Written for ${title}, which isn't on this computer any more: pick another.`,
     pickTarget: "Pick a song, beat or prod",
@@ -73,13 +75,13 @@ const T = dict(
     removeOnly: "Deletes it for good: the inbox holds the only copy.",
     removeOnlyConfirm: "Delete the only copy?",
     incomingTitle: "Still arriving",
-    incomingLine: (done: number, of: number, got: string, total: string) => `${done} of ${of} file${of === 1 ? "" : "s"} in · ${got} of ${total}`,
+    incomingLine: (done: number, of: number, got: string, total: string) => `${done} of ${of} file${plural(of, "", "s")} in · ${got} of ${total}`,
     incomingHint: "Interrupted uploads hold space in the inbox until they finish or a week goes by. Remove one to free it now; if the phone is still sending it, it starts again.",
     fileElsewhere: "File elsewhere",
     fileElsewhereHint: "Back to new, to file it somewhere else: what was already filed stays there.",
     filedFolder: "Copied into the song's BandLab folder",
     filedSketchNotice: (name: string) => `${name} is filed as a new song.`,
-    stemsApart: (n: number) => ` The ${n} stem${n === 1 ? "" : "s"} went to BandLab/Stems, apart from the mixdown: Continue in FL Studio lays out the stems, not the mixdown over them.`,
+    stemsApart: (n: number) => ` The ${n} stem${plural(n, "", "s")} went to BandLab/Stems, apart from the mixdown: Continue in FL Studio lays out the stems, not the mixdown over them.`,
     overTwenty: (n: number) => ` ${n} audio files: Continue in FL Studio lays out the first 20, drag the rest in from the BandLab folder.`,
     filedNote: (title: string) => `Added to the notes of ${title}`,
     filedSketch: "Filed as a new song",
@@ -92,7 +94,7 @@ const T = dict(
     openSong: "Open the song",
     reveal: "Show in folder",
     missing: "File missing (deleted by hand?): this item can only be removed.",
-    files: (n: number) => (n === 1 ? "1 file" : `${n} files`),
+    files: (n: number) => plural(n, "1 file", `${n} files`),
     zip: "zip of stems: unpacked when filed",
     working: "Working…",
     unknown: "something on this computer",
@@ -103,7 +105,7 @@ const T = dict(
     filterNew: (n: number) => `Nouveaux (${n})`,
     filterFiled: "Rangés",
     filterAll: "Tout",
-    receiving: (n: number) => (n === 1 ? "Réception d'1 élément du téléphone…" : `Réception de ${n} éléments du téléphone…`),
+    receiving: (n: number) => plural(n, `Réception de ${n} élément du téléphone…`, `Réception de ${n} éléments du téléphone…`),
     sample: "Les données d'exemple sont affichées : la boîte du téléphone est coupée. Passe à ta bibliothèque pour recevoir.",
     notPaired: "Aucun téléphone associé. Active la synchro téléphone dans les Réglages et scanne le QR code avec l'app Hivo du téléphone.",
     openSettings: "Ouvrir la synchro téléphone",
@@ -113,6 +115,7 @@ const T = dict(
     memo: "Mémo vocal",
     sketch: "Export BandLab",
     from: (phone: string, when: string) => `De ${phone} · ${when}`,
+    phone: "Téléphone",
     aimedAt: (title: string) => `Écrit pour ${title}`,
     aimedGone: (title: string) => `Écrit pour ${title}, qui n'est plus sur cet ordi : choisis-en un autre.`,
     pickTarget: "Choisis un son, une prod ou une prod enregistrée",
@@ -121,15 +124,15 @@ const T = dict(
     prods: "Prods enregistrées",
     addToNote: "Ajouter à ses notes",
     attach: "Joindre",
-    attachHintSong: "Un son : le mémo est copié dans son dossier « Voice memos ».",
+    attachHintSong: "Un son : le mémo est copié dans son dossier « Voice memos ».",
     fileAsSong: "Ranger comme nouveau son",
     songName: "Nom du son",
     folder: "Dans",
     noFolders: "Lie d'abord un dossier de projets dans les Réglages : le dossier du son y est créé.",
     orAttach: "Ou joindre l'audio à un son :",
     attachTo: (title: string) => `Joindre à ${title}`,
-    attachToHint: "Le téléphone l'a envoyé pour ce son : l'audio va dans son dossier BandLab.",
-    orNewSong: "Ou le classer comme nouveau son :",
+    attachToHint: "Le téléphone l'a envoyé pour ce son : l'audio va dans son dossier BandLab.",
+    orNewSong: "Ou le classer comme nouveau son :",
     dismiss: "Écarter",
     restore: "Remettre en nouveau",
     remove: "Retirer",
@@ -138,13 +141,13 @@ const T = dict(
     removeOnly: "Le supprime pour de bon : la boîte en a la seule copie.",
     removeOnlyConfirm: "Supprimer la seule copie ?",
     incomingTitle: "En cours de réception",
-    incomingLine: (done: number, of: number, got: string, total: string) => `${done} fichier${done > 1 ? "s" : ""} sur ${of} reçu${done > 1 ? "s" : ""} · ${got} sur ${total}`,
+    incomingLine: (done: number, of: number, got: string, total: string) => `${done} fichier${plural(done, "", "s")} sur ${of} reçu${plural(done, "", "s")} · ${got} sur ${total}`,
     incomingHint: "Un envoi interrompu garde sa place dans la boîte jusqu'à ce qu'il finisse ou qu'une semaine passe. Retire-le pour la libérer tout de suite ; si le téléphone l'envoie encore, il recommence.",
     fileElsewhere: "Ranger ailleurs",
     fileElsewhereHint: "Remet en nouveau pour le ranger ailleurs : ce qui a déjà été rangé y reste.",
     filedFolder: "Copié dans le dossier BandLab du son",
     filedSketchNotice: (name: string) => `${name} est rangé comme nouveau son.`,
-    stemsApart: (n: number) => ` ${n === 1 ? "Le stem est allé" : `Les ${n} stems sont allés`} dans BandLab/Stems, à part du mix : Continuer dans FL Studio place les stems, pas le mix par-dessus.`,
+    stemsApart: (n: number) => ` ${plural(n, "Le stem est allé", `Les ${n} stems sont allés`)} dans BandLab/Stems, à part du mix : Continuer dans FL Studio place les stems, pas le mix par-dessus.`,
     overTwenty: (n: number) => ` ${n} fichiers audio : Continuer dans FL Studio place les 20 premiers, glisse les autres depuis le dossier BandLab.`,
     filedNote: (title: string) => `Ajouté aux notes de ${title}`,
     filedSketch: "Rangé comme nouveau son",
@@ -157,7 +160,7 @@ const T = dict(
     openSong: "Ouvrir le son",
     reveal: "Afficher dans le dossier",
     missing: "Fichier manquant (supprimé à la main ?) : cet élément peut seulement être retiré.",
-    files: (n: number) => (n === 1 ? "1 fichier" : `${n} fichiers`),
+    files: (n: number) => plural(n, `${n} fichier`, `${n} fichiers`),
     zip: "zip de stems : décompressé au rangement",
     working: "En cours…",
     unknown: "un élément de cet ordi",
@@ -319,7 +322,7 @@ function IncomingList({ items }: { items: IncomingItem[] }) {
           <div className="min-w-0 flex-1">
             <div className="truncate text-cream">{i.title || (i.itemType === "memo" ? t.memo : t.sketch)}</div>
             <div className="text-xs text-engrave">
-              {t.from(i.phoneName || "Phone", formatDateTime(i.updatedAt))} · {t.incomingLine(i.filesDone, i.fileCount, formatBytes(i.receivedBytes), formatBytes(i.totalBytes))}
+              {t.from(i.phoneName || t.phone, formatDateTime(i.updatedAt))} · {t.incomingLine(i.filesDone, i.fileCount, formatBytes(i.receivedBytes), formatBytes(i.totalBytes))}
             </div>
           </div>
           <ConfirmButton
@@ -329,7 +332,7 @@ function IncomingList({ items }: { items: IncomingItem[] }) {
               </>
             }
             confirmLabel={t.removeConfirm}
-            onConfirm={() => void remove(i.id).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
+            onConfirm={() => void remove(i.id).catch((e) => setError(errorText(e)))}
             className={btnQuiet}
           />
         </div>
@@ -378,7 +381,7 @@ function InboxCard({ item, options, onNotice }: { item: InboxItem; options: Targ
     try {
       await work();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorText(e);
       setError(msg === "disk full" ? "This computer's disk is full." : msg);
     } finally {
       setBusy(false);
@@ -400,7 +403,7 @@ function InboxCard({ item, options, onNotice }: { item: InboxItem; options: Targ
         <div className="min-w-0 flex-1">
           <div className={engrave}>{kindLabel}</div>
           <div className="truncate font-medium text-cream">{item.title || (item.itemType === "idea" ? item.text.split("\n")[0] : item.itemType === "sketch" ? sketchName(item) : item.files[0]?.name) || kindLabel}</div>
-          <div className="text-xs text-engrave">{t.from(item.phoneName || "Phone", formatDateTime(item.receivedAt ?? item.createdAt))}</div>
+          <div className="text-xs text-engrave">{t.from(item.phoneName || t.phone, formatDateTime(item.receivedAt ?? item.createdAt))}</div>
         </div>
         {!isNew && (
           <span className="flex shrink-0 items-center gap-1.5 text-xs text-body">

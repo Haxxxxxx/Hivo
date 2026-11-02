@@ -125,7 +125,7 @@ export function InboxTab({ onIdea, onRecord, onPick }: Props) {
             const st = ideaState(row.idea, find);
             const label = row.idea.title.trim() || row.idea.text.trim().split("\n")[0] || "…";
             return (
-              <Pressable onPress={() => onIdea(row.idea.id)} style={({ pressed }) => [styles.row, pressed && { backgroundColor: C.raised }]}>
+              <Pressable onPress={() => onIdea(row.idea.id)} accessibilityRole="button" style={({ pressed }) => [styles.row, pressed && { backgroundColor: C.raised }]}>
                 <Text style={styles.rowTitle} numberOfLines={1}>{label}</Text>
                 <View style={styles.sub}>
                   <Led color={st.color} size={7} />
@@ -156,7 +156,7 @@ export function InboxTab({ onIdea, onRecord, onPick }: Props) {
                 </View>
               ) : null}
               <View style={{ flexDirection: "row", gap: 8, marginTop: 6 }}>
-                {playable ? <Button label={playingId === o.id ? s().stopMemo : s().playMemo} onPress={() => togglePlay(o)} style={styles.small} /> : null}
+                {playable ? <Button label={playingId === o.id ? s().stopMemo : s().playMemo} onPress={() => togglePlay(o)} style={styles.small} hitSlop={SMALL_SLOP} /> : null}
                 {o.state === "failed" ? (
                   <Button
                     label={s().retry}
@@ -165,9 +165,10 @@ export function InboxTab({ onIdea, onRecord, onPick }: Props) {
                       requestSync();
                     }}
                     style={styles.small}
+                    hitSlop={SMALL_SLOP}
                   />
                 ) : null}
-                {sending !== o.id ? <Button label={s().remove} variant="quiet" onPress={() => confirmRemove(o)} style={styles.small} /> : null}
+                {sending !== o.id ? <Button label={s().remove} variant="quiet" onPress={() => confirmRemove(o)} style={styles.small} hitSlop={SMALL_SLOP} /> : null}
               </View>
             </View>
           );
@@ -176,6 +177,9 @@ export function InboxTab({ onIdea, onRecord, onPick }: Props) {
     </View>
   );
 }
+
+/** The small buttons are about 30 dp tall: this brings the touch area to 48 dp. */
+const SMALL_SLOP = { top: 9, bottom: 9, left: 4, right: 4 };
 
 const styles = StyleSheet.create({
   actions: { flexDirection: "row", gap: 8, marginHorizontal: 16, marginTop: 12, marginBottom: 4 },

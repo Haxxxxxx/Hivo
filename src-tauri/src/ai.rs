@@ -3,6 +3,7 @@
 //! the kit logic; this side only holds the key and talks to the API, so the
 //! key never reaches the webview.
 
+use crate::error::app_err;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
@@ -21,8 +22,8 @@ struct AiSecrets {
 }
 
 fn secrets_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_config_dir().map_err(|e| format!("could not resolve app config dir: {e}"))?;
-    fs::create_dir_all(&dir).map_err(|e| format!("could not create config dir: {e}"))?;
+    let dir = app.path().app_config_dir().map_err(|e| app_err("config.dir", format!("could not resolve app config dir: {e}")))?;
+    fs::create_dir_all(&dir).map_err(|e| app_err("config.dir", format!("could not create config dir: {e}")))?;
     Ok(dir.join("ai.json"))
 }
 
@@ -75,7 +76,7 @@ pub fn set_ai_key(app: AppHandle, key: Option<String>) -> Result<(), String> {
         return match fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(format!("could not remove the key: {e}")),
+            Err(e) => Err(app_err("secret.remove", format!("could not remove the key: {e}")).into()),
         };
     }
     let raw = serde_json::to_string_pretty(&AiSecrets { gemini_api_key: key }).map_err(|e| e.to_string())?;
@@ -89,11 +90,11 @@ pub fn set_ai_key(app: AppHandle, key: Option<String>) -> Result<(), String> {
         options.mode(0o600);
         // An older file may have been created with wider permissions.
         if path.exists() {
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|e| format!("could not secure the key file: {e}"))?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|e| app_err("secret.save", format!("could not secure the key file: {e}")))?;
         }
     }
-    let mut file = options.open(&path).map_err(|e| format!("could not save the key: {e}"))?;
-    std::io::Write::write_all(&mut file, raw.as_bytes()).map_err(|e| format!("could not save the key: {e}"))
+    let mut file = options.open(&path).map_err(|e| app_err("secret.save", format!("could not save the key: {e}")))?;
+    std::io::Write::write_all(&mut file, raw.as_bytes()).map_err(|e| app_err("secret.save", format!("could not save the key: {e}")).into())
 }
 
 /// Model ids go into the URL path: letters, digits, `.`, `-`, `_` only.
@@ -115,33 +116,39 @@ pub(crate) fn extract_text(v: &Value) -> Option<String> {
 /// Why there's no answer when the response was 200 but empty.
 pub(crate) fn empty_reason(v: &Value) -> String {
     if let Some(r) = v.pointer("/promptFeedback/blockReason").and_then(Value::as_str) {
-        return format!("Gemini declined the request (blocked: {r}).");
+        return app_err("gemini.blocked", format!("Gemini declined the request (blocked: {r}).")).with("reason", r).into();
     }
     match v.pointer("/candidates/0/finishReason").and_then(Value::as_str) {
-        Some("SAFETY") => "Gemini stopped for safety reasons. Try again, or edit the text by hand.".to_string(),
-        Some("MAX_TOKENS") => "Gemini's answer was cut off. Try again.".to_string(),
-        Some(r) => format!("Gemini returned no text (finish reason: {r})."),
-        None => "Gemini returned no text.".to_string(),
+        Some("SAFETY") => app_err("gemini.safety", "Gemini stopped for safety reasons. Try again, or edit the text by hand.").into(),
+        Some("MAX_TOKENS") => app_err("gemini.cutOff", "Gemini's answer was cut off. Try again.").into(),
+        Some(r) => app_err("gemini.noText", format!("Gemini returned no text (finish reason: {r}).")).into(),
+        None => app_err("gemini.noText", "Gemini returned no text.").into(),
     }
 }
 
 /// HTTP errors in words the crew can act on.
 fn explain_error(status: u16, v: &Value, model: &str) -> String {
     let msg = v.pointer("/error/message").and_then(Value::as_str).unwrap_or("");
-    match status {
-        400 if msg.to_lowercase().contains("api key") => "The Gemini API key was rejected. Check it in Settings → AI.".to_string(),
-        401 | 403 => "This Gemini API key isn't allowed to use the API. Check it in Settings → AI.".to_string(),
-        404 => format!("Gemini model \"{model}\" wasn't found. Pick another one in Settings → AI."),
-        429 if is_daily_quota(v) => format!(
-            "Today's free Gemini quota is used up for {model} and the backup model {FALLBACK_MODEL}. It resets at midnight Pacific (9am in Paris). Everything else in the Launch Kit keeps working."
+    let e = match status {
+        400 if msg.to_lowercase().contains("api key") => app_err("gemini.keyRejected", "The Gemini API key was rejected. Check it in Settings → AI."),
+        401 | 403 => app_err("gemini.keyNotAllowed", "This Gemini API key isn't allowed to use the API. Check it in Settings → AI."),
+        404 => app_err("gemini.noModel", format!("Gemini model \"{model}\" wasn't found. Pick another one in Settings → AI.")),
+        429 if is_daily_quota(v) => app_err(
+            "gemini.dailyQuota",
+            format!("Today's free Gemini quota is used up for {model} and the backup model {FALLBACK_MODEL}. It resets at midnight Pacific (9am in Paris). Everything else in the Launch Kit keeps working."),
         ),
-        429 => format!("Gemini's free tier is busy (too many requests this minute), even on the backup model {FALLBACK_MODEL}. Wait a minute and try again."),
-        500..=599 => format!(
-            "Gemini is overloaded right now ({status}), even after several retries and the backup model {FALLBACK_MODEL}. This is on Google's side: try again in a few minutes."
+        429 => app_err(
+            "gemini.busy",
+            format!("Gemini's free tier is busy (too many requests this minute), even on the backup model {FALLBACK_MODEL}. Wait a minute and try again."),
         ),
-        _ if !msg.is_empty() => format!("Gemini error: {msg}"),
-        _ => format!("Gemini error (HTTP {status})."),
-    }
+        500..=599 => app_err(
+            "gemini.overloaded",
+            format!("Gemini is overloaded right now ({status}), even after several retries and the backup model {FALLBACK_MODEL}. This is on Google's side: try again in a few minutes."),
+        ),
+        _ if !msg.is_empty() => app_err("gemini.error", format!("Gemini error: {msg}")).with("msg", msg),
+        _ => app_err("gemini.http", format!("Gemini error (HTTP {status}).")),
+    };
+    e.with("model", model).with("fallback", FALLBACK_MODEL).with("status", status).into()
 }
 
 /// Tried when the chosen model is overloaded or out of free quota: it has its
@@ -284,7 +291,7 @@ async fn generate(client: &reqwest::Client, endpoint: &str, key: &str, model: &s
                 attempt += 1;
                 continue;
             }
-            Err(e) => return Err(Failure::Other(format!("Couldn't reach Gemini. Are you online? ({e})"))),
+            Err(e) => return Err(Failure::Other(app_err("gemini.offline", format!("Couldn't reach Gemini. Are you online? ({e})")).into())),
         };
         if (200..300).contains(&status) {
             return Ok(v);
@@ -354,7 +361,7 @@ async fn generate_json(
     });
     let (used, v) = generate_raw(app, model, &body).await?;
     let text = extract_text(&v).ok_or_else(|| empty_reason(&v))?;
-    let data = serde_json::from_str(&text).map_err(|e| format!("Gemini's answer wasn't valid JSON ({e}). Try again."))?;
+    let data = serde_json::from_str(&text).map_err(|e| app_err("gemini.badJson", format!("Gemini's answer wasn't valid JSON ({e}). Try again.")))?;
     Ok(AiAnswer { model: used, data })
 }
 
@@ -363,27 +370,27 @@ async fn generate_json(
 /// and the 2-minute deadline included. Returns the model that answered and
 /// Gemini's raw 200 answer.
 pub(crate) async fn generate_raw(app: &AppHandle, model: Option<String>, body: &Value) -> Result<(String, Value), String> {
-    let (key, _) = api_key(app).ok_or("No Gemini API key yet. Add a free one in Settings → AI.")?;
+    let (key, _) = api_key(app).ok_or_else(|| String::from(app_err("gemini.noKey", "No Gemini API key yet. Add a free one in Settings → AI.")))?;
     generate_raw_with_key(&key, model, body).await
 }
 
 pub(crate) async fn generate_raw_with_key(key: &str, model: Option<String>, body: &Value) -> Result<(String, Value), String> {
     let model = model.map(|m| m.trim().to_string()).filter(|m| !m.is_empty()).unwrap_or_else(|| DEFAULT_MODEL.to_string());
     if !valid_model(&model) {
-        return Err(format!("\"{model}\" isn't a valid model name."));
+        return Err(app_err("gemini.badModel", format!("\"{model}\" isn't a valid model name.")).with("model", model.as_str()).into());
     }
     let client = reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .build()
-        .map_err(|e| format!("could not start the HTTP client: {e}"))?;
+        .map_err(|e| app_err("http.client", format!("could not start the HTTP client: {e}")))?;
 
     // Retries on a busy free tier can add up: never leave the button spinning.
     let (used, result) = tokio::time::timeout(DEADLINE, generate_with_fallback(&client, ENDPOINT, &key, &model, body))
         .await
-        .map_err(|_| "Gemini didn't answer within 2 minutes (busy or rate-limited). Try again later.".to_string())?;
+        .map_err(|_| app_err("gemini.deadline", "Gemini didn't answer within 2 minutes (busy or rate-limited). Try again later."))?;
     let v = result.map_err(|f| match f {
         Failure::Http(status, v) => explain_error(status, &v, &model),
-        Failure::Timeout => "Gemini's servers are too busy to answer right now (the backup model too). Try again in a few minutes.".to_string(),
+        Failure::Timeout => app_err("gemini.timeout", "Gemini's servers are too busy to answer right now (the backup model too). Try again in a few minutes.").into(),
         Failure::Other(message) => message,
     })?;
     Ok((used, v))
@@ -463,7 +470,7 @@ pub struct KitRequest {
 }
 
 fn too_long(what: &str) -> String {
-    format!("the song's {what} is too long to send")
+    app_err("ai.tooLong", format!("the song's {what} is too long to send")).with("what", what).into()
 }
 
 fn check_text(what: &str, s: &str, max: usize) -> Result<(), String> {
@@ -586,7 +593,7 @@ fn build_kit_call(mut req: KitRequest, notes_allowed: bool) -> Result<(String, S
     check_context(&req.context)?;
     for (id, value) in &req.fields {
         if !KIT_FIELDS.contains(&id.as_str()) {
-            return Err(format!("unknown Launch Kit field: {id}"));
+            return Err(app_err("ai.unknownField", format!("unknown Launch Kit field: {id}")).with("field", id.as_str()).into());
         }
         check_text(id, value, if LONG_FIELDS.contains(&id.as_str()) { 4000 } else { SHORT_TEXT })?;
     }
@@ -611,7 +618,7 @@ fn build_kit_call(mut req: KitRequest, notes_allowed: bool) -> Result<(String, S
         KitCall::Review => {
             let ids: Vec<&String> = req.fields.keys().collect();
             if ids.is_empty() {
-                return Err("nothing to check".to_string());
+                return Err(app_err("ai.nothingToCheck", "nothing to check").into());
             }
             let language = req.language.as_deref().filter(|l| LANGUAGES.contains(l)).unwrap_or("French");
             (format!("{REVIEW_SYSTEM}{}", review_language_rule(language)), prompt, review_schema(&ids), 0.1)

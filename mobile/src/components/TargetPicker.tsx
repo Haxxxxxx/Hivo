@@ -31,7 +31,7 @@ export function TargetPicker({ value, onChange, disabled, kinds = KINDS }: { val
         onPress={() => setOpen(true)}
         style={({ pressed }) => [styles.field, pressed && { backgroundColor: C.raised }, disabled && { opacity: 0.6 }]}
         accessibilityRole="button"
-        accessibilityLabel={value ? `${s().forTarget}: ${label[value.kind]} · ${value.title}` : `${s().forTarget}: ${s().noTarget}`}
+        accessibilityLabel={s().forTargetLabel(value ? `${label[value.kind]} · ${value.title}` : s().noTarget)}
       >
         <Text style={[styles.value, !value && { color: C.engrave }]} numberOfLines={1}>
           {value ? `${label[value.kind]} · ${value.title}` : s().noTarget}
@@ -61,6 +61,7 @@ export function TargetPicker({ value, onChange, disabled, kinds = KINDS }: { val
                   onChange({ kind: item.kind, id: item.id, title: item.title });
                   setOpen(false);
                 }}
+                accessibilityRole="button"
                 style={({ pressed }) => [styles.row, pressed && { backgroundColor: C.raised }]}
               >
                 <Text style={styles.rowTitle} numberOfLines={1}>{item.title}</Text>
@@ -94,7 +95,7 @@ const styles = StyleSheet.create({
   modal: { flex: 1, backgroundColor: C.chassis, paddingTop: 24 },
   title: { fontFamily: FONT.display, fontSize: 24, color: C.cream, textTransform: "uppercase", marginHorizontal: 16 },
   tabs: { flexDirection: "row", marginHorizontal: 16, marginTop: 12, borderWidth: 1, borderColor: C.ruleStrong, borderRadius: RADIUS, overflow: "hidden" },
-  tab: { flex: 1, paddingVertical: 8, alignItems: "center", backgroundColor: C.panel },
+  tab: { flex: 1, minHeight: 48, paddingVertical: 8, alignItems: "center", justifyContent: "center", backgroundColor: C.panel },
   tabOn: { backgroundColor: C.cream },
   tabText: { fontFamily: FONT.display, fontSize: 15, color: C.body, textTransform: "uppercase" },
   search: { marginHorizontal: 16, marginVertical: 10, paddingHorizontal: 10, paddingVertical: 8, borderWidth: 1, borderColor: C.rule, borderRadius: RADIUS, color: C.cream, fontSize: 15 },

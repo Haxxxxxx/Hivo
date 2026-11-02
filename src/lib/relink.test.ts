@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProjectInfo, Workspace } from "../types";
-import { applyRelinks, findRelinks, rootRelinks } from "./relink";
+import { applyRelinks, emptyScanMemory, findRelinks, isNetworkPath, relinksAfterScan, rootRelinks } from "./relink";
 
 const W = ["/music/Projects"];
 const proj = (path: string, isTemplate = false) => ({ path, isTemplate }) as ProjectInfo;
@@ -71,6 +71,89 @@ describe("findRelinks", () => {
     // The same song folder moved elsewhere is still followed.
     const moved = findRelinks([proj("/music/Projects/2026/Old idea/BandLab")], ws(gone), W);
     expect(moved).toEqual([{ from: "/music/Projects/Old idea/BandLab", to: "/music/Projects/2026/Old idea/BandLab", reason: "moved" }]);
+  });
+});
+
+describe("relinksAfterScan (r3 #1: a file missing from one scan isn't moved)", () => {
+  const envy = "/music/Projects/Envy/Envy.flp";
+  const old = "/music/Projects/Envy/Envy old.flp";
+  const record = ws({ [envy]: { status: "release", notes: "hook", shared: true, shareId: "s1" } });
+
+  it("never hands Envy's record to Envy old when Envy drops out of a scan", () => {
+    let memory = emptyScanMemory();
+    // Both there.
+    let r = relinksAfterScan([proj(envy), proj(old)], record, W, [], memory);
+    expect(r.relinks).toEqual([]);
+    memory = r.memory;
+    // FL is saving Envy.flp during the focus rescan: it's missing once.
+    r = relinksAfterScan([proj(old)], record, W, [], memory);
+    expect(r.relinks).toEqual([]);
+    memory = r.memory;
+    // Still missing on the next scan: Envy old was there all along, so it's not a rename.
+    r = relinksAfterScan([proj(old)], record, W, [], memory);
+    expect(r.relinks).toEqual([]);
+    // The one-shot rule alone would have moved it (what happened before).
+    expect(findRelinks([proj(old)], record, W)).toEqual([{ from: envy, to: old, reason: "renamed" }]);
+  });
+
+  it("forgets a file that comes back", () => {
+    let r = relinksAfterScan([proj(envy), proj(old)], record, W, [], emptyScanMemory());
+    r = relinksAfterScan([proj(old)], record, W, [], r.memory);
+    r = relinksAfterScan([proj(envy), proj(old)], record, W, [], r.memory);
+    expect(r.memory.missing.size).toBe(0);
+    r = relinksAfterScan([proj(old)], record, W, [], r.memory);
+    expect(r.relinks).toEqual([]);
+  });
+
+  it("moves a real rename after the second scan", () => {
+    const final = "/music/Projects/Envy/Envy FINAL.flp";
+    let r = relinksAfterScan([proj(envy), proj(old)], record, W, [], emptyScanMemory());
+    // Renamed in Finder: Envy.flp gone, Envy FINAL.flp new.
+    r = relinksAfterScan([proj(final), proj(old)], record, W, [], r.memory);
+    expect(r.relinks).toEqual([]);
+    r = relinksAfterScan([proj(final), proj(old)], record, W, [], r.memory);
+    expect(r.relinks).toEqual([{ from: envy, to: final, reason: "renamed" }]);
+    expect(r.memory.missing.has(envy)).toBe(false);
+  });
+
+  it("moves a real move to another folder after the second scan", () => {
+    const moved = "/music/Projects/2026/Envy/Envy.flp";
+    let r = relinksAfterScan([proj(envy)], record, W, [], emptyScanMemory());
+    r = relinksAfterScan([proj(moved)], record, W, [], r.memory);
+    expect(r.relinks).toEqual([]);
+    r = relinksAfterScan([proj(moved)], record, W, [], r.memory);
+    expect(r.relinks).toEqual([{ from: envy, to: moved, reason: "moved" }]);
+  });
+
+  it("uses the one-shot rule, after two scans, for a file missing since before the first scan", () => {
+    const final = "/music/Projects/Envy/Envy FINAL.flp";
+    let r = relinksAfterScan([proj(final)], record, W, [], emptyScanMemory());
+    expect(r.relinks).toEqual([]);
+    r = relinksAfterScan([proj(final)], record, W, [], r.memory);
+    expect(r.relinks).toEqual([{ from: envy, to: final, reason: "renamed" }]);
+  });
+
+  it("never counts an unreachable folder's songs as missing", () => {
+    let r = relinksAfterScan([proj(envy)], record, W, [], emptyScanMemory());
+    r = relinksAfterScan([], record, W, ["/music/Projects"], r.memory);
+    r = relinksAfterScan([], record, W, ["/music/Projects"], r.memory);
+    expect(r.relinks).toEqual([]);
+    expect(r.memory.missing.size).toBe(0);
+  });
+
+  it("matches decomposed and composed names (r3 #5)", () => {
+    const nfc = "/music/Projects/\u00c9t\u00e9/\u00c9t\u00e9.flp";
+    const nfd = "/music/Projects/2026/E\u0301te\u0301/E\u0301te\u0301.flp";
+    const r = findRelinks([proj(nfd)], ws({ [nfc]: { status: "prep" } }), W);
+    expect(r).toEqual([{ from: nfc, to: nfd, reason: "moved" }]);
+  });
+
+  it("knows network paths", () => {
+    expect(isNetworkPath("\\\\nas\\share\\Music")).toBe(true);
+    expect(isNetworkPath("//nas/share")).toBe(true);
+    expect(isNetworkPath("\\\\?\\UNC\\nas\\share")).toBe(true);
+    expect(isNetworkPath("Z:\\Music")).toBe(false);
+    expect(isNetworkPath("/Volumes/NAS/Music")).toBe(false);
   });
 });
 

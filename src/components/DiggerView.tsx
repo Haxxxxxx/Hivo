@@ -7,7 +7,7 @@ import { audioSrc } from "../lib/tauri";
 import { formatBytes, formatRelative } from "../lib/format";
 import { matchBeat, sortBeats, type BeatSort } from "../lib/digger";
 import { isFileDrag } from "../lib/dropGuard";
-import { dict, tr } from "../i18n";
+import { dict, plural, tr } from "../i18n";
 import type { BeatFile, YoutubeStatus } from "../types";
 import { DigPanel } from "./DigPanel";
 import { DigResults } from "./DigResults";
@@ -34,7 +34,7 @@ const T = dict(
     addFolder: "Add a beats folder",
     empty: "No beats found in your beats folders (mp3, wav, ogg, flac or m4a).",
     shownOf: (n: number, total: number, more: boolean) => `${n} of ${total}${more ? "+" : ""} beats shown`,
-    ignored: (n: number) => `${n} audio file${n > 1 ? "s" : ""} in other formats (opus, aac…) can't be read`,
+    ignored: (n: number) => `${n} audio file${plural(n, "", "s")} in other formats (opus, aac…) can't be read`,
     sort: "Sort",
     sortNewest: "Newest",
     sortName: "Name",
@@ -65,7 +65,7 @@ const T = dict(
     addFolder: "Ajouter un dossier de prods",
     empty: "Aucune prod trouvée dans tes dossiers de prods (mp3, wav, ogg, flac ou m4a).",
     shownOf: (n: number, total: number, more: boolean) => `${n} prods affichées sur ${total}${more ? "+" : ""}`,
-    ignored: (n: number) => `${n} fichier${n > 1 ? "s" : ""} audio dans d'autres formats (opus, aac…) illisible${n > 1 ? "s" : ""}`,
+    ignored: (n: number) => `${n} fichier${plural(n, "", "s")} audio dans d'autres formats (opus, aac…) illisible${plural(n, "", "s")}`,
     sort: "Trier",
     sortNewest: "Récentes",
     sortName: "Nom",
@@ -247,7 +247,7 @@ export function DiggerView() {
               />
             </label>
             <button onClick={() => void load()} disabled={loading} title={t.rescan} aria-label={t.rescan} className="rounded p-1.5 text-engrave hover:bg-rule hover:text-cream disabled:opacity-40">
-              <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+              <RefreshCw size={14} className={loading ? "motion-safe:animate-spin" : ""} />
             </button>
           </>
         )}

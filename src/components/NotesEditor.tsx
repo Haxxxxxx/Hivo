@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Pencil } from "lucide-react";
 import { parseNoteSections } from "../lib/lyrics";
 import { MAX_NOTE_CHARS } from "../lib/notes";
-import { dict, locale, tr } from "../i18n";
+import { dict, locale, plural, tr } from "../i18n";
 import { engrave } from "../ui";
 
 // A note with two modes: Read (the note laid out as lyrics: `[Hook]` lines
@@ -21,7 +21,7 @@ const T = dict(
     placeholder: "Lyrics, flow ideas, what to change…\n\n[Hook]\n…",
     label: "Notes",
     count: (n: string, max: string) => `${n} / ${max}`,
-    syllables: (n: number) => `${n} syllable${n === 1 ? "" : "s"}`,
+    syllables: (n: number) => `${n} syllable${plural(n, "", "s")}`,
   },
   {
     read: "Lire",
@@ -32,7 +32,7 @@ const T = dict(
     placeholder: "Paroles, idées de flow, ce qu'il faut changer…\n\n[Refrain]\n…",
     label: "Notes",
     count: (n: string, max: string) => `${n} / ${max}`,
-    syllables: (n: number) => `${n} syllabe${n === 1 ? "" : "s"}`,
+    syllables: (n: number) => `${n} syllabe${plural(n, "", "s")}`,
   },
 );
 

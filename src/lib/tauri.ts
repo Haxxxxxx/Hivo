@@ -201,6 +201,8 @@ export interface Continued {
   flp: string;
   clips: number;
   note: string | null;
+  /** The same, one coded message each (src/lib/errors.ts translates them). */
+  notes?: string[];
   /** Audio files left off the playlist past 20 (FL_BUILD MAX_CLIPS). */
   skipped: number;
   /** Mixdown files left off because the stems (`BandLab/Stems/`) are on it. */

@@ -2,6 +2,7 @@
 //! offline): the layout image the app draws (art, title, artist, release
 //! line) + an animated waveform + the snippet cut from the real mixdown.
 
+use crate::error::{app_err, path_err};
 use crate::audio::safe_name;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -70,9 +71,9 @@ fn encoder_for(ffmpeg: &Path) -> Result<&'static str, String> {
         .args(["-hide_banner", "-encoders"])
         .stdin(Stdio::null())
         .output()
-        .map_err(|e| format!("couldn't run ffmpeg at {}: {e}", ffmpeg.display()))?;
+        .map_err(|e| path_err("ffmpeg.run", ffmpeg, format!("couldn't run ffmpeg at {}: {e}", ffmpeg.display())))?;
     pick_encoder(&String::from_utf8_lossy(&out.stdout))
-        .ok_or_else(|| "This ffmpeg has no H.264 encoder. Install a full build (brew install ffmpeg / winget install Gyan.FFmpeg).".to_string())
+        .ok_or_else(|| app_err("ffmpeg.noH264", "This ffmpeg has no H.264 encoder. Install a full build (brew install ffmpeg / winget install Gyan.FFmpeg).").into())
 }
 
 fn encoder_args(encoder: &str) -> Vec<String> {
@@ -106,15 +107,15 @@ pub fn audio_format(path: &Path) -> Option<&'static str> {
 /// The layout image as sent by the app: a PNG (magic + IHDR), not too big.
 pub fn check_layout_png(bytes: &[u8]) -> Result<(), String> {
     if bytes.len() > MAX_LAYOUT_BYTES {
-        return Err("the layout image is too large".to_string());
+        return Err(app_err("shorts.layoutTooLarge", "the layout image is too large").into());
     }
     if bytes.len() < 24 || !bytes.starts_with(PNG_MAGIC) || &bytes[12..16] != b"IHDR" {
-        return Err("the layout image isn't a PNG".to_string());
+        return Err(app_err("shorts.layoutInvalid", "the layout image isn't a PNG").into());
     }
     let dim = |i: usize| u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
     let (w, h) = (dim(16), dim(20));
     if w == 0 || h == 0 || w > 4096 || h > 4096 {
-        return Err("the layout image has an odd size".to_string());
+        return Err(app_err("shorts.layoutInvalid", "the layout image has an odd size").into());
     }
     Ok(())
 }
@@ -168,7 +169,7 @@ fn run_ffmpeg(ffmpeg: &Path, args: &[String]) -> Result<(), String> {
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("couldn't start ffmpeg: {e}"))?;
+        .map_err(|e| app_err("ffmpeg.start", format!("couldn't start ffmpeg: {e}")))?;
     let started = Instant::now();
     loop {
         match child.try_wait() {
@@ -181,15 +182,15 @@ fn run_ffmpeg(ffmpeg: &Path, args: &[String]) -> Result<(), String> {
                     let _ = s.read_to_string(&mut err);
                 }
                 let tail: String = err.lines().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" / ");
-                return Err(format!("ffmpeg failed: {}", if tail.is_empty() { status.to_string() } else { tail }));
+                return Err(app_err("ffmpeg.failed", format!("ffmpeg failed: {}", if tail.is_empty() { status.to_string() } else { tail })).into());
             }
             Ok(None) if started.elapsed() > RENDER_TIMEOUT => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err("ffmpeg took too long and was stopped".to_string());
+                return Err(app_err("ffmpeg.timeout", "ffmpeg took too long and was stopped").into());
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(100)),
-            Err(e) => return Err(format!("error waiting for ffmpeg: {e}")),
+            Err(e) => return Err(app_err("ffmpeg.wait", format!("error waiting for ffmpeg: {e}")).into()),
         }
     }
 }
@@ -216,7 +217,7 @@ pub async fn shorts_status(app: tauri::AppHandle) -> ShortsStatus {
         },
     })
     .await
-    .unwrap_or(ShortsStatus { path: None, found: None, encoder: None, error: Some("couldn't check for ffmpeg".into()) })
+    .unwrap_or(ShortsStatus { path: None, found: None, encoder: None, error: Some(app_err("ffmpeg.check", "couldn't check for ffmpeg").into()) })
 }
 
 #[derive(Debug, Deserialize)]
@@ -255,7 +256,7 @@ fn decode_base64(s: &str) -> Result<Vec<u8>, String> {
     for chunk in clean.chunks(4) {
         let mut n = 0u32;
         for (i, c) in chunk.iter().enumerate() {
-            n |= val(*c).ok_or("invalid base64 in layout image")? << (18 - 6 * i);
+            n |= val(*c).ok_or_else(|| String::from(app_err("shorts.layoutInvalid", "invalid base64 in layout image")))? << (18 - 6 * i);
         }
         out.push((n >> 16) as u8);
         if chunk.len() > 2 {
@@ -286,35 +287,35 @@ pub async fn render_shorts(
     let master = scope.audio(&master)?.to_string_lossy().to_string();
     let output_folder = scope.output()?.to_string_lossy().to_string();
     tauri::async_runtime::spawn_blocking(move || {
-        let ffmpeg = find_ffmpeg(configured).ok_or("ffmpeg isn't set up yet. See Settings → Shorts (ffmpeg).")?;
+        let ffmpeg = find_ffmpeg(configured).ok_or_else(|| String::from(app_err("ffmpeg.notSetUp", "ffmpeg isn't set up yet. See Settings → Shorts (ffmpeg).")))?;
         let encoder = encoder_for(&ffmpeg)?;
         let master = PathBuf::from(&master);
         if !master.is_file() {
-            return Err(format!("The mixdown is missing: {}", master.display()));
+            return Err(path_err("shorts.noMixdown", &master, format!("The mixdown is missing: {}", master.display())));
         }
-        let audio_fmt = audio_format(&master).ok_or("That mixdown isn't WAV, MP3, FLAC or OGG.")?;
+        let audio_fmt = audio_format(&master).ok_or_else(|| String::from(app_err("shorts.badFormat", "That mixdown isn't WAV, MP3, FLAC or OGG.")))?;
         let kit = crate::kits::resolve_kit_dir(Path::new(&output_folder), &folder_name, &owner, previous_folder.as_deref())?;
         let out_dir = crate::kits::sub_dir(&kit, "shorts")?;
         let temp = std::env::temp_dir().join(format!("flsm-shorts-{}", std::process::id()));
-        fs::create_dir_all(&temp).map_err(|e| format!("could not create a temp folder: {e}"))?;
+        fs::create_dir_all(&temp).map_err(|e| path_err("io.create", &temp, format!("could not create a temp folder: {e}")))?;
 
         let results = clips
             .iter()
             .map(|clip| {
                 let render = || -> Result<PathBuf, String> {
                     if !valid_range(clip.start_sec, clip.length_sec) {
-                        return Err("invalid clip range".to_string());
+                        return Err(app_err("shorts.badRange", "invalid clip range").into());
                     }
                     if clip.layout_png.len() > MAX_LAYOUT_BYTES * 4 / 3 + 64 {
-                        return Err("the layout image is too large".to_string());
+                        return Err(app_err("shorts.layoutTooLarge", "the layout image is too large").into());
                     }
                     let png = decode_base64(&clip.layout_png)?;
                     check_layout_png(&png)?;
                     let layout = temp.join(format!("{}.png", safe_name(&clip.label)));
-                    fs::write(&layout, png).map_err(|e| format!("could not write the layout: {e}"))?;
+                    fs::write(&layout, png).map_err(|e| path_err("io.write", &layout, format!("could not write the layout: {e}")))?;
                     let out = out_dir.join(format!("{}.mp4", safe_name(&clip.label)));
                     // ffmpeg -y would write through a planted link.
-                    crate::kits::clear_target(&out).map_err(|e| format!("could not write {}: {e}", out.display()))?;
+                    crate::kits::clear_target(&out).map_err(|e| path_err("io.write", &out, format!("could not write {}: {e}", out.display())))?;
                     let result = run_ffmpeg(&ffmpeg, &build_args(&layout, &master, audio_fmt, clip.start_sec, clip.length_sec, encoder, &out));
                     let _ = fs::remove_file(&layout);
                     result.map(|_| out)
@@ -329,7 +330,7 @@ pub async fn render_shorts(
         Ok(results)
     })
     .await
-    .map_err(|e| format!("rendering failed: {e}"))?
+    .map_err(|e| app_err("task.failed", format!("rendering failed: {e}")))?
 }
 
 #[cfg(test)]

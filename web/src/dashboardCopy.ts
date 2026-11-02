@@ -1,4 +1,4 @@
-import { dict } from "@shared/i18n";
+import { dict, plural } from "@shared/i18n";
 
 // The signed-in crew website in English and French (same system and words
 // as the desktop app: src/i18n, docs/I18N.md). The language follows the page:
@@ -56,8 +56,12 @@ export const W = dict(
     nothingPlanned: "Nothing planned.",
     released: "Released",
     owner: "owner",
-    memberLine: (shared: number, active: number, last: string | null) =>
-      `${shared} shared · ${active} being made · ${last ? `last session ${last}` : "no sessions yet"}`,
+    memberLine: (shared: number, active: number) => `${shared} shared · ${active} being made`,
+    openTheirs: (name: string) => `Open ${name}'s songs on the board`,
+    openYours: "Open your songs on the board",
+    onlyOf: (name: string) => `Only ${name}'s songs`,
+    onlyYours: "Only your songs",
+    showAll: "Show everyone's",
     anotherCrew: "Join or create another crew",
     cancel: "Cancel",
     tenCrews: "You're in 10 crews, the most allowed. Leave one first.",
@@ -156,8 +160,12 @@ export const W = dict(
     nothingPlanned: "Rien de prévu.",
     released: "Sorties passées",
     owner: "propriétaire",
-    memberLine: (shared: number, active: number, last: string | null) =>
-      `${shared} partagé${shared > 1 ? "s" : ""} · ${active} en cours · ${last ? `dernière session ${last}` : "pas encore de session"}`,
+    memberLine: (shared: number, active: number) => `${shared} partagé${plural(shared, "", "s")} · ${active} en cours`,
+    openTheirs: (name: string) => `Ouvrir les sons de ${name} sur le tableau`,
+    openYours: "Ouvrir tes sons sur le tableau",
+    onlyOf: (name: string) => `Seulement les sons de ${name}`,
+    onlyYours: "Seulement tes sons",
+    showAll: "Montrer ceux de tout le monde",
     anotherCrew: "Rejoindre ou créer un autre crew",
     cancel: "Annuler",
     tenCrews: "Tu es déjà dans 10 crews, le maximum. Quittes-en un d'abord.",
@@ -170,7 +178,7 @@ export const W = dict(
     invitesHelp: "Envoie un code à quelqu'un du crew : connexion sur hi-vo.fr ou dans Hivo, puis le code. Un code marche 10 fois pendant 7 jours.",
     newInvite: "Nouveau code d'invitation",
     noInvites: "Aucun code ouvert.",
-    inviteLine: (uses: number, max: number, until: string) => `${uses}/${max} utilisé${uses > 1 ? "s" : ""} · jusqu'au ${until}`,
+    inviteLine: (uses: number, max: number, until: string) => `${uses}/${max} utilisé${plural(uses, "", "s")} · jusqu'au ${until}`,
     copy: "Copier",
     copied: "Copié",
     revoke: "Révoquer",
@@ -183,7 +191,7 @@ export const W = dict(
     save: "Enregistrer",
     deleteTitle: "Supprimer ce crew",
     deleteWhat: (crew: string, n: number) =>
-      `Tout le monde perd l'accès à ${crew} (${n === 1 ? "juste toi" : `${n} membres`})${NB}: son tableau, les releases partagées, les colonnes et les codes d'invitation sont supprimés. Rien n'est touché sur les ordis.`,
+      `Tout le monde perd l'accès à ${crew} (${n === 1 ? "juste toi" : `${n} membres`})${NB}: son tableau, les sorties partagées, les colonnes et les codes d'invitation sont supprimés. Rien n'est touché sur les ordis.`,
     deleteStart: "Supprimer le crew…",
     deleteType: (crew: string) => `Tape ${crew} pour confirmer`,
     deleteConfirm: "Supprimer pour tout le monde",

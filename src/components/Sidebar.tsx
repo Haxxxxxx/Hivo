@@ -25,6 +25,7 @@ const T = dict(
     tagline: "Session → release",
     newSong: "New song",
     peopleCredits: "People & credits",
+    digReady: "New dig results",
     joinCrew: "Join your crew",
     feedback: "Report a bug or send feedback",
     inbox: "Phone inbox",
@@ -41,6 +42,7 @@ const T = dict(
     tagline: "Session → sortie",
     newSong: "Nouveau son",
     peopleCredits: "Personnes et crédits",
+    digReady: "Nouveaux résultats de fouille",
     joinCrew: "Rejoindre ton crew",
     feedback: "Signaler un bug ou donner ton avis",
     inbox: "Boîte du téléphone",
@@ -99,7 +101,7 @@ export function Sidebar() {
     <aside className="flex w-56 shrink-0 flex-col border-r border-rule bg-panel">
       <div className="flex flex-col gap-1.5 px-4 py-4">
         <Wordmark size={30} />
-        <div className={`${engrave} text-[9.5px]`}>{demoMode ? t.sampleData : t.tagline}</div>
+        <div className={engrave}>{demoMode ? t.sampleData : t.tagline}</div>
       </div>
 
       <div className="px-3 pb-2">
@@ -128,7 +130,7 @@ export function Sidebar() {
               <span className="flex items-center gap-2">
                 <Icon size={16} strokeWidth={2} />
                 {item.label}
-                {item.id === "digger" && digUnseen && <StatusDot color="var(--color-hot)" size={6} />}
+                {item.id === "digger" && digUnseen && <StatusDot color="var(--color-hot)" size={6} label={t.digReady} />}
               </span>
               {typeof item.badge === "number" && item.badge > 0 && (
                 <span className={`font-mono text-[11px] tabular-nums ${active ? "text-chassis/70" : "text-engrave"}`}>{item.badge}</span>
@@ -175,7 +177,7 @@ export function Sidebar() {
               >
                 <span className="h-3 w-3 shrink-0 rounded-sm" style={{ background: a.color }} />
                 <span className="truncate">{a.title}</span>
-                <span className="ml-auto text-engrave">{a.trackPaths.length}</span>
+                <span className={`ml-auto ${view === "albums" && openAlbumId === a.id ? "text-body" : "text-engrave"}`}>{a.trackPaths.length}</span>
               </button>
             ))}
           </div>

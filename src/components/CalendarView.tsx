@@ -5,7 +5,7 @@ import { buildCalendar, monthLabel, undatedReleased, type CalendarEntry } from "
 import { formatRelative } from "../lib/format";
 import { btn, btnPrimary } from "./ui";
 import { Meter } from "../ui";
-import { dict, locale, tr } from "../i18n";
+import { dict, locale, plural, tr } from "../i18n";
 
 const T = dict(
   {
@@ -15,7 +15,7 @@ const T = dict(
     mixtape: "Mixtape",
     title: "Release calendar",
     planRelease: "Plan a release",
-    undated: (n: number) => `${n} song${n === 1 ? "" : "s"} in Release or Promotion ${n === 1 ? "has" : "have"} no date, so ${n === 1 ? "it isn't" : "they aren't"} on the calendar. Give ${n === 1 ? "it" : "them"} a date in the Launch Kit or on a release.`,
+    undated: (n: number) => `${n} song${plural(n, "", "s")} in Release or Promotion ${plural(n, "has", "have")} no date, so ${plural(n, "it isn't", "they aren't")} on the calendar. Give ${plural(n, "it", "them")} a date in the Launch Kit or on a release.`,
     noDates: "No release dates yet",
     noDatesHint: "Give a release a date in Releases, or set a release date in a song's Launch Kit. It shows up here with how ready it is.",
     nothingPlanned: (when: string) => `Nothing planned. The last release was ${when}.`,
@@ -24,7 +24,7 @@ const T = dict(
     showAll: (n: number) => `Show all ${n}`,
     today: "Today",
     tomorrow: "Tomorrow",
-    tracks: (n: number) => `${n} track${n === 1 ? "" : "s"}`,
+    tracks: (n: number) => `${n} track${plural(n, "", "s")}`,
     finished: "Finished (Prep or later)",
     kitAccepted: "Launch Kit accepted",
   },
@@ -35,7 +35,7 @@ const T = dict(
     mixtape: "Mixtape",
     title: "Calendrier des sorties",
     planRelease: "Prévoir une sortie",
-    undated: (n: number) => `${n} son${n === 1 ? "" : "s"} en Sortie ou Promo ${n === 1 ? "n'a" : "n'ont"} pas de date, donc pas dans le calendrier. Donne-${n === 1 ? "lui" : "leur"} une date dans le Launch Kit ou sur une sortie.`,
+    undated: (n: number) => `${n} son${plural(n, "", "s")} en Sortie ou Promo ${plural(n, "n'a", "n'ont")} pas de date, donc pas dans le calendrier. Donne-${plural(n, "lui", "leur")} une date dans le Launch Kit ou sur une sortie.`,
     noDates: "Pas encore de date de sortie",
     noDatesHint:
       "Donne une date à une sortie dans Sorties, ou mets une date de sortie dans le Launch Kit d'un son. Elle s'affiche ici avec où elle en est.",
@@ -45,7 +45,7 @@ const T = dict(
     showAll: (n: number) => `Tout afficher (${n})`,
     today: "Aujourd'hui",
     tomorrow: "Demain",
-    tracks: (n: number) => `${n} morceau${n === 1 ? "" : "x"}`,
+    tracks: (n: number) => `${n} morceau${plural(n, "", "x")}`,
     finished: "Finis (Prépa ou après)",
     kitAccepted: "Launch Kit validé",
   },

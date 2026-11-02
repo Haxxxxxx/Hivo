@@ -44,7 +44,7 @@ describe("onboarding messages", () => {
 
   it("signed in but no crew: enter your invite code", () => {
     expect(crewText("noCrew", "en", { email: "a@b.c" })).toMatch(/signed in as a@b\.c, but not in a crew yet\. Enter the invite code/);
-    expect(crewText("noCrew", "fr", { email: "a@b.c" })).toMatch(/connecté en tant que a@b\.c.*Entre le code d'invitation/);
+    expect(crewText("noCrew", "fr", { email: "a@b.c" })).toMatch(/Ta session est ouverte avec a@b\.c.*Entre le code d.invitation/);
     expect(crewText("noInviteYet", "en")).toMatch(/Ask your crew's owner/);
   });
 
@@ -62,7 +62,46 @@ describe("onboarding messages", () => {
 
   it("deleting a crew: wrong name, not the owner", () => {
     expect(crewErrorMessage({ message: "type the crew name to delete it" }, "en")).toBe("Type the crew's name exactly to delete it.");
-    expect(crewErrorMessage({ message: "only the owner can delete the crew" }, "fr")).toMatch(/Seul le propriétaire/);
+    expect(crewErrorMessage({ message: "only the owner can delete the crew" }, "fr")).toMatch(/Il faut être propriétaire/);
+  });
+
+  it("every server message has its own sentence in both languages", () => {
+    const server = [
+      "sign in first",
+      "song not found",
+      "unknown stage done",
+      "share limit reached (1000 songs per person per crew)",
+      "share limit reached (2000 songs per person)",
+      "release limit reached (500 per crew)",
+      "too many open invites: revoke some first",
+      "invite code not found",
+      "invite code expired",
+      "invite code already used up",
+      "only a crew owner can create invites",
+      "could not generate a unique invite code, try again",
+      "only a crew owner can edit the columns",
+      "column not in this crew",
+      "bad column id",
+      "every stage needs a column",
+      "columns must be a list of 1 to 30",
+      "column names are 1 to 40 characters",
+      "column x listed twice",
+      "each column must be an object",
+      "bad card order",
+      "bad card id",
+      "cards must be a list of 1 to 500",
+      "only display_name can change",
+      "crew_id and owner_id cannot change",
+      "passwords are disabled: sign in with an emailed code",
+    ];
+    for (const message of server) {
+      const en = crewErrorMessage({ message }, "en");
+      const fr = crewErrorMessage({ message }, "fr");
+      expect(en, message).not.toBe(message);
+      expect(fr, message).not.toBe(message);
+      expect(fr, message).not.toBe(en);
+    }
+    expect(crewErrorMessage({ message: "share limit reached (1000 songs per person per crew)" }, "fr")).toMatch(/\(1000\)/);
   });
 
   it("the website can pin the language (/fr, /en) over the browser's", () => {

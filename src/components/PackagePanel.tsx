@@ -4,28 +4,29 @@ import { useAppStore } from "../store/useAppStore";
 import { formatBytes } from "../lib/format";
 import { revealInFileManager } from "../lib/tauri";
 import { stripProjectExt } from "../lib/daws";
-import { dict, tr } from "../i18n";
+import { dict, plural, tr } from "../i18n";
 
 const T = dict(
   {
-    checkTitle: (songs: number) => `Check what goes in the package${songs === 1 ? "" : "s"}`,
+    checkTitle: (songs: number) => `Check what goes in the package${plural(songs, "", "s")}`,
     cancel: "Cancel",
     projectPlus: "The project file, plus:",
     noSamples: "no samples found",
-    neverPackaged: (n: number) => `${n} path${n === 1 ? "" : "s"} the project names will never be packaged`,
-    notFound: (n: number) => `${n} sample${n === 1 ? "" : "s"} not found`,
+    neverPackaged: (n: number) => `${n} path${plural(n, "", "s")} the project names will never be packaged`,
+    notFound: (n: number) => `${n} sample${plural(n, "", "s")} not found`,
     write: (songs: number, samples: number) =>
-      `Write ${songs === 1 ? "package" : `${songs} packages`} (${samples} sample${samples === 1 ? "" : "s"})`,
+      `Write ${plural(songs, "the zip pack", `${songs} zip packs`)} (${samples} sample${plural(samples, "", "s")})`,
     packaging: (n: number) => `Packaging… ${n} done`,
     ready: "Packages ready",
     show: "Show",
     included: (n: number, size: string) => `${n} samples · ${size}`,
-    refused: (n: number) => `${n} path${n === 1 ? "" : "s"} refused (not audio, hidden or network)`,
-    missing: (n: number) => `${n} sample${n === 1 ? "" : "s"} couldn't be found and aren't included`,
+    refused: (n: number) => `${n} path${plural(n, "", "s")} refused (not audio, hidden or network)`,
+    missing: (n: number) => `${n} sample${plural(n, "", "s")} couldn't be found and aren't included`,
     howToOpen: "Open a package directly from FL (File → Open) — samples relink automatically.",
+    dismiss: "Close the packages panel",
   },
   {
-    checkTitle: (songs: number) => `Vérifie ce qui part dans ${songs === 1 ? "le pack zip" : "les packs zip"}`,
+    checkTitle: (songs: number) => `Vérifie ce qui part dans ${plural(songs, "le pack zip", "les packs zip")}`,
     cancel: "Annuler",
     projectPlus: "Le fichier projet, plus :",
     noSamples: "aucun sample trouvé",
@@ -33,18 +34,19 @@ const T = dict(
       n === 1
         ? "1 chemin cité par le projet ne sera jamais mis dans le pack"
         : `${n} chemins cités par le projet ne seront jamais mis dans le pack`,
-    notFound: (n: number) => `${n} sample${n === 1 ? " introuvable" : "s introuvables"}`,
+    notFound: (n: number) => `${n} sample${plural(n, " introuvable", "s introuvables")}`,
     write: (songs: number, samples: number) =>
-      `Écrire ${songs === 1 ? "le pack zip" : `${songs} packs zip`} (${samples} sample${samples > 1 ? "s" : ""})`,
-    packaging: (n: number) => `Création des packs… ${n} fini${n > 1 ? "s" : ""}`,
+      `Écrire ${plural(songs, "le pack zip", `${songs} packs zip`)} (${samples} sample${plural(samples, "", "s")})`,
+    packaging: (n: number) => `Création des packs… ${n} fini${plural(n, "", "s")}`,
     ready: "Packs zip prêts",
     show: "Afficher",
     included: (n: number, size: string) => `${n} samples · ${size}`,
     refused: (n: number) =>
-      `${n} chemin${n === 1 ? " refusé" : "s refusés"} (pas de l'audio, caché${n === 1 ? "" : "s"} ou sur le réseau)`,
+      `${n} chemin${plural(n, " refusé", "s refusés")} (pas de l'audio, caché${plural(n, "", "s")} ou sur le réseau)`,
     missing: (n: number) =>
-      n === 1 ? "1 sample introuvable, pas inclus" : `${n} samples introuvables, pas inclus`,
+      plural(n, `${n} sample introuvable, pas inclus`, `${n} samples introuvables, pas inclus`),
     howToOpen: "Ouvre un pack directement depuis FL (File → Open) — les samples se relient tout seuls.",
+    dismiss: "Fermer le panneau des packs",
   },
 );
 
@@ -160,7 +162,7 @@ export function PackagePanel() {
     <div className="absolute bottom-4 left-60 z-30 w-96 rounded-lg border border-rule bg-raised shadow-2xl">
       <div className="flex items-center justify-between border-b border-rule px-4 py-3">
         <div className="flex items-center gap-2 text-sm font-medium text-cream">
-          {packaging && <Loader2 size={14} className="animate-spin text-orange-400" />}
+          {packaging && <Loader2 size={14} className="motion-safe:animate-spin text-orange-400" />}
           {packaging ? t.packaging(results.length) : t.ready}
         </div>
         <div className="flex items-center gap-1">
@@ -173,7 +175,7 @@ export function PackagePanel() {
             </button>
           )}
           {!packaging && (
-            <button onClick={dismiss} className="rounded p-1 text-engrave hover:bg-rule hover:text-cream">
+            <button onClick={dismiss} aria-label={t.dismiss} className="rounded p-1 text-engrave hover:bg-rule hover:text-cream">
               <X size={14} />
             </button>
           )}

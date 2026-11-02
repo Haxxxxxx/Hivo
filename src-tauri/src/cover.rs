@@ -10,6 +10,7 @@
 //! default 4) }`; the answer is the usual Cloudflare envelope
 //! `{ "result": { "image": "<base64 JPEG>" }, "success", "errors", "messages" }`.
 
+use crate::error::{app_err, path_err};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -46,8 +47,8 @@ struct Credentials {
 }
 
 fn secrets_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_config_dir().map_err(|e| format!("could not resolve app config dir: {e}"))?;
-    fs::create_dir_all(&dir).map_err(|e| format!("could not create config dir: {e}"))?;
+    let dir = app.path().app_config_dir().map_err(|e| app_err("config.dir", format!("could not resolve app config dir: {e}")))?;
+    fs::create_dir_all(&dir).map_err(|e| app_err("config.dir", format!("could not create config dir: {e}")))?;
     Ok(dir.join("cover.json"))
 }
 
@@ -130,20 +131,20 @@ fn store_credentials(path: &Path, account_id: Option<String>, token: Option<Stri
             return match fs::remove_file(path) {
                 Ok(()) => Ok(()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(e) => Err(format!("could not remove the Cloudflare credentials: {e}")),
+                Err(e) => Err(app_err("secret.remove", format!("could not remove the Cloudflare credentials: {e}")).into()),
             };
         }
         (Some(a), Some(t)) => (a.to_ascii_lowercase(), t),
-        _ => return Err("Enter both the account ID and the API token.".to_string()),
+        _ => return Err(app_err("cover.needBoth", "Enter both the account ID and the API token.").into()),
     };
     if !valid_account_id(&account_id) {
-        return Err("That doesn't look like a Cloudflare account ID (32 letters a–f and digits). Copy it from the Workers AI page of the dashboard.".to_string());
+        return Err(app_err("cover.badAccountId", "That doesn't look like a Cloudflare account ID (32 letters a–f and digits). Copy it from the Workers AI page of the dashboard.").into());
     }
     if !valid_token(&token) {
-        return Err("That doesn't look like a Cloudflare API token. Copy it again, without spaces.".to_string());
+        return Err(app_err("cover.badToken", "That doesn't look like a Cloudflare API token. Copy it again, without spaces.").into());
     }
     let raw = serde_json::to_string_pretty(&CoverSecrets { account_id: Some(account_id), api_token: Some(token) }).map_err(|e| e.to_string())?;
-    write_private(path, raw.as_bytes()).map_err(|e| format!("could not save the Cloudflare credentials: {e}"))
+    write_private(path, raw.as_bytes()).map_err(|e| app_err("secret.save", format!("could not save the Cloudflare credentials: {e}")).into())
 }
 
 #[derive(Serialize)]
@@ -225,26 +226,27 @@ enum Failure {
 fn explain_error(status: u16, v: &Value) -> String {
     let msg = error_message(v);
     let codes = error_codes(v);
-    match status {
+    let e = match status {
         429 if quota_used_up(v) => {
-            "Today's free Workers AI allowance (10,000 neurons, about 170 concepts) is used up. It resets at 00:00 UTC.".to_string()
+            app_err("cover.quota", "Today's free Workers AI allowance (10,000 neurons, about 170 concepts) is used up. It resets at 00:00 UTC.")
         }
-        429 => "Cloudflare is out of capacity for FLUX right now, even after several retries. Try again in a minute.".to_string(),
-        401 => "Cloudflare rejected the API token. Check it in Settings → Cover art.".to_string(),
+        429 => app_err("cover.capacity", "Cloudflare is out of capacity for FLUX right now, even after several retries. Try again in a minute."),
+        401 => app_err("cover.tokenRejected", "Cloudflare rejected the API token. Check it in Settings → Cover art."),
         403 if codes.contains(&10000) || msg.to_lowercase().contains("authentication") => {
-            "Cloudflare rejected the API token. Check it in Settings → Cover art (it needs the Workers AI permission).".to_string()
+            app_err("cover.tokenRejected", "Cloudflare rejected the API token. Check it in Settings → Cover art (it needs the Workers AI permission).")
         }
-        403 => "This token isn't allowed to run Workers AI on that account. Create one with the \"Workers AI\" template (Settings → Cover art).".to_string(),
-        404 => "Cloudflare didn't find that account ID, or the FLUX model moved. Check the account ID in Settings → Cover art.".to_string(),
+        403 => app_err("cover.tokenNotAllowed", "This token isn't allowed to run Workers AI on that account. Create one with the \"Workers AI\" template (Settings → Cover art)."),
+        404 => app_err("cover.noAccount", "Cloudflare didn't find that account ID, or the FLUX model moved. Check the account ID in Settings → Cover art."),
         400 if codes.contains(&7003) || codes.contains(&7000) => {
-            "Cloudflare didn't find that account ID. Check it in Settings → Cover art.".to_string()
+            app_err("cover.noAccount", "Cloudflare didn't find that account ID. Check it in Settings → Cover art.")
         }
-        400 if !msg.is_empty() => format!("Cloudflare refused the request: {msg}"),
-        408 => "FLUX took too long to answer. Try again.".to_string(),
-        500..=599 => format!("Cloudflare Workers AI is having trouble ({status}), even after several retries. Try again in a few minutes."),
-        _ if !msg.is_empty() => format!("Cloudflare error: {msg}"),
-        _ => format!("Cloudflare error (HTTP {status})."),
-    }
+        400 if !msg.is_empty() => app_err("cover.refused", format!("Cloudflare refused the request: {msg}")).with("msg", msg.as_str()),
+        408 => app_err("cover.timeout", "FLUX took too long to answer. Try again."),
+        500..=599 => app_err("cover.trouble", format!("Cloudflare Workers AI is having trouble ({status}), even after several retries. Try again in a few minutes.")),
+        _ if !msg.is_empty() => app_err("cover.error", format!("Cloudflare error: {msg}")).with("msg", msg.as_str()),
+        _ => app_err("cover.http", format!("Cloudflare error (HTTP {status}).")),
+    };
+    e.with("status", status).into()
 }
 
 /// Seconds from a `Retry-After` header, if sane.
@@ -257,7 +259,7 @@ fn retry_after(res: &reqwest::Response) -> Option<Duration> {
 /// injectable so tests can point it at a local server.
 async fn run_model(client: &reqwest::Client, base: &str, creds: &Credentials, body: &Value, retries: u32) -> Result<Value, Failure> {
     if !valid_account_id(&creds.account_id) {
-        return Err(Failure::Other("The Cloudflare account ID isn't valid (32 letters a–f and digits). Fix it in Settings → Cover art.".to_string()));
+        return Err(Failure::Other(app_err("cover.badAccountId", "The Cloudflare account ID isn't valid (32 letters a–f and digits). Fix it in Settings → Cover art.").into()));
     }
     let url = format!("{base}/accounts/{}/ai/run/{MODEL}", creds.account_id);
     let mut attempt = 0;
@@ -283,14 +285,14 @@ async fn run_model(client: &reqwest::Client, base: &str, creds: &Credentials, bo
                 };
                 (status, hint, v)
             }
-            Err(e) if e.is_timeout() => return Err(Failure::Other("FLUX took too long to answer. Try again.".to_string())),
+            Err(e) if e.is_timeout() => return Err(Failure::Other(app_err("cover.timeout", "FLUX took too long to answer. Try again.").into())),
             Err(e) if e.is_connect() && attempt < retries => {
                 tokio::time::sleep(backoff(attempt)).await;
                 attempt += 1;
                 continue;
             }
             // without_url: keep the account ID out of error text.
-            Err(e) => return Err(Failure::Other(format!("Couldn't reach Cloudflare. Are you online? ({})", e.without_url()))),
+            Err(e) => return Err(Failure::Other(app_err("cover.offline", format!("Couldn't reach Cloudflare. Are you online? ({})", e.without_url())).into())),
         };
         if (200..300).contains(&status) {
             return Ok(v);
@@ -311,19 +313,23 @@ async fn run_model(client: &reqwest::Client, base: &str, creds: &Credentials, bo
 fn parse_image(v: &Value) -> Result<(String, Vec<u8>), String> {
     if v.get("success").and_then(Value::as_bool) == Some(false) {
         let msg = error_message(v);
-        return Err(if msg.is_empty() { "Cloudflare reported a failure without details.".to_string() } else { format!("Cloudflare error: {msg}") });
+        return Err(if msg.is_empty() {
+            app_err("cover.failed", "Cloudflare reported a failure without details.").into()
+        } else {
+            app_err("cover.error", format!("Cloudflare error: {msg}")).with("msg", msg.as_str()).into()
+        });
     }
     let b64 = v
         .pointer("/result/image")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or("FLUX answered without an image. Try again.")?;
+        .ok_or_else(|| String::from(app_err("cover.badImage", "FLUX answered without an image. Try again.")))?;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(b64)
-        .map_err(|_| "FLUX's image wasn't valid base64. Try again.".to_string())?;
+        .map_err(|_| String::from(app_err("cover.badImage", "FLUX's image wasn't valid base64. Try again.")))?;
     if !is_jpeg(&bytes) {
-        return Err("FLUX's answer wasn't a JPEG image. Try again.".to_string());
+        return Err(app_err("cover.badImage", "FLUX's answer wasn't a JPEG image. Try again.").into());
     }
     Ok((b64.to_string(), bytes))
 }
@@ -413,19 +419,20 @@ async fn generate(client: &reqwest::Client, base: &str, creds: &Credentials, pro
 /// One cover concept from FLUX.1 [schnell]: base64 JPEG + the seed used.
 #[tauri::command]
 pub async fn generate_cover(app: AppHandle, prompt: String, seed: Option<u32>) -> Result<CoverImage, String> {
-    let (creds, _) = credentials(&app).ok_or("Cover concepts are off. Add a free Cloudflare account ID and token in Settings → Cover art.")?;
+    let (creds, _) = credentials(&app)
+        .ok_or_else(|| String::from(app_err("cover.off", "Cover concepts are off. Add a free Cloudflare account ID and token in Settings → Cover art.")))?;
     let prompt = prompt.trim();
     if prompt.is_empty() {
-        return Err("The cover prompt is empty. Write a cover art brief first.".to_string());
+        return Err(app_err("cover.emptyPrompt", "The cover prompt is empty. Write a cover art brief first.").into());
     }
     if prompt.chars().count() > MAX_PROMPT_CHARS {
-        return Err(format!("The cover prompt is longer than FLUX accepts ({MAX_PROMPT_CHARS} characters)."));
+        return Err(app_err("cover.longPrompt", format!("The cover prompt is longer than FLUX accepts ({MAX_PROMPT_CHARS} characters).")).with("max", MAX_PROMPT_CHARS).into());
     }
     let seed = seed.map(|s| s & 0x7FFF_FFFF).unwrap_or_else(fresh_seed);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(90))
         .build()
-        .map_err(|e| format!("could not start the HTTP client: {e}"))?;
+        .map_err(|e| app_err("http.client", format!("could not start the HTTP client: {e}")))?;
     generate(&client, API_BASE, &creds, prompt, seed).await
 }
 
@@ -434,19 +441,19 @@ const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 
 fn write_cover(output_folder: &str, owner: &str, folder_name: &str, previous: Option<&str>, image_b64: &str) -> Result<PathBuf, String> {
     if output_folder.trim().is_empty() || !Path::new(output_folder).is_dir() {
-        return Err("Set an export folder in Settings first.".to_string());
+        return Err(app_err("scope.noOutput", "Set an export folder in Settings first.").into());
     }
     if image_b64.len() > MAX_IMAGE_BYTES * 4 / 3 + 4 {
-        return Err("That image is too large to save.".to_string());
+        return Err(app_err("cover.tooLarge", "That image is too large to save.").into());
     }
-    let bytes = base64::engine::general_purpose::STANDARD.decode(image_b64.trim()).map_err(|_| "The image data is corrupted.".to_string())?;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(image_b64.trim()).map_err(|_| String::from(app_err("cover.corrupted", "The image data is corrupted.")))?;
     if !is_jpeg(&bytes) {
-        return Err("Only JPEG concepts can be saved.".to_string());
+        return Err(app_err("cover.notJpeg", "Only JPEG concepts can be saved.").into());
     }
     // This song's kit folder (kits.rs: sanitized, owned, never a symlink).
     let dir = crate::kits::resolve_kit_dir(Path::new(output_folder), folder_name, owner, previous)?;
     let path = dir.join(COVER_FILE);
-    crate::kits::write_new(&path, &bytes).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    crate::kits::write_new(&path, &bytes).map_err(|e| path_err("io.write", &path, format!("could not write {}: {e}", path.display())))?;
     Ok(path)
 }
 
@@ -462,7 +469,7 @@ pub async fn save_cover(app: AppHandle, song: String, folder_name: String, previ
         write_cover(&output_folder, &owner, &folder_name, previous_folder.as_deref(), &image_b64).map(|p| p.to_string_lossy().to_string())
     })
         .await
-        .map_err(|e| format!("saving failed: {e}"))?
+        .map_err(|e| app_err("task.failed", format!("saving failed: {e}")))?
 }
 
 #[cfg(test)]

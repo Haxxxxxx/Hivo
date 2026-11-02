@@ -41,7 +41,8 @@ import { MAX_BANDLAB_URL, cleanBandlabUrl } from "../lib/sketch";
 import { TemplateSelect, useFactoryTemplates } from "./NewProjectModal";
 import { ConfirmButton, StatusSelect, TagEditor, btn, btnPrimary, input, sectionLabel } from "./ui";
 import { Fact, Section } from "../ui";
-import { dict, tr } from "../i18n";
+import { dict, plural, tr } from "../i18n";
+import { errorText, errorReason } from "../lib/errors";
 
 const KEEP_BACKUPS = 5;
 
@@ -56,9 +57,9 @@ const T = dict(
     renderFailed: (err: string) => `The render failed: ${err}`,
     renderPending: "The render is still running: see the panel at the bottom.",
     renderMissingSamples: (n: number) =>
-      `${n} sample${n === 1 ? "" : "s"} of this song can't be found: a render will be silent where ${n === 1 ? "it plays" : "they play"}.`,
+      `${n} sample${plural(n, "", "s")} of this song can't be found: a render will be silent where ${plural(n, "it plays", "they play")}.`,
     ambiguousExports: (n: number) =>
-      `${n} mixdown${n === 1 ? "" : "s"} in the export folder ${n === 1 ? "is" : "are"} named after this song, but another linked song has the same name, so ${n === 1 ? "it isn't" : "they aren't"} counted for either. Rename one of the projects to tell them apart.`,
+      `${n} mixdown${plural(n, "", "s")} in the export folder ${plural(n, "is", "are")} named after this song, but another linked song has the same name, so ${plural(n, "it isn't", "they aren't")} counted for either. Rename one of the projects to tell them apart.`,
     notFound: "Not found right now",
     notFoundUnreachable: (folder: string) =>
       `Its linked folder (${folder}) isn't reachable: an unplugged drive or a moved folder. Its stage, notes and credits are kept; it comes back when the folder does.`,
@@ -73,6 +74,8 @@ const T = dict(
     archive: "Archive",
     readError: (err: string) =>
       `Couldn't read inside this project: ${err}. It's still tracked; tempo, samples and plugins are missing.`,
+    inCloud:
+      "In the cloud, not downloaded to this computer: Hivo doesn't open it, since that would download it. Download it (Finder or Explorer: \"Download now\" or \"Always keep on this device\") for its tempo, samples and plugins to show here.",
     archivedNote: "Archived — hidden from the library, board and stats.",
     unarchive: "Unarchive",
     stage: "Stage",
@@ -103,7 +106,7 @@ const T = dict(
     upToDate: "Up to date",
     olderThanProject: "Older than project",
     rendered: (when: string, size: string) => `Rendered ${when} · ${size}`,
-    otherBounces: (n: number) => `+${n} other bounce${n > 1 ? "s" : ""} in the folder`,
+    otherBounces: (n: number) => `+${n} other bounce${plural(n, "", "s")} in the folder`,
     noMixdown: "No mixdown yet — render it, or bounce it from FL next to the project.",
     versions: (n: number, size: string) => `Versions · ${n} backups · ${size}`,
     saveVersion: "Save as new version",
@@ -150,10 +153,15 @@ const T = dict(
     continuing: "Creating…",
     continueHint: "Hivo makes a new FL project from this template, with each BandLab file on its own playlist track from bar 1. Your existing projects are never changed.",
     continueNote: (name: string, clips: number, note: string | null) =>
-      clips > 0 ? `${name}: ${clips} BandLab file${clips === 1 ? "" : "s"} on the playlist.${note ? ` ${note}.` : ""}` : `${name} is created. ${note ?? ""}.`,
-    continueSkipped: (n: number) => ` ${n} more file${n === 1 ? " isn't" : "s aren't"} on it (20 at most): drag ${n === 1 ? "it" : "them"} in from the BandLab folder.`,
+      clips > 0 ? `${name}: ${clips} BandLab file${plural(clips, "", "s")} on the playlist.${note ? ` ${note}.` : ""}` : `${name} is created. ${note ?? ""}.`,
+    continueSkipped: (n: number) => ` ${n} more file${plural(n, " isn't", "s aren't")} on it (20 at most): drag ${plural(n, "it", "them")} in from the BandLab folder.`,
     continueMixdown: (names: string) => ` The mixdown (${names}) stays off the playlist, so it doesn't play over the stems.`,
     continueOpenFailed: (name: string, err: string) => `Created ${name}, but FL Studio didn't open: ${err}. Open it from the song panel.`,
+    favorite: "Favorite",
+    closePanel: "Close the song panel",
+    removeFromRelease: (title: string) => `Remove from ${title}`,
+    cancelVersion: "Cancel the new version",
+    versionNameLabel: "New version name",
   },
   {
     couldntOpen: (err: string) => `Impossible de l'ouvrir : ${err}`,
@@ -165,9 +173,9 @@ const T = dict(
     renderFailed: (err: string) => `Le rendu a échoué : ${err}`,
     renderPending: "Le rendu tourne encore : regarde le panneau en bas.",
     renderMissingSamples: (n: number) =>
-      `${n} sample${n === 1 ? " de ce son est introuvable" : "s de ce son sont introuvables"} : un rendu sera muet là où ${n === 1 ? "il joue" : "ils jouent"}.`,
+      `${n} sample${plural(n, " de ce son est introuvable", "s de ce son sont introuvables")} : un rendu sera muet là où ${plural(n, "il joue", "ils jouent")}.`,
     ambiguousExports: (n: number) =>
-      `${n} mixdown${n === 1 ? "" : "s"} du dossier d'export ${n === 1 ? "porte" : "portent"} le nom de ce son, mais un autre son lié a le même nom : ${n === 1 ? "il ne compte" : "ils ne comptent"} pour aucun des deux. Renomme un des projets pour les distinguer.`,
+      `${n} mixdown${plural(n, "", "s")} du dossier d'export ${plural(n, "porte", "portent")} le nom de ce son, mais un autre son lié a le même nom : ${plural(n, "il ne compte", "ils ne comptent")} pour aucun des deux. Renomme un des projets pour les distinguer.`,
     notFound: "Introuvable pour l'instant",
     notFoundUnreachable: (folder: string) =>
       `Son dossier lié (${folder}) est injoignable : disque débranché ou dossier déplacé. Son étape, ses notes et ses crédits sont gardés ; il revient avec le dossier.`,
@@ -183,6 +191,8 @@ const T = dict(
     archive: "Archiver",
     readError: (err: string) =>
       `Impossible de lire l'intérieur de ce projet : ${err}. Il reste suivi ; il manque le tempo, les samples et les plugins.`,
+    inCloud:
+      "Dans le cloud, pas téléchargé sur cet ordinateur : Hivo ne l'ouvre pas, ça le téléchargerait. Télécharge-le (Finder ou Explorateur : « Télécharger maintenant » ou « Toujours conserver sur cet appareil ») pour voir ici son tempo, ses samples et ses plugins.",
     archivedNote: "Archivé — caché de la bibliothèque, du tableau et des stats.",
     unarchive: "Désarchiver",
     stage: "Étape",
@@ -213,7 +223,7 @@ const T = dict(
     upToDate: "À jour",
     olderThanProject: "Plus ancien que le projet",
     rendered: (when: string, size: string) => `Rendu le ${when} · ${size}`,
-    otherBounces: (n: number) => `+${n} autre${n > 1 ? "s" : ""} bounce${n > 1 ? "s" : ""} dans le dossier`,
+    otherBounces: (n: number) => `+${n} autre${plural(n, "", "s")} bounce${plural(n, "", "s")} dans le dossier`,
     noMixdown: "Pas encore de mixdown — fais le rendu, ou bounce-le depuis FL à côté du projet.",
     versions: (n: number, size: string) => `Versions · ${n} sauvegardes · ${size}`,
     saveVersion: "Enregistrer une nouvelle version",
@@ -242,11 +252,11 @@ const T = dict(
     librariesHint: "Un pack rangé à un autre endroit sur cet ordi compte comme manquant tant qu'il n'est pas ajouté dans Réglages → Banques de samples.",
     librariesLink: "Ajouter des banques de samples",
     samples: (n: number) => `Samples · ${n}`,
-    found: (n: number) => `${n} trouvé${n > 1 ? "s" : ""}`,
+    found: (n: number) => `${n} trouvé${plural(n, "", "s")}`,
     movedTitle:
       "Pas au chemin enregistré, mais un fichier du même nom est dans le dossier de ce son — le projet a été déplacé. FL les retrouve en général.",
-    moved: (n: number) => `${n} déplacé${n > 1 ? "s" : ""}`,
-    missing: (n: number) => `${n} manquant${n > 1 ? "s" : ""}`,
+    moved: (n: number) => `${n} déplacé${plural(n, "", "s")}`,
+    missing: (n: number) => `${n} manquant${plural(n, "", "s")}`,
     toggleProblems: (open: boolean, n: number) =>
       `${open ? "Masquer" : "Afficher"} les ${n} qui ne sont pas à leur chemin enregistré`,
     revealSketch: "Afficher le dossier",
@@ -261,10 +271,15 @@ const T = dict(
     continuing: "Création…",
     continueHint: "Hivo crée un nouveau projet FL à partir de ce modèle, avec chaque fichier BandLab sur sa propre piste de la playlist dès la mesure 1. Tes projets existants ne sont jamais modifiés.",
     continueNote: (name: string, clips: number, note: string | null) =>
-      clips > 0 ? `${name} : ${clips} fichier${clips === 1 ? "" : "s"} BandLab sur la playlist.${note ? ` ${note}.` : ""}` : `${name} est créé. ${note ?? ""}.`,
-    continueSkipped: (n: number) => ` ${n} autre${n === 1 ? " fichier n'y est" : "s fichiers n'y sont"} pas (20 au maximum) : glisse-${n === 1 ? "le" : "les"} depuis le dossier BandLab.`,
+      clips > 0 ? `${name} : ${clips} fichier${plural(clips, "", "s")} BandLab sur la playlist.${note ? ` ${note}.` : ""}` : `${name} est créé. ${note ?? ""}.`,
+    continueSkipped: (n: number) => ` ${n} autre${plural(n, " fichier n'y est", "s fichiers n'y sont")} pas (20 au maximum) : glisse-${plural(n, "le", "les")} depuis le dossier BandLab.`,
     continueMixdown: (names: string) => ` Le mix (${names}) reste hors de la playlist, pour ne pas jouer par-dessus les stems.`,
     continueOpenFailed: (name: string, err: string) => `${name} est créé, mais FL Studio ne s'est pas ouvert : ${err}. Ouvre-le depuis le panneau du son.`,
+    favorite: "Favori",
+    closePanel: "Fermer le panneau du son",
+    removeFromRelease: (title: string) => `Retirer de ${title}`,
+    cancelVersion: "Annuler la nouvelle version",
+    versionNameLabel: "Nom de la nouvelle version",
   },
 );
 
@@ -383,7 +398,7 @@ export function ProjectDrawer() {
       const result = await action();
       setMessage({ kind: "ok", text: ok(result) });
     } catch (e) {
-      setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+      setMessage({ kind: "error", text: errorText(e) });
     }
   }
 
@@ -396,7 +411,7 @@ export function ProjectDrawer() {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <h2 className="truncate text-base font-semibold text-cream">{project.name}</h2>
-            <button onClick={() => toggleFavorite(project.path)} className="text-engrave hover:text-orange-300">
+            <button onClick={() => toggleFavorite(project.path)} aria-label={t.favorite} aria-pressed={isFavorite} className="text-engrave hover:text-orange-300">
               <Star size={15} fill={isFavorite ? "currentColor" : "none"} className={isFavorite ? "text-orange-400" : ""} />
             </button>
           </div>
@@ -404,7 +419,7 @@ export function ProjectDrawer() {
             {project.folder}
           </div>
         </div>
-        <button onClick={() => openDetail(null)} className="rounded p-1 text-engrave hover:bg-rule hover:text-cream">
+        <button onClick={() => openDetail(null)} aria-label={t.closePanel} className="rounded p-1 text-engrave hover:bg-rule hover:text-cream">
           <X size={16} />
         </button>
       </div>
@@ -419,7 +434,7 @@ export function ProjectDrawer() {
           ) : (
             <>
               <button
-                onClick={() => openInFlStudio(project.path).catch((e) => setMessage({ kind: "error", text: t.couldntOpen(e instanceof Error ? e.message : String(e)) }))}
+                onClick={() => openInFlStudio(project.path).catch((e) => setMessage({ kind: "error", text: t.couldntOpen(errorReason(e)) }))}
                 disabled={demoMode}
                 className={btnPrimary}
               >
@@ -445,7 +460,7 @@ export function ProjectDrawer() {
                 else if (job?.status === "done") setMessage(job.message ? { kind: "warn", text: job.message } : { kind: "ok", text: t.renderDone });
                 else setMessage({ kind: "warn", text: t.renderPending });
               } catch (e) {
-                setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+                setMessage({ kind: "error", text: errorText(e) });
               }
             }}
             disabled={demoMode || rendering || !canRenderInApp(project)}
@@ -491,6 +506,11 @@ export function ProjectDrawer() {
         {project.readError && (
           <div className="mt-3 rounded-md border border-amber-400/20 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-200/80">
             {t.readError(project.readError)}
+          </div>
+        )}
+        {project.inCloud && (
+          <div className="mt-3 rounded-md border border-amber-400/20 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-200/80">
+            {t.inCloud}
           </div>
         )}
 
@@ -560,7 +580,7 @@ export function ProjectDrawer() {
                 <button onClick={() => openAlbum(a.id)} className="hover:underline">
                   {a.title}
                 </button>
-                <button onClick={() => removeTrack(a.id, project.path)} className="text-engrave hover:text-cream">
+                <button onClick={() => removeTrack(a.id, project.path)} aria-label={t.removeFromRelease(a.title)} className="text-engrave hover:text-cream">
                   <X size={11} />
                 </button>
               </span>
@@ -607,7 +627,7 @@ export function ProjectDrawer() {
               title={t.sessionTitle}
               onClick={() =>
                 void openSession({ kind: "song", id: project.path, title: project.name, bpm: project.tempoBpm ?? null }).catch((e) =>
-                  setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) }),
+                  setMessage({ kind: "error", text: errorText(e) }),
                 )
               }
             >
@@ -708,11 +728,11 @@ export function ProjectDrawer() {
                   );
                 }}
               >
-                <input autoFocus value={versionName} onChange={(e) => setVersionName(e.target.value)} className={`${input} py-1.5`} />
+                <input autoFocus value={versionName} onChange={(e) => setVersionName(e.target.value)} aria-label={t.versionNameLabel} className={`${input} py-1.5`} />
                 <button type="submit" className={btn}>
                   {t.create}
                 </button>
-                <button type="button" onClick={() => setVersionName(null)} className="text-engrave hover:text-cream">
+                <button type="button" onClick={() => setVersionName(null)} aria-label={t.cancelVersion} className="text-engrave hover:text-cream">
                   <X size={14} />
                 </button>
               </form>
@@ -731,7 +751,7 @@ export function ProjectDrawer() {
                       title={t.restoreTitle}
                       disabled={demoMode}
                       onClick={() => run(() => restoreBackup(b.path, project.path), (p) => t.restoredAs(fileName(String(p))))}
-                      className="flex items-center gap-1 rounded px-1.5 py-0.5 text-engrave opacity-0 hover:bg-rule hover:text-cream group-hover:opacity-100"
+                      className="flex items-center gap-1 rounded px-1.5 py-0.5 text-engrave opacity-0 hover:bg-rule hover:text-cream focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
                     >
                       <RotateCcw size={11} /> {t.restore}
                     </button>
@@ -930,13 +950,14 @@ function SketchPanel({ project }: { project: ProjectInfo }) {
       // project, files left off past 20, the mixdown left off for the stems.
       if (done.clips === 0 || done.skipped > 0 || done.mixdown.length > 0) {
         const extra = (done.skipped > 0 ? t.continueSkipped(done.skipped) : "") + (done.mixdown.length > 0 ? t.continueMixdown(done.mixdown.join(", ")) : "");
-        useAppStore.setState({ actionError: t.continueNote(project.name, done.clips, done.note) + extra });
+        const note = done.notes?.length ? done.notes.map(errorReason).join("; ") : done.note;
+        useAppStore.setState({ actionError: t.continueNote(project.name, done.clips, note) + extra });
       }
       await openInFlStudio(done.flp).catch((e) =>
-        useAppStore.setState({ actionError: t.continueOpenFailed(project.name, e instanceof Error ? e.message : String(e)) }),
+        useAppStore.setState({ actionError: t.continueOpenFailed(project.name, errorReason(e)) }),
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
       setBusy(false);
     }
   }
