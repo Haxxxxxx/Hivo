@@ -561,10 +561,10 @@ export function CrewStatus() {
         ) : (
           <span className="text-sm font-medium text-cream">{active.name}</span>
         )}
-        <span className="rounded bg-rule px-1.5 py-px text-[10px] text-engrave">{active.role === "owner" ? t.owner : t.member}</span>
+        <span className="rounded bg-rule px-1.5 py-px text-[10.5px] text-body">{active.role === "owner" ? t.owner : t.member}</span>
         <span className={`ml-auto text-xs ${crew.sync.kind === "error" ? "text-red-300" : "text-body"}`}>{syncLine}</span>
         <button onClick={() => void run(crew.syncNow)} disabled={busy || demoMode} title={t.syncNow} className="rounded p-1 text-body hover:bg-rule hover:text-cream disabled:opacity-40">
-          <RefreshCw size={13} className={crew.sync.kind === "syncing" ? "animate-spin" : ""} />
+          <RefreshCw size={13} className={crew.sync.kind === "syncing" ? "motion-safe:animate-spin" : ""} />
         </button>
       </div>
       {note && (
@@ -624,7 +624,7 @@ function MyServerShares() {
           <ul className="mt-2 flex max-h-64 flex-col gap-1 overflow-y-auto">
             {rows.map((r) => (
               <li key={r.id} className="flex items-center gap-2">
-                <StatusDot color={statusInfo(r.stage ?? undefined).color} size={6} glow={false} />
+                <StatusDot color={statusInfo(r.stage ?? undefined).color} size={6} glow={false} label={statusInfo(r.stage ?? undefined).label} />
                 <span className="min-w-0 flex-1 truncate text-cream">{r.title}</span>
                 <span className="shrink-0 text-engrave">{r.local ? t.here : r.duplicate ? t.duplicate : t.elsewhereRow}</span>
                 {!r.local && (

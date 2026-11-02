@@ -137,7 +137,7 @@ export function StalledCard({ songs }: { songs: ProjectInfo[] }) {
         <div className="flex flex-col gap-1">
           {stalled.slice(0, 5).map((s) => (
             <button key={s.song.path} onClick={() => openDetail(s.song.path)} className="flex items-center gap-2 rounded px-1 py-0.5 text-left text-xs hover:bg-panel">
-              <StatusDot color={statusInfo(s.status).color} size={6} />
+              <StatusDot color={statusInfo(s.status).color} size={6} label={statusInfo(s.status).label} />
               <span className="min-w-0 flex-1 truncate text-cream">{s.song.name}</span>
               <span className="shrink-0 tabular-nums text-engrave">{t.idleDays(s.idleDays)}</span>
             </button>

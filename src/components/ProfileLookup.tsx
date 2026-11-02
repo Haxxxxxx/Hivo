@@ -249,7 +249,7 @@ function LinkRow({ link, onConfirm, onRemove }: { link: PlatformLink; onConfirm:
       <span className="w-28 shrink-0 truncate text-cream" title={link.url}>
         {link.label}
       </span>
-      <span className={`min-w-0 flex-1 truncate font-mono text-[11px] ${verified ? "text-engrave" : "text-engrave/60 line-through decoration-transparent"}`} title={link.url}>
+      <span className={`min-w-0 flex-1 truncate font-mono text-[11px] ${verified ? "text-engrave" : "italic text-engrave"}`} title={link.url}>
         {link.id ?? link.url}
         {info && <span className="ml-2 font-sans text-body">{info}</span>}
       </span>

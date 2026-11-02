@@ -64,7 +64,7 @@ export function CrewSection() {
           <span className="min-w-0 flex-1 truncate text-xs font-medium text-cream">{active.name}</span>
         )}
         <span title={sync === "error" ? t.syncProblem : sync === "synced" ? t.synced : t.notSynced}>
-          <StatusDot color={light} size={7} />
+          <StatusDot color={light} size={7} label={sync === "error" ? t.syncProblem : sync === "synced" ? t.synced : t.notSynced} />
         </span>
       </div>
       <nav aria-label="Crew" className="flex flex-col gap-0.5">

@@ -278,3 +278,38 @@ export function moveCard(
   order[to.id] = current;
   return { ...ws, songs: nextSongs, pipeline: { ...cfg, order } };
 }
+
+/** One choice of a card's keyboard "Move to…" menu (the board and the list):
+ * up or down in its column, or the end of another column. */
+export interface CardMove {
+  /** Stable value for the menu option. */
+  id: string;
+  kind: "up" | "down" | "column";
+  columnId: string;
+  /** The column's name (kind "column"). */
+  name?: string;
+  /** Drop before this card, or at the end (null): what `moveCard` takes. */
+  beforeKey: string | null;
+}
+
+/** Where a card can go from the keyboard. `reorder` is off while a search
+ * filters the board (like dragging, which then only changes the column). */
+export function cardMoves(
+  groups: { column: { id: string; name: string }; items: { key: string }[] }[],
+  key: string,
+  reorder = true,
+): CardMove[] {
+  const home = groups.find((g) => g.items.some((i) => i.key === key));
+  if (!home) return [];
+  const moves: CardMove[] = [];
+  const at = home.items.findIndex((i) => i.key === key);
+  if (reorder && at > 0) moves.push({ id: "up", kind: "up", columnId: home.column.id, beforeKey: home.items[at - 1].key });
+  if (reorder && at < home.items.length - 1) {
+    moves.push({ id: "down", kind: "down", columnId: home.column.id, beforeKey: home.items[at + 2]?.key ?? null });
+  }
+  for (const g of groups) {
+    if (g === home) continue;
+    moves.push({ id: `column:${g.column.id}`, kind: "column", columnId: g.column.id, name: g.column.name, beforeKey: null });
+  }
+  return moves;
+}

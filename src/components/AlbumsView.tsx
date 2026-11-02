@@ -48,6 +48,9 @@ const T = dict(
     search: "Search songs",
     nothing: "Nothing to add",
     addPicked: (n: number) => `Add ${n || ""} song${n === 1 ? "" : "s"}`,
+    trackUp: (name: string) => `Move ${name} up`,
+    trackDown: (name: string) => `Move ${name} down`,
+    trackRemove: (name: string) => `Remove ${name} from the release`,
   },
   {
     title: "Albums et sorties",
@@ -86,6 +89,9 @@ const T = dict(
     search: "Chercher des sons",
     nothing: "Rien à ajouter",
     addPicked: (n: number) => (n === 0 ? "Ajouter des sons" : `Ajouter ${n} son${n === 1 ? "" : "s"}`),
+    trackUp: (name: string) => `Monter ${name}`,
+    trackDown: (name: string) => `Descendre ${name}`,
+    trackRemove: (name: string) => `Retirer ${name} de la sortie`,
   },
 );
 
@@ -320,7 +326,8 @@ function AlbumDetail({ album }: { album: Album }) {
             <input
               value={album.title}
               onChange={(e) => updateAlbum(album.id, { title: e.target.value })}
-              className="mt-1 w-full bg-transparent text-2xl font-semibold text-cream focus:outline-none"
+              aria-label={t.releaseTitle}
+              className="mt-1 w-full rounded border border-transparent bg-transparent text-2xl font-semibold text-cream focus:border-hot focus:outline-none"
             />
             <div className="mt-2 flex flex-wrap items-center gap-3 text-sm text-engrave">
               <label className="flex items-center gap-1.5">
@@ -329,7 +336,7 @@ function AlbumDetail({ album }: { album: Album }) {
                   type="date"
                   value={album.releaseDate ?? ""}
                   onChange={(e) => updateAlbum(album.id, { releaseDate: e.target.value || null })}
-                  className="bg-transparent text-body focus:outline-none"
+                  className="rounded border border-transparent bg-transparent text-body focus:border-hot focus:outline-none"
                 />
               </label>
               {releaseMs && (
@@ -407,16 +414,23 @@ function AlbumDetail({ album }: { album: Album }) {
           )}
           {tracks.map((t, i) => {
             const path = album.trackPaths[i];
+            const trackName = t?.name ?? path.split(/[/\\]/).pop() ?? "";
             return (
               <div key={path} className="group flex items-center gap-3 border-b border-rule px-3 py-2 text-sm last:border-0 hover:bg-panel">
                 <span className="w-6 text-right tabular-nums text-engrave">{i + 1}</span>
-                <div className="flex flex-col opacity-0 group-hover:opacity-100">
-                  <button onClick={() => moveTrack(album.id, i, i - 1)} disabled={i === 0} className="text-engrave hover:text-cream disabled:opacity-20">
+                <div className="flex flex-col opacity-0 group-focus-within:opacity-100 group-hover:opacity-100">
+                  <button
+                    onClick={() => moveTrack(album.id, i, i - 1)}
+                    disabled={i === 0}
+                    aria-label={tr(T).trackUp(trackName)}
+                    className="text-engrave hover:text-cream disabled:opacity-20"
+                  >
                     <ArrowUp size={11} />
                   </button>
                   <button
                     onClick={() => moveTrack(album.id, i, i + 1)}
                     disabled={i === tracks.length - 1}
+                    aria-label={tr(T).trackDown(trackName)}
                     className="text-engrave hover:text-cream disabled:opacity-20"
                   >
                     <ArrowDown size={11} />
@@ -437,7 +451,7 @@ function AlbumDetail({ album }: { album: Album }) {
                       onClick={() => useAppStore.getState().openLaunchKit(t.path)}
                       title={tr(T).openKit}
                       aria-label={tr(T).openKit}
-                      className="text-body opacity-0 hover:text-cream group-hover:opacity-100"
+                      className="text-body opacity-0 hover:text-cream focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
                     >
                       <Rocket size={13} />
                     </button>
@@ -447,7 +461,12 @@ function AlbumDetail({ album }: { album: Album }) {
                     {tr(T).missing(path.split(/[/\\]/).pop() ?? "")}
                   </span>
                 )}
-                <button onClick={() => removeTrack(album.id, path)} title={tr(T).removeTrack} className="text-body opacity-0 hover:text-cream group-hover:opacity-100">
+                <button
+                  onClick={() => removeTrack(album.id, path)}
+                  title={tr(T).removeTrack}
+                  aria-label={tr(T).trackRemove(trackName)}
+                  className="text-body opacity-0 hover:text-cream focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
+                >
                   <X size={14} />
                 </button>
               </div>

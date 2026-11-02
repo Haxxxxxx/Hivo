@@ -247,7 +247,7 @@ export function DiggerView() {
               />
             </label>
             <button onClick={() => void load()} disabled={loading} title={t.rescan} aria-label={t.rescan} className="rounded p-1.5 text-engrave hover:bg-rule hover:text-cream disabled:opacity-40">
-              <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+              <RefreshCw size={14} className={loading ? "motion-safe:animate-spin" : ""} />
             </button>
           </>
         )}

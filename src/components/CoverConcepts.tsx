@@ -235,7 +235,7 @@ export function CoverConcepts({ path, title, artists, brief, releaseType }: { pa
               ) : c.error ? (
                 <span className="absolute inset-0 flex items-center justify-center p-3 text-center text-[11px] leading-snug text-red-300">{c.error}</span>
               ) : (
-                <span className="absolute inset-0 flex animate-pulse items-center justify-center text-[11px] text-engrave">{t.painting}</span>
+                <span className="absolute inset-0 flex motion-safe:animate-pulse items-center justify-center text-[11px] text-engrave">{t.painting}</span>
               )}
               {session.picked === i && (
                 <span className="absolute right-1.5 top-1.5 flex items-center gap-1 rounded bg-orange-500 px-1.5 py-0.5 text-[10px] font-medium text-chassis">

@@ -154,6 +154,11 @@ const T = dict(
     continueSkipped: (n: number) => ` ${n} more file${n === 1 ? " isn't" : "s aren't"} on it (20 at most): drag ${n === 1 ? "it" : "them"} in from the BandLab folder.`,
     continueMixdown: (names: string) => ` The mixdown (${names}) stays off the playlist, so it doesn't play over the stems.`,
     continueOpenFailed: (name: string, err: string) => `Created ${name}, but FL Studio didn't open: ${err}. Open it from the song panel.`,
+    favorite: "Favorite",
+    closePanel: "Close the song panel",
+    removeFromRelease: (title: string) => `Remove from ${title}`,
+    cancelVersion: "Cancel the new version",
+    versionNameLabel: "New version name",
   },
   {
     couldntOpen: (err: string) => `Impossible de l'ouvrir : ${err}`,
@@ -265,6 +270,11 @@ const T = dict(
     continueSkipped: (n: number) => ` ${n} autre${n === 1 ? " fichier n'y est" : "s fichiers n'y sont"} pas (20 au maximum) : glisse-${n === 1 ? "le" : "les"} depuis le dossier BandLab.`,
     continueMixdown: (names: string) => ` Le mix (${names}) reste hors de la playlist, pour ne pas jouer par-dessus les stems.`,
     continueOpenFailed: (name: string, err: string) => `${name} est créé, mais FL Studio ne s'est pas ouvert : ${err}. Ouvre-le depuis le panneau du son.`,
+    favorite: "Favori",
+    closePanel: "Fermer le panneau du son",
+    removeFromRelease: (title: string) => `Retirer de ${title}`,
+    cancelVersion: "Annuler la nouvelle version",
+    versionNameLabel: "Nom de la nouvelle version",
   },
 );
 
@@ -396,7 +406,7 @@ export function ProjectDrawer() {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <h2 className="truncate text-base font-semibold text-cream">{project.name}</h2>
-            <button onClick={() => toggleFavorite(project.path)} className="text-engrave hover:text-orange-300">
+            <button onClick={() => toggleFavorite(project.path)} aria-label={t.favorite} aria-pressed={isFavorite} className="text-engrave hover:text-orange-300">
               <Star size={15} fill={isFavorite ? "currentColor" : "none"} className={isFavorite ? "text-orange-400" : ""} />
             </button>
           </div>
@@ -404,7 +414,7 @@ export function ProjectDrawer() {
             {project.folder}
           </div>
         </div>
-        <button onClick={() => openDetail(null)} className="rounded p-1 text-engrave hover:bg-rule hover:text-cream">
+        <button onClick={() => openDetail(null)} aria-label={t.closePanel} className="rounded p-1 text-engrave hover:bg-rule hover:text-cream">
           <X size={16} />
         </button>
       </div>
@@ -560,7 +570,7 @@ export function ProjectDrawer() {
                 <button onClick={() => openAlbum(a.id)} className="hover:underline">
                   {a.title}
                 </button>
-                <button onClick={() => removeTrack(a.id, project.path)} className="text-engrave hover:text-cream">
+                <button onClick={() => removeTrack(a.id, project.path)} aria-label={t.removeFromRelease(a.title)} className="text-engrave hover:text-cream">
                   <X size={11} />
                 </button>
               </span>
@@ -708,11 +718,11 @@ export function ProjectDrawer() {
                   );
                 }}
               >
-                <input autoFocus value={versionName} onChange={(e) => setVersionName(e.target.value)} className={`${input} py-1.5`} />
+                <input autoFocus value={versionName} onChange={(e) => setVersionName(e.target.value)} aria-label={t.versionNameLabel} className={`${input} py-1.5`} />
                 <button type="submit" className={btn}>
                   {t.create}
                 </button>
-                <button type="button" onClick={() => setVersionName(null)} className="text-engrave hover:text-cream">
+                <button type="button" onClick={() => setVersionName(null)} aria-label={t.cancelVersion} className="text-engrave hover:text-cream">
                   <X size={14} />
                 </button>
               </form>
@@ -731,7 +741,7 @@ export function ProjectDrawer() {
                       title={t.restoreTitle}
                       disabled={demoMode}
                       onClick={() => run(() => restoreBackup(b.path, project.path), (p) => t.restoredAs(fileName(String(p))))}
-                      className="flex items-center gap-1 rounded px-1.5 py-0.5 text-engrave opacity-0 hover:bg-rule hover:text-cream group-hover:opacity-100"
+                      className="flex items-center gap-1 rounded px-1.5 py-0.5 text-engrave opacity-0 hover:bg-rule hover:text-cream focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
                     >
                       <RotateCcw size={11} /> {t.restore}
                     </button>
