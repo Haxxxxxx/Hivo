@@ -200,6 +200,29 @@ impl Scope {
         &self.sample_folders
     }
 
+    /// The linked folders (projects, beats, sample libraries, the export
+    /// folder) and FL's user data folder whose real location is a network
+    /// share: on Windows, a folder on a mapped drive (`Z:\Samples`) resolves
+    /// to `\\?\UNC\nas\share\Samples`. A sample whose real path is a network
+    /// path may be packaged or staged only inside one of these
+    /// (`package::real_reason`); they all come from saved settings, never
+    /// from the webview. Empty on macOS and Linux, and on Windows without a
+    /// mapped drive.
+    pub fn mapped_roots(&self, user_data: Option<&Path>) -> Vec<String> {
+        let sample_roots = self.sample_folders.iter().filter_map(|f| resolve(f));
+        let user_data = user_data.and_then(|p| p.canonicalize().ok()).map(plain);
+        self.roots
+            .iter()
+            .chain(&self.beat_roots)
+            .chain(self.output.as_ref().map(|(_, o)| o))
+            .cloned()
+            .chain(sample_roots)
+            .chain(user_data)
+            .map(|p| p.to_string_lossy().to_string())
+            .filter(|p| is_remote_or_device(p))
+            .collect()
+    }
+
     /// The export folder from Settings, as saved.
     pub fn output(&self) -> Result<&Path, String> {
         self.output.as_ref().map(|(o, _)| o.as_path()).ok_or_else(|| app_err("scope.noOutput", "Set an export folder in Settings first.").into())
@@ -323,18 +346,16 @@ pub mod tests {
         assert!(f.scope.project(r"\\host\share\Envy.flp").is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_symlink_out_of_a_linked_folder_is_refused() {
         let f = fixture("symlink");
-        #[cfg(unix)]
-        {
-            let link = f.root.join("Envy").join("Sneaky.flp");
-            std::os::unix::fs::symlink(f.outside.join("Other.flp"), &link).unwrap();
-            assert!(f.scope.project(&s(&link)).is_err());
-            let dir_link = f.root.join("Linked");
-            std::os::unix::fs::symlink(&f.outside, &dir_link).unwrap();
-            assert!(f.scope.known_file(&s(&dir_link.join("secret.txt"))).is_err());
-        }
+        let link = f.root.join("Envy").join("Sneaky.flp");
+        std::os::unix::fs::symlink(f.outside.join("Other.flp"), &link).unwrap();
+        assert!(f.scope.project(&s(&link)).is_err());
+        let dir_link = f.root.join("Linked");
+        std::os::unix::fs::symlink(&f.outside, &dir_link).unwrap();
+        assert!(f.scope.known_file(&s(&dir_link.join("secret.txt"))).is_err());
     }
 
     #[test]
@@ -419,6 +440,20 @@ pub mod tests {
             let settings = Settings { sample_folders: vec![s(&link), r"\\nas\share\Samples".to_string()], ..Settings::default() };
             assert_eq!(Scope::from_settings(&settings).sample_folders(), &[link]);
         }
+    }
+
+    #[test]
+    fn local_folders_are_not_mapped_roots() {
+        let f = fixture("mapped-roots");
+        let settings = Settings {
+            watched_folders: vec![s(&f.root)],
+            output_folder: Some(s(&f.out)),
+            sample_folders: vec![s(&f.outside), r"\\nas\share\Samples".to_string()],
+            ..Settings::default()
+        };
+        // Only a folder whose real location is a share counts; a UNC path
+        // saved as such is never linked in the first place.
+        assert!(Scope::from_settings(&settings).mapped_roots(Some(&f.dir)).is_empty());
     }
 
     /// The checks each command runs before touching anything (render,
