@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 import { frenchErrorSamples } from "../lib/errors";
 
@@ -6,11 +8,20 @@ import { frenchErrorSamples } from "../lib/errors";
 // French dictionary in the desktop app, the website and the phone app: the
 // second argument of dict(), a `fr:` value, a `const fr` / `const FR` object.
 
-const SOURCES = {
-  ...import.meta.glob(["/src/**/*.{ts,tsx}", "!/src/**/*.test.ts"], { query: "?raw", import: "default", eager: true }),
-  ...import.meta.glob(["/web/src/**/*.{ts,tsx}", "!/web/src/**/*.test.ts"], { query: "?raw", import: "default", eager: true }),
-  ...import.meta.glob(["/mobile/src/**/*.{ts,tsx}", "!/mobile/src/**/*.test.ts"], { query: "?raw", import: "default", eager: true }),
-} as Record<string, string>;
+// Read from disk, not through Vite: a `?raw` glob still runs the phone's files
+// through the transform, which needs mobile/node_modules (absent in CI's desktop job).
+function sourcesUnder(dir: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const root = process.cwd();
+  for (const rel of readdirSync(join(root, dir), { recursive: true }) as string[]) {
+    if (!/\.tsx?$/.test(rel) || /\.test\.ts$/.test(rel)) continue;
+    const key = `/${dir}/${rel.split(sep).join("/")}`;
+    out[key] = readFileSync(join(root, dir, rel), "utf8");
+  }
+  return out;
+}
+
+const SOURCES: Record<string, string> = { ...sourcesUnder("src"), ...sourcesUnder("web/src"), ...sourcesUnder("mobile/src") };
 
 type Tok =
   | { kind: "str"; text: string; at: number }
