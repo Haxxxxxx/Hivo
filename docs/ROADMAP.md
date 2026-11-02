@@ -216,7 +216,7 @@ Every song is in exactly one stage: **Creation** (rough beat and lyrics), **Prod
 **Phase 1a: shared crew dashboard**
 - [x] Each member's songs visible to the group (opt-in, metadata only, EU)
 - [x] Board by stage
-- [x] Who's on what, last activity, stalled songs
+- [x] Who's on what, stalled songs (who's on what: counts by name that open the member's songs; no ranking or last-activity times since 2026-11-02, guardrail 3)
 - [x] Group stats vs personal stats (Me / Crew switch)
 - [x] Release calendar
 - [x] Where each song's files live
