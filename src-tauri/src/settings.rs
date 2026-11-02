@@ -175,8 +175,20 @@ fn usable_folder(path: &Path) -> Result<String, String> {
     Ok(s)
 }
 
+/// A folder the app may read everything in (watched, beats, samples, the
+/// export folder) must be a real folder of the user's, not a whole drive,
+/// the home folder or a system folder.
+fn linkable_folder(app: &AppHandle, folder: &Path, what: &str) -> Result<String, String> {
+    if too_broad(folder, app.path().home_dir().ok().as_deref()) {
+        return Err(format!(
+            "Pick the folder where your {what} are, not a whole drive, your home folder or a system folder: the app can read every file in it."
+        ));
+    }
+    usable_folder(folder)
+}
+
 fn add_watched(app: &AppHandle, folder: &Path) -> Result<Settings, String> {
-    let folder = usable_folder(folder)?;
+    let folder = linkable_folder(app, folder, "projects")?;
     let mut saved = load(app)?;
     if !saved.watched_folders.contains(&folder) {
         saved.watched_folders.push(folder);
@@ -212,6 +224,7 @@ pub fn remove_watched_folder(app: AppHandle, folder: String) -> Result<Settings,
     let mut saved = load(&app)?;
     saved.watched_folders.retain(|f| f != &folder);
     store(&app, &saved)?;
+    forbid_unlinked(&app, &folder, &saved);
     Ok(saved)
 }
 
@@ -234,7 +247,7 @@ pub async fn repoint_watched_folder(app: AppHandle, folder: String) -> Result<Op
         return Err(format!("not a linked folder: {folder}"));
     }
     let Some(picked) = pick(&app, true).await? else { return Ok(None) };
-    let to = usable_folder(&picked)?;
+    let to = linkable_folder(&app, &picked, "projects")?;
     let mut saved = load(&app)?;
     if to != folder && saved.watched_folders.contains(&to) {
         return Err(format!("{to} is already linked"));
@@ -244,6 +257,9 @@ pub async fn repoint_watched_folder(app: AppHandle, folder: String) -> Result<Op
     };
     *slot = to.clone();
     store(&app, &saved)?;
+    if to != folder {
+        forbid_unlinked(&app, &folder, &saved);
+    }
     Ok(Some(Repointed { settings: saved, from: folder, to }))
 }
 
@@ -251,10 +267,7 @@ pub async fn repoint_watched_folder(app: AppHandle, folder: String) -> Result<Op
 #[tauri::command]
 pub async fn pick_beat_folder(app: AppHandle) -> Result<Settings, String> {
     let Some(folder) = pick(&app, true).await? else { return load(&app) };
-    if too_broad_for_beats(&folder, app.path().home_dir().ok().as_deref()) {
-        return Err("Pick the folder where your beats are, not a whole drive or your home folder: the app can play every file in it.".to_string());
-    }
-    let folder = usable_folder(&folder)?;
+    let folder = linkable_folder(&app, &folder, "beats")?;
     let mut saved = load(&app)?;
     if !saved.beat_folders.contains(&folder) {
         saved.beat_folders.push(folder);
@@ -263,14 +276,76 @@ pub async fn pick_beat_folder(app: AppHandle) -> Result<Settings, String> {
     Ok(saved)
 }
 
-/// The webview may read every file in a beats folder (to play the beats), so
-/// a drive root, the home folder or anything above it is refused.
-fn too_broad_for_beats(folder: &Path, home: Option<&Path>) -> bool {
+/// The webview may read every file in a linked folder (to play renders and
+/// beats), so a drive root (or a mounted volume's root), the home folder or
+/// anything above it, the home's app-data folders and the system folders at
+/// the top of a drive are refused.
+fn too_broad(folder: &Path, home: Option<&Path>) -> bool {
     let real = folder.canonicalize().unwrap_or_else(|_| folder.to_path_buf());
-    if real.parent().is_none() {
+    let Some(parent) = real.parent() else { return true };
+    if is_mount_point(&real, parent) {
         return true;
     }
-    home.map(|h| h.canonicalize().unwrap_or_else(|_| h.to_path_buf())).is_some_and(|h| h.starts_with(&real))
+    if is_system_folder(folder) || is_system_folder(&real) {
+        return true;
+    }
+    let Some(home) = home.map(|h| h.canonicalize().unwrap_or_else(|_| h.to_path_buf())) else { return false };
+    home.starts_with(&real) || ["Library", "AppData"].iter().any(|d| real.starts_with(home.join(d)))
+}
+
+/// A system folder at the top of a drive (or under macOS's `/private`, where
+/// `/etc`, `/var` and `/tmp` really live).
+fn is_system_folder(path: &Path) -> bool {
+    const SYSTEM: &[&str] = &[
+        // macOS / Linux
+        "applications", "bin", "boot", "cores", "dev", "etc", "home", "lib", "library", "media", "mnt", "opt",
+        "private", "proc", "root", "sbin", "sys", "system", "tmp", "users", "usr", "var", "volumes",
+        // Windows
+        "windows", "program files", "program files (x86)", "programdata", "$recycle.bin",
+    ];
+    let Some(parent) = path.parent() else { return true };
+    let top = parent.parent().is_none() || parent == Path::new("/private");
+    let name = path.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    top && SYSTEM.contains(&name.as_str())
+}
+
+/// A volume's root (an external drive under /Volumes, /mnt...): on another
+/// device than its parent folder.
+#[cfg(unix)]
+fn is_mount_point(path: &Path, parent: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (fs::metadata(path), fs::metadata(parent)) {
+        (Ok(a), Ok(b)) => a.dev() != b.dev(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn is_mount_point(_path: &Path, _parent: &Path) -> bool {
+    false
+}
+
+/// An unlinked folder stops being readable through the asset protocol right
+/// away (the last scan allowed it), unless a folder still linked overlaps
+/// it. Tauri has no "un-allow": a forbidden folder stays forbidden until the
+/// app restarts, even if it's linked again in the meantime.
+fn forbid_unlinked(app: &AppHandle, folder: &str, saved: &Settings) {
+    let gone = PathBuf::from(folder);
+    let gone_real = gone.canonicalize().unwrap_or_else(|_| gone.clone());
+    let overlaps = |r: &String| {
+        let r = PathBuf::from(r);
+        let r_real = r.canonicalize().unwrap_or_else(|_| r.clone());
+        r.starts_with(&gone) || gone.starts_with(&r) || r_real.starts_with(&gone_real) || gone_real.starts_with(&r_real)
+    };
+    let linked = saved.watched_folders.iter().chain(saved.beat_folders.iter()).chain(saved.output_folder.iter());
+    if linked.into_iter().any(overlaps) {
+        return;
+    }
+    let assets = app.asset_protocol_scope();
+    let _ = assets.forbid_directory(&gone, true);
+    if gone_real != gone {
+        let _ = assets.forbid_directory(&gone_real, true);
+    }
 }
 
 /// Removes a beats folder (only ever shrinks what the app may touch).
@@ -279,6 +354,7 @@ pub fn remove_beat_folder(app: AppHandle, folder: String) -> Result<Settings, St
     let mut saved = load(&app)?;
     saved.beat_folders.retain(|f| f != &folder);
     store(&app, &saved)?;
+    forbid_unlinked(&app, &folder, &saved);
     Ok(saved)
 }
 
@@ -288,10 +364,7 @@ pub fn remove_beat_folder(app: AppHandle, folder: String) -> Result<Settings, St
 #[tauri::command]
 pub async fn pick_sample_folder(app: AppHandle) -> Result<Settings, String> {
     let Some(folder) = pick(&app, true).await? else { return load(&app) };
-    if too_broad_for_beats(&folder, app.path().home_dir().ok().as_deref()) {
-        return Err("Pick the folder where your samples or packs are, not a whole drive or your home folder.".to_string());
-    }
-    let folder = usable_folder(&folder)?;
+    let folder = linkable_folder(&app, &folder, "samples or packs")?;
     let mut saved = load(&app)?;
     if !saved.sample_folders.contains(&folder) {
         saved.sample_folders.push(folder);
@@ -312,10 +385,13 @@ pub fn remove_sample_folder(app: AppHandle, folder: String) -> Result<Settings, 
 #[tauri::command]
 pub async fn pick_output_folder(app: AppHandle) -> Result<Settings, String> {
     let Some(folder) = pick(&app, true).await? else { return load(&app) };
-    let folder = usable_folder(&folder)?;
+    let folder = linkable_folder(&app, &folder, "exports")?;
     let mut saved = load(&app)?;
-    saved.output_folder = Some(folder);
+    let previous = saved.output_folder.replace(folder.clone());
     store(&app, &saved)?;
+    if let Some(previous) = previous.filter(|p| *p != folder) {
+        forbid_unlinked(&app, &previous, &saved);
+    }
     Ok(saved)
 }
 
@@ -358,13 +434,17 @@ pub async fn pick_ffmpeg(app: AppHandle) -> Result<Settings, String> {
 #[tauri::command]
 pub fn clear_path_setting(app: AppHandle, which: String) -> Result<Settings, String> {
     let mut saved = load(&app)?;
+    let mut unlinked = None;
     match which.as_str() {
         "flStudio" => saved.fl_studio_path = None,
         "ffmpeg" => saved.ffmpeg_path = None,
-        "outputFolder" => saved.output_folder = None,
+        "outputFolder" => unlinked = saved.output_folder.take(),
         other => return Err(format!("unknown setting: {other}")),
     }
     store(&app, &saved)?;
+    if let Some(previous) = unlinked {
+        forbid_unlinked(&app, &previous, &saved);
+    }
     Ok(saved)
 }
 
@@ -707,15 +787,26 @@ mod tests {
     }
 
     #[test]
-    fn a_beats_folder_is_never_a_drive_or_the_home_folder() {
+    fn a_linked_folder_is_never_a_drive_the_home_folder_or_a_system_folder() {
         let home = std::env::temp_dir().join(format!("hivo-home-{}", std::process::id()));
         let beats = home.join("Music").join("Beats");
+        let caches = home.join("Library").join("Caches");
         std::fs::create_dir_all(&beats).unwrap();
-        assert!(too_broad_for_beats(Path::new("/"), Some(&home)));
-        assert!(too_broad_for_beats(&home, Some(&home)));
-        assert!(too_broad_for_beats(home.parent().unwrap(), Some(&home)));
-        assert!(!too_broad_for_beats(&beats, Some(&home)));
-        assert!(!too_broad_for_beats(&beats, None));
+        std::fs::create_dir_all(&caches).unwrap();
+        assert!(too_broad(Path::new("/"), Some(&home)));
+        assert!(too_broad(&home, Some(&home)));
+        assert!(too_broad(home.parent().unwrap(), Some(&home)));
+        assert!(too_broad(&caches, Some(&home)));
+        #[cfg(unix)]
+        for system in ["/usr", "/etc", "/System", "/Library", "/Applications", "/Users", "/Volumes", "/private"] {
+            assert!(too_broad(Path::new(system), None), "{system}");
+        }
+        #[cfg(windows)]
+        for system in ["C:\\", "C:\\Windows", "C:\\Program Files", "C:\\ProgramData", "C:\\Users"] {
+            assert!(too_broad(Path::new(system), None), "{system}");
+        }
+        assert!(!too_broad(&beats, Some(&home)));
+        assert!(!too_broad(&beats, None));
         let _ = std::fs::remove_dir_all(home);
     }
 }
