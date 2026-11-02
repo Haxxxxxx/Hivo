@@ -23,7 +23,9 @@ export type Change = { kind: Kind; id: string; text: string; baseHash: string };
 /** `title`: the item's name when the edit was made, so an edit kept across
  * a re-pairing can still be shown (and copied) before any snapshot. */
 export type PendingEdit = Change & { editedAt: number; title?: string };
-export type PushResult = { kind: Kind; id: string; status: "applied" | "conflict" | "missing"; note: string; noteHash: string };
+/** "too long": both sides changed the note and the merge would pass
+ * MAX_NOTE_CHARS; the computer wrote nothing and the phone keeps its text. */
+export type PushResult = { kind: Kind; id: string; status: "applied" | "conflict" | "missing" | "too long"; note: string; noteHash: string };
 
 export type SyncState = {
   items: Item[];
@@ -36,6 +38,9 @@ export type SyncState = {
   /** Items the desktop no longer has ("missing" on push), kept with the
    * phone's text so nothing typed is lost. By itemKey. */
   gone: Record<string, Item>;
+  /** Edits the computer refused as too long to merge, by itemKey → when.
+   * Not sent again until edited (optional: older saved states lack it). */
+  tooLong?: Record<string, number>;
   helloDone: boolean;
   /** The pending edits were made against another pairing (unpaired, then
    * paired again): the next sync pulls a snapshot first and re-bases them. */
@@ -97,7 +102,7 @@ export function parsePushResults(body: unknown): PushResult[] | null {
     if (!raw || typeof raw !== "object") continue;
     const r = raw as Record<string, unknown>;
     if (!isKind(r.kind) || typeof r.id !== "string") continue;
-    if (r.status !== "applied" && r.status !== "conflict" && r.status !== "missing") continue;
+    if (r.status !== "applied" && r.status !== "conflict" && r.status !== "missing" && r.status !== "too long") continue;
     const note = typeof r.note === "string" ? r.note : "";
     out.push({ kind: r.kind, id: r.id, status: r.status, note, noteHash: typeof r.noteHash === "string" ? r.noteHash : fnv1a(note) });
   }
@@ -159,7 +164,11 @@ export function editNote(state: SyncState, kind: Kind, id: string, text: string,
     const title = item?.title ?? prev?.title;
     pending[k] = { kind, id, text: clipped, baseHash, editedAt: now, ...(title ? { title } : {}) };
   }
-  return { ...state, pending };
+  // Edited since the computer said "too long": it may go again.
+  if (state.tooLong?.[k] === undefined) return { ...state, pending };
+  const tooLong = { ...state.tooLong };
+  delete tooLong[k];
+  return { ...state, pending, tooLong };
 }
 
 /** The next batch to push, oldest edit first: at most MAX_CHANGES and
@@ -167,7 +176,10 @@ export function editNote(state: SyncState, kind: Kind, id: string, text: string,
 export function pendingChanges(state: SyncState): Change[] {
   const out: Change[] = [];
   let bytes = 0;
-  for (const { kind, id, text, baseHash } of Object.values(state.pending).sort((a, b) => a.editedAt - b.editedAt)) {
+  for (const { kind, id, text, baseHash, editedAt } of Object.values(state.pending).sort((a, b) => a.editedAt - b.editedAt)) {
+    // Refused as too long and not edited since: sending it again would fail again.
+    const refused = state.tooLong?.[itemKey(kind, id)];
+    if (refused !== undefined && editedAt <= refused) continue;
     const size = utf8(text).length + utf8(id).length + 64;
     if (out.length >= MAX_CHANGES || (out.length > 0 && bytes + size > MAX_PUSH_TEXT_BYTES)) break;
     out.push({ kind, id, text, baseHash });
@@ -182,6 +194,7 @@ export function applyPushResults(state: SyncState, sent: Change[], results: Push
   const pending = { ...state.pending };
   const conflicts = { ...state.conflicts };
   const gone = { ...state.gone };
+  const tooLong = { ...(state.tooLong ?? {}) };
   let items = state.items;
   for (const r of results) {
     const k = itemKey(r.kind, r.id);
@@ -199,6 +212,14 @@ export function applyPushResults(state: SyncState, sent: Change[], results: Push
       items = items.filter((i) => !(i.kind === r.kind && i.id === r.id));
       continue;
     }
+    if (r.status === "too long") {
+      // Nothing written on the computer: its note stays, the phone keeps its
+      // edit pending (not resent until edited) and says why.
+      items = items.map((i) => (i.kind === r.kind && i.id === r.id ? { ...i, note: r.note, noteHash: r.noteHash } : i));
+      tooLong[k] = now;
+      continue;
+    }
+    delete tooLong[k];
     items = items.map((i) => (i.kind === r.kind && i.id === r.id ? { ...i, note: r.note, noteHash: r.noteHash } : i));
     if (r.status === "conflict") conflicts[k] = now;
     if (unchanged) delete pending[k];
@@ -210,7 +231,7 @@ export function applyPushResults(state: SyncState, sent: Change[], results: Push
     // After a conflict a newer edit keeps its old base: the next push
     // conflicts again and the desktop keeps both texts. Nothing is lost.
   }
-  return { ...state, items, pending, conflicts, gone };
+  return { ...state, items, pending, conflicts, gone, tooLong };
 }
 
 /** Replaces the cached items with a fresh snapshot. Pending edits stay on
