@@ -1,13 +1,20 @@
-# Builds the desktop installers and attaches them to a draft GitHub Release:
-# macOS (universal .dmg, Apple Silicon + Intel) and Windows (.exe installer,
-# cross-compiled with cargo-xwin + NSIS). Then the `android` job builds the
-# phone app (signed APK for the website, signed AAB for Google Play).
+# Builds the desktop installers (macOS universal .dmg, Windows .exe
+# cross-compiled with cargo-xwin + NSIS) and the phone app (APK for the
+# website, AAB for Google Play), signs them, publishes them to the public
+# `releases` bucket and attaches them to a draft GitHub Release.
 #
-# Runs on a self-hosted runner: the crew admin's Mac, registered for this
-# repo with the label `hivo` (setup: SETUP.md → "Release builds"). It uses no
-# GitHub-hosted minutes, so it's free; the Mac must be on and the runner
-# service running. To go back to GitHub's machines later, restore the
-# windows-latest / macos-latest matrix from git history.
+# Three jobs:
+# - `build` and `android` run on a self-hosted runner: the crew admin's Mac,
+#   registered for this repo with the label `hivo` (setup: SETUP.md →
+#   "Release builds"). They build with NO secret at all: the updater files
+#   come out unsigned, the APK and AAB unsigned.
+# - `release` runs on a fresh GitHub-hosted machine, in the `release`
+#   environment (the owner can require a reviewer there): it signs the
+#   updater files with the Tauri key and the APK/AAB with the upload key,
+#   uploads everything to `v<version>/` in the bucket, attaches the APK/AAB
+#   to the draft, and only then, last, updates `latest/*`, `latest.json`
+#   and `mobile-latest.json`. A run that fails anywhere before that leaves
+#   what users download and what installed apps see untouched.
 #
 # Run it: push a version tag (git tag v0.2.0 && git push origin v0.2.0), or
 # Actions → "Release builds" → Run workflow. Then open Releases, check the
@@ -17,21 +24,19 @@
 # repository variables VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY. They're
 # public by design: row-level security in the database protects the data.
 #
-# Hardening (this runs on a personal machine):
+# Hardening (the builds run on a personal machine):
 # - Only this repo's tags and manual runs from main start it. PR checks
 #   live in ci.yml on GitHub's runners, so fork code never reaches the Mac.
-# - The write token exists only in the "Draft release" step: dependency
-#   install scripts and build tools never see it.
+# - No signing key and no service-role key ever reaches the Mac or a step
+#   that runs build tools or dependency code: they exist only in the
+#   `release` job's signing and upload steps, on a throwaway machine.
 # - `npm ci --ignore-scripts`: dependency install scripts never run.
 # - Actions pinned to full commit SHAs.
 #
-# Updates: the builds are signed with the TAURI_SIGNING_PRIVATE_KEY secret
-# and uploaded, with latest.json, to the public `releases` bucket of that
-# project (SUPABASE_SERVICE_ROLE_KEY secret, write-only use). The app checks
-# latest.json on launch; the website's /download/* point at latest/*.
-# Pushing a version tag therefore SHIPS the update: every installed app
-# offers it on its next launch, before the draft GitHub Release is
-# published. Only tag a commit on main that is ready for the crew.
+# Pushing a version tag SHIPS the update once the `release` job is approved
+# (if the environment requires it): every installed app offers it on its
+# next launch, before the draft GitHub Release is published. Only tag a
+# commit on main that is ready for the crew.
 name: Release builds
 
 on:
@@ -53,6 +58,8 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     env:
       VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
       VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
@@ -87,10 +94,16 @@ jobs:
       # The tag must name the version in tauri.conf.json: the bucket paths,
       # latest.json and the release are all derived from that version.
       - name: Tag matches the version
-        if: github.ref_type == 'tag'
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           version=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          [ "$GITHUB_REF_NAME" = "v$version" ] || { echo "::error::tag $GITHUB_REF_NAME but tauri.conf.json says $version"; exit 1; }
+          if [ "$REF_TYPE" = "tag" ]; then
+            [ "$REF_NAME" = "v$version" ] || { echo "::error::tag $REF_NAME but tauri.conf.json says $version"; exit 1; }
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - run: npm ci --ignore-scripts
 
@@ -99,84 +112,53 @@ jobs:
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
-      # Both builds sign their updater artifacts (.app.tar.gz, -setup.exe)
-      # with the key the app's updater verifies against (plugins.updater.pubkey
-      # in tauri.conf.json). The key has no password.
+      # No signing key here: the updater files are signed by the `release`
+      # job. createUpdaterArtifacts is off for these builds (tauri build
+      # refuses to make them without the key); the macOS archive is made
+      # below, the Windows one is the -setup.exe itself.
       - name: macOS installer (universal)
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-        run: npm run tauri build -- --target universal-apple-darwin
+        run: npm run tauri build -- --target universal-apple-darwin --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
       - name: Windows installer (cross-compiled)
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-        run: npm run tauri build -- --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis
+        run: npm run tauri build -- --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
-      # The public `releases` bucket on the crew's Supabase project: the
-      # updater reads latest.json from it, the website links to latest/*.
-      # The service-role key exists only in this step.
-      - name: Publish to the releases bucket
+      # Same layout as tauri build's own archive (`Hivo.app/…` at the root),
+      # without macOS's ._ metadata files.
+      - name: Collect the installers
         env:
-          SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
           mac=src-tauri/target/universal-apple-darwin/release/bundle
           win=src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis
-          dmg=$(ls "$mac"/dmg/*.dmg)
-          app=$(ls "$mac"/macos/*.app.tar.gz)
-          exe=$(ls "$win"/*-setup.exe)
-          test -s "$app.sig" && test -s "$exe.sig"
-          public="$SUPABASE_URL/storage/v1/object/public/releases"
-          # up <bucket path> <file> <content type>
-          up() {
-            curl -fsS -o /dev/null -X POST "$SUPABASE_URL/storage/v1/object/releases/$1" \
-              -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" -H "x-upsert: true" \
-              -H "Content-Type: $3" --data-binary "@$2"
-            echo "uploaded $1"
-          }
-          dir="v$version"
-          up "$dir/$(basename "$app")" "$app" application/gzip
-          up "$dir/$(basename "$app").sig" "$app.sig" text/plain
-          up "$dir/$(basename "$exe")" "$exe" application/octet-stream
-          up "$dir/$(basename "$exe").sig" "$exe.sig" text/plain
-          up "latest/Hivo.dmg" "$dmg" application/x-apple-diskimage
-          up "latest/Hivo-setup.exe" "$exe" application/octet-stream
-          # The updater manifest, last so a half-finished upload never points
-          # at files that aren't there yet.
-          VERSION="$version" APP_URL="$public/$dir/$(basename "$app")" APP_SIG="$(cat "$app.sig")" \
-          EXE_URL="$public/$dir/$(basename "$exe")" EXE_SIG="$(cat "$exe.sig")" \
-          node -e '
-            const e = process.env;
-            const mac = { signature: e.APP_SIG, url: e.APP_URL };
-            const manifest = {
-              version: e.VERSION,
-              notes: `Hivo ${e.VERSION}`,
-              pub_date: new Date().toISOString(),
-              platforms: {
-                "darwin-universal": mac,
-                "darwin-aarch64": mac,
-                "darwin-x86_64": mac,
-                "windows-x86_64": { signature: e.EXE_SIG, url: e.EXE_URL },
-              },
-            };
-            require("fs").writeFileSync("latest.json", JSON.stringify(manifest, null, 2) + "\n");
-          '
-          up "latest.json" latest.json application/json
+          out="$RUNNER_TEMP/desktop-out"
+          rm -rf "$out" && mkdir -p "$out"
+          app=$(cd "$mac/macos" && ls -d *.app)
+          [ "$(echo "$app" | wc -l)" -eq 1 ] || { echo "::error::expected one .app, got: $app"; exit 1; }
+          COPYFILE_DISABLE=1 tar --no-mac-metadata -czf "$out/$app.tar.gz" -C "$mac/macos" "$app"
+          cp "$mac"/dmg/*.dmg "$out/"
+          cp "$win"/*-setup.exe "$out/"
+          [ "$(ls "$out" | wc -l)" -eq 3 ] || { echo "::error::expected 3 files, got: $(ls "$out")"; exit 1; }
+          ls -l "$out"
+          echo "DESKTOP_OUT=$out" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop
+          path: ${{ env.DESKTOP_OUT }}
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          tag=$([ "$REF_TYPE" = "tag" ] && echo "$REF_NAME" || echo "v$version")
-          dmg=$(ls src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg)
-          exe=$(ls src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe)
+          tag=$([ "$REF_TYPE" = "tag" ] && echo "$REF_NAME" || echo "v$VERSION")
+          dmg=$(ls "$DESKTOP_OUT"/*.dmg)
+          exe=$(ls "$DESKTOP_OUT"/*-setup.exe)
           cat > release-notes.md <<'EOF'
           Hivo for Mac, Windows and Android.
 
@@ -193,24 +175,21 @@ jobs:
           fi
           echo "Draft release $tag: $(basename "$dmg"), $(basename "$exe")"
 
-  # The phone app (mobile/, Expo) for Android, after the desktop job so the
-  # draft release exists. Same Mac, same hardening. JDK 17 and the Android
-  # SDK are installed there (SETUP.md → "Release builds").
-  # - APK (arm64-v8a only, ~30 MB): the website download (/download/android
-  #   → latest/Hivo.apk) and the in-app update banner (mobile-latest.json).
-  # - AAB (every ABI): the Google Play upload, attached to the draft only.
-  #   Uploading it to Play is done by hand.
-  # Both are signed with the upload key (secrets ANDROID_UPLOAD_KEYSTORE_BASE64,
-  # ANDROID_UPLOAD_KEYSTORE_PASSWORD, ANDROID_UPLOAD_KEY_ALIAS) through
-  # mobile/plugins/withReleaseSigning.js; the job fails if either comes out
-  # debug-signed.
+  # The phone app (mobile/, Expo) for Android. Same Mac, same hardening, no
+  # secret: both files come out unsigned (HIVO_UNSIGNED=1, see
+  # mobile/plugins/withReleaseSigning.js, which refuses a debug-signed
+  # release on CI) and are signed by the `release` job. JDK 17 and the
+  # Android SDK are installed there (SETUP.md → "Release builds").
+  # - APK (arm64-v8a only, ~30 MB, HIVO_DISTRIBUTION=direct): the website
+  #   download (/download/android → latest/Hivo.apk); the only build that
+  #   checks mobile-latest.json for updates.
+  # - AAB (every ABI, HIVO_DISTRIBUTION=play): the Google Play upload,
+  #   attached to the draft only. Uploading it to Play is done by hand.
   android:
     needs: build
     if: github.repository == 'Haxxxxxx/fl-studio-manager' && (github.ref_type == 'tag' || github.ref == 'refs/heads/main')
     runs-on: [self-hosted, macOS, hivo]
     timeout-minutes: 45
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -228,29 +207,15 @@ jobs:
         run: |
           node -v && npm -v
           "$JAVA_HOME/bin/java" -version
-          bt=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
-          test -x "$ANDROID_HOME/build-tools/$bt/apksigner" || { echo "::error::apksigner not found in $ANDROID_HOME/build-tools"; exit 1; }
-          echo "APKSIGNER=$ANDROID_HOME/build-tools/$bt/apksigner" >> "$GITHUB_ENV"
-
-      - name: Tag is on main
-        if: github.ref_type == 'tag'
-        run: |
-          git fetch --no-tags --depth=1000 origin main
-          git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD || { echo "::error::$GITHUB_REF_NAME is not on main"; exit 1; }
 
       # The phone app ships with the desktop's version: the tag,
       # tauri.conf.json and mobile/app.json must agree.
       - name: Phone app version matches
         env:
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           version=$(node -p "require('./mobile/app.json').expo.version")
-          desktop=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          [ "$version" = "$desktop" ] || { echo "::error::mobile/app.json says $version, tauri.conf.json says $desktop"; exit 1; }
-          if [ "$REF_TYPE" = "tag" ]; then
-            [ "$REF_NAME" = "v$version" ] || { echo "::error::tag $REF_NAME but mobile/app.json says $version"; exit 1; }
-          fi
+          [ "$version" = "$VERSION" ] || { echo "::error::mobile/app.json says $version, tauri.conf.json says $VERSION"; exit 1; }
 
       - name: Install and test
         working-directory: mobile
@@ -259,31 +224,16 @@ jobs:
           npm test
           npx tsc --noEmit
 
-      # No secret here: prebuild only generates android/ (git-ignored).
+      # prebuild only generates android/ (git-ignored).
       - name: Generate the Android project
         working-directory: mobile
         run: npx expo prebuild --platform android --clean
 
-      # The keystore exists only in the runner's temp folder, for this job,
-      # and the last step deletes it whatever happens.
-      - name: Upload keystore
-        env:
-          KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
-        run: |
-          set -euo pipefail
-          [ -n "$KEYSTORE_BASE64" ] || { echo "::error::ANDROID_UPLOAD_KEYSTORE_BASE64 is not set"; exit 1; }
-          umask 077
-          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/hivo-upload.jks"
-          test -s "$RUNNER_TEMP/hivo-upload.jks"
-
-      # --no-daemon: no Gradle process outlives the step with the passwords.
       - name: Build the APK (arm64, website)
         working-directory: mobile/android
         env:
-          HIVO_UPLOAD_STORE_FILE: ${{ runner.temp }}/hivo-upload.jks
-          HIVO_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
-          HIVO_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
-          HIVO_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          HIVO_UNSIGNED: "1"
+          HIVO_DISTRIBUTION: direct
         run: ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a --no-daemon
 
       # HIVO_DISTRIBUTION=play: this build leaves updates to Google Play (no
@@ -291,73 +241,138 @@ jobs:
       - name: Build the AAB (all ABIs, Google Play)
         working-directory: mobile/android
         env:
+          HIVO_UNSIGNED: "1"
           HIVO_DISTRIBUTION: play
-          HIVO_UPLOAD_STORE_FILE: ${{ runner.temp }}/hivo-upload.jks
-          HIVO_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
-          HIVO_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
-          HIVO_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
         run: ./gradlew bundleRelease --no-daemon
 
-      # Both must carry the upload key's certificate, never the debug one.
-      - name: Check the signatures
+      - name: Collect the files
         env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/android-out"
+          rm -rf "$out" && mkdir -p "$out"
+          cp mobile/android/app/build/outputs/apk/release/app-release-unsigned.apk "$out/Hivo-$VERSION-android-arm64-unsigned.apk"
+          cp mobile/android/app/build/outputs/bundle/release/app-release.aab "$out/Hivo-$VERSION-android-unsigned.aab"
+          ls -l "$out"
+          echo "ANDROID_OUT=$out" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android
+          path: ${{ env.ANDROID_OUT }}
+          if-no-files-found: error
+          retention-days: 7
+
+  # Signs and publishes, on a fresh GitHub-hosted machine. The only job with
+  # secrets, each one in the step that needs it: the Tauri key in "Sign the
+  # updater files", the upload keystore in "Sign the APK and the AAB", the
+  # service-role key in the two upload steps. Put those secrets in the
+  # `release` environment (Settings → Environments) with a required
+  # reviewer: this job then waits for an approval before anything is signed.
+  release:
+    needs: [build, android]
+    if: github.repository == 'Haxxxxxx/fl-studio-manager' && (github.ref_type == 'tag' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    environment: release
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
+      # Only for the Tauri CLI's signer, at the lockfile's version; no
+      # install script runs.
+      - run: npm ci --ignore-scripts
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: desktop
+          path: ${{ runner.temp }}/desktop
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: android
+          path: ${{ runner.temp }}/android
+
+      # The updater files (Hivo.app.tar.gz, the -setup.exe) get a .sig the
+      # app checks against plugins.updater.pubkey in tauri.conf.json, bound
+      # to the version like tauri build does.
+      - name: Sign the updater files
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set"; exit 1; }
+          d="$RUNNER_TEMP/desktop"
+          for f in "$d"/*.app.tar.gz "$d"/*-setup.exe; do
+            npx --no-install tauri signer sign --app-version "$VERSION" "$f" > /dev/null
+            test -s "$f.sig"
+            echo "signed $(basename "$f")"
+          done
+
+      # apksigner for the APK (v2+ signatures; the build already aligned
+      # it), jarsigner for the AAB (what Play expects from an upload key).
+      # Both must then carry the upload key's certificate, never the debug
+      # one. The keystore lives in this step only.
+      - name: Sign the APK and the AAB
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
         run: |
           set -euo pipefail
-          apk=mobile/android/app/build/outputs/apk/release/app-release.apk
-          aab=mobile/android/app/build/outputs/bundle/release/app-release.aab
-          test -s "$apk" && test -s "$aab"
+          [ -n "$KEYSTORE_BASE64" ] || { echo "::error::ANDROID_UPLOAD_KEYSTORE_BASE64 is not set"; exit 1; }
+          ks="$RUNNER_TEMP/hivo-upload.jks"
+          trap 'rm -f "$ks"' EXIT
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$ks"
+          test -s "$ks"
+          bt=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+          tools="$ANDROID_HOME/build-tools/$bt"
+          a="$RUNNER_TEMP/android"
+          out="$RUNNER_TEMP/android-signed"
+          mkdir -p "$out"
+          apk_in="$a/Hivo-$VERSION-android-arm64-unsigned.apk"
+          aab_in="$a/Hivo-$VERSION-android-unsigned.aab"
+          apk="$out/Hivo-$VERSION-android-arm64.apk"
+          aab="$out/Hivo-$VERSION-android.aab"
+          "$tools/zipalign" -c -P 16 4 "$apk_in" || { echo "::error::the unsigned APK isn't aligned"; exit 1; }
+          "$tools/apksigner" sign --ks "$ks" --ks-pass env:STORE_PASSWORD --ks-key-alias "$KEY_ALIAS" --key-pass env:STORE_PASSWORD --out "$apk" "$apk_in"
+          jarsigner -keystore "$ks" -storepass:env STORE_PASSWORD -keypass:env STORE_PASSWORD -signedjar "$aab" "$aab_in" "$KEY_ALIAS" > /dev/null
           norm() { tr -d ':' | tr '[:upper:]' '[:lower:]'; }
-          want=$("$JAVA_HOME/bin/keytool" -list -v -keystore "$RUNNER_TEMP/hivo-upload.jks" -storepass:env STORE_PASSWORD -alias "$KEY_ALIAS" \
-            | awk '/SHA256:/ { print $2; exit }' | norm)
+          want=$(keytool -list -v -keystore "$ks" -storepass:env STORE_PASSWORD -alias "$KEY_ALIAS" | awk '/SHA256:/ { print $2; exit }' | norm)
           [ -n "$want" ] || { echo "::error::could not read the upload certificate"; exit 1; }
-          apk_certs=$("$APKSIGNER" verify --print-certs "$apk")
+          apk_certs=$("$tools/apksigner" verify --print-certs "$apk")
           if grep -q "CN=Android Debug" <<<"$apk_certs"; then echo "::error::the APK is debug-signed"; exit 1; fi
           got_apk=$(awk -F': ' '/certificate SHA-256 digest/ { print $NF; exit }' <<<"$apk_certs" | norm)
-          "$JAVA_HOME/bin/jarsigner" -verify "$aab" > /dev/null
-          aab_certs=$("$JAVA_HOME/bin/keytool" -printcert -jarfile "$aab")
+          jarsigner -verify "$aab" > /dev/null
+          aab_certs=$(keytool -printcert -jarfile "$aab")
           if grep -q "CN=Android Debug" <<<"$aab_certs"; then echo "::error::the AAB is debug-signed"; exit 1; fi
           got_aab=$(awk '/SHA256:/ { print $2; exit }' <<<"$aab_certs" | norm)
           [ "$got_apk" = "$want" ] || { echo "::error::the APK isn't signed with the upload key"; exit 1; }
           [ "$got_aab" = "$want" ] || { echo "::error::the AAB isn't signed with the upload key"; exit 1; }
           echo "APK and AAB signed with the upload key ($want)"
 
-      - name: Name the files
-        run: |
-          set -euo pipefail
-          version=$(node -p "require('./mobile/app.json').expo.version")
-          out="$RUNNER_TEMP/android-out"
-          rm -rf "$out" && mkdir -p "$out"
-          cp mobile/android/app/build/outputs/apk/release/app-release.apk "$out/Hivo-$version-android-arm64.apk"
-          cp mobile/android/app/build/outputs/bundle/release/app-release.aab "$out/Hivo-$version-android.aab"
-          echo "ANDROID_OUT=$out" >> "$GITHUB_ENV"
-
-      # The first line of the draft's notes, for mobile-latest.json (empty
-      # if there's no release). Only reads with the token.
-      - name: Release notes line
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          version=$(node -p "require('./mobile/app.json').expo.version")
-          tag=$([ "$REF_TYPE" = "tag" ] && echo "$REF_NAME" || echo "v$version")
-          { gh release view "$tag" --json body -q .body 2>/dev/null || true; } | tr -d '\r' | awk 'NF { print; exit }' > "$ANDROID_OUT/notes.txt"
-          echo "notes: $(cat "$ANDROID_OUT/notes.txt")"
-
-      # Same bucket and pattern as the desktop installers. The service-role
-      # key exists only in this step. mobile-latest.json goes last, so a phone
-      # never sees a version whose APK isn't there yet.
-      - name: Publish the APK to the releases bucket
+      # Everything versioned first, under v<version>/. Nothing a user or an
+      # installed app reads changes yet.
+      - name: Upload to v<version>/ in the releases bucket
         env:
           SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           set -euo pipefail
-          version=$(node -p "require('./mobile/app.json').expo.version")
-          apk="$ANDROID_OUT/Hivo-$version-android-arm64.apk"
-          public="$SUPABASE_URL/storage/v1/object/public/releases"
+          d="$RUNNER_TEMP/desktop"
+          s="$RUNNER_TEMP/android-signed"
           # up <bucket path> <file> <content type>
           up() {
             curl -fsS -o /dev/null -X POST "$SUPABASE_URL/storage/v1/object/releases/$1" \
@@ -365,18 +380,12 @@ jobs:
               -H "Content-Type: $3" --data-binary "@$2"
             echo "uploaded $1"
           }
-          dir="v$version"
-          up "$dir/$(basename "$apk")" "$apk" application/vnd.android.package-archive
-          up "latest/Hivo.apk" "$apk" application/vnd.android.package-archive
-          VERSION="$version" APK_URL="$public/$dir/$(basename "$apk")" \
-          SHA256="$(shasum -a 256 "$apk" | cut -d' ' -f1)" NOTES="$(cat "$ANDROID_OUT/notes.txt")" \
-          OUT="$ANDROID_OUT/mobile-latest.json" \
-          node -e '
-            const e = process.env;
-            const manifest = { version: e.VERSION, apk: e.APK_URL, sha256: e.SHA256, notes: e.NOTES, pub_date: new Date().toISOString() };
-            require("fs").writeFileSync(e.OUT, JSON.stringify(manifest, null, 2) + "\n");
-          '
-          up "mobile-latest.json" "$ANDROID_OUT/mobile-latest.json" application/json
+          dir="v$VERSION"
+          for f in "$d"/*.app.tar.gz; do up "$dir/$(basename "$f")" "$f" application/gzip; done
+          for f in "$d"/*-setup.exe; do up "$dir/$(basename "$f")" "$f" application/octet-stream; done
+          for f in "$d"/*.sig; do up "$dir/$(basename "$f")" "$f" text/plain; done
+          for f in "$d"/*.dmg; do up "$dir/$(basename "$f")" "$f" application/x-apple-diskimage; done
+          up "$dir/Hivo-$VERSION-android-arm64.apk" "$s/Hivo-$VERSION-android-arm64.apk" application/vnd.android.package-archive
 
       - name: Attach to the draft release
         env:
@@ -385,17 +394,66 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          version=$(node -p "require('./mobile/app.json').expo.version")
-          tag=$([ "$REF_TYPE" = "tag" ] && echo "$REF_NAME" || echo "v$version")
-          apk="$ANDROID_OUT/Hivo-$version-android-arm64.apk"
-          aab="$ANDROID_OUT/Hivo-$version-android.aab"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "$apk" "$aab" --clobber
-          else
-            gh release create "$tag" "$apk" "$aab" --draft --title "Hivo $tag" --notes "Hivo $tag" --target "$GITHUB_SHA"
-          fi
+          tag=$([ "$REF_TYPE" = "tag" ] && echo "$REF_NAME" || echo "v$VERSION")
+          s="$RUNNER_TEMP/android-signed"
+          apk="$s/Hivo-$VERSION-android-arm64.apk"
+          aab="$s/Hivo-$VERSION-android.aab"
+          gh release upload "$tag" "$apk" "$aab" --clobber --repo "$GITHUB_REPOSITORY"
           echo "Attached to $tag: $(basename "$apk"), $(basename "$aab")"
+          # First line of the draft's notes, for mobile-latest.json.
+          { gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json body -q .body 2>/dev/null || true; } | tr -d '\r' | awk 'NF { print; exit }' > "$RUNNER_TEMP/notes.txt"
 
-      - name: Delete the keystore
-        if: always()
-        run: rm -f "$RUNNER_TEMP/hivo-upload.jks"
+      # Last, once everything above succeeded: the website's latest/* files,
+      # then the two manifests installed apps read (latest.json for the
+      # desktop, mobile-latest.json for website APKs). Short cache so a
+      # release (or a fix to one) shows up within a minute.
+      - name: Point latest at this release
+        env:
+          SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/desktop"
+          s="$RUNNER_TEMP/android-signed"
+          public="$SUPABASE_URL/storage/v1/object/public/releases"
+          up() {
+            curl -fsS -o /dev/null -X POST "$SUPABASE_URL/storage/v1/object/releases/$1" \
+              -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" -H "x-upsert: true" \
+              -H "cache-control: max-age=60" \
+              -H "Content-Type: $3" --data-binary "@$2"
+            echo "uploaded $1"
+          }
+          dir="v$VERSION"
+          app=$(ls "$d"/*.app.tar.gz)
+          exe=$(ls "$d"/*-setup.exe)
+          dmg=$(ls "$d"/*.dmg)
+          apk="$s/Hivo-$VERSION-android-arm64.apk"
+          up "latest/Hivo.dmg" "$dmg" application/x-apple-diskimage
+          up "latest/Hivo-setup.exe" "$exe" application/octet-stream
+          up "latest/Hivo.apk" "$apk" application/vnd.android.package-archive
+          APP_URL="$public/$dir/$(basename "$app")" APP_SIG="$(cat "$app.sig")" \
+          EXE_URL="$public/$dir/$(basename "$exe")" EXE_SIG="$(cat "$exe.sig")" \
+          APK_URL="$public/$dir/$(basename "$apk")" SHA256="$(sha256sum "$apk" | cut -d' ' -f1)" \
+          NOTES="$(cat "$RUNNER_TEMP/notes.txt")" OUT="$RUNNER_TEMP" \
+          node -e '
+            const e = process.env;
+            const fs = require("fs");
+            const now = new Date().toISOString();
+            const mac = { signature: e.APP_SIG, url: e.APP_URL };
+            const desktop = {
+              version: e.VERSION,
+              notes: `Hivo ${e.VERSION}`,
+              pub_date: now,
+              platforms: {
+                "darwin-universal": mac,
+                "darwin-aarch64": mac,
+                "darwin-x86_64": mac,
+                "windows-x86_64": { signature: e.EXE_SIG, url: e.EXE_URL },
+              },
+            };
+            const mobile = { version: e.VERSION, apk: e.APK_URL, sha256: e.SHA256, notes: e.NOTES, pub_date: now };
+            fs.writeFileSync(`${e.OUT}/latest.json`, JSON.stringify(desktop, null, 2) + "\n");
+            fs.writeFileSync(`${e.OUT}/mobile-latest.json`, JSON.stringify(mobile, null, 2) + "\n");
+          '
+          up "latest.json" "$RUNNER_TEMP/latest.json" application/json
+          up "mobile-latest.json" "$RUNNER_TEMP/mobile-latest.json" application/json

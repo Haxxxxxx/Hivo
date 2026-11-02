@@ -1,10 +1,11 @@
 // Fetching side of the update check (pure rules in lib/update.ts). Only
-// builds for the website ("direct") check: the Play build (HIVO_DISTRIBUTION
-// =play, see app.config.js) leaves updates to Google Play, as Play's
-// policy requires. Nothing is sent but a plain GET of a public file.
+// builds for the website (HIVO_DISTRIBUTION=direct, see app.config.js)
+// check: the Play build leaves updates to Google Play, as Play's policy
+// requires, and a build without the flag never checks (fail closed).
+// Nothing is sent but a plain GET of a public file.
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
-import { checkDue, manualCheck, MANIFEST_URL, pickUpdate, type ManualCheck, type Update } from "./lib/update";
+import { checkDue, checksForDistribution, manualCheck, MANIFEST_URL, pickUpdate, type ManualCheck, type Update } from "./lib/update";
 import { appVersion } from "./store";
 
 const LAST_CHECK_KEY = "hivo.update.lastCheck.v1";
@@ -12,7 +13,7 @@ const DISMISSED_KEY = "hivo.update.dismissed.v1";
 const TIMEOUT_MS = 8000;
 
 export function checksForUpdates(): boolean {
-  return Constants.expoConfig?.extra?.distribution !== "play";
+  return checksForDistribution(Constants.expoConfig?.extra?.distribution);
 }
 
 /**

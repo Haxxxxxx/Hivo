@@ -10,6 +10,15 @@ export const RELEASES_BASE = "https://chrbpaoljulntuvousnz.supabase.co/storage/v
 export const MANIFEST_URL = `${RELEASES_BASE}mobile-latest.json`;
 export const CHECK_EVERY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Only a build explicitly marked "direct" (the website APK, built with
+ * HIVO_DISTRIBUTION=direct) checks. Play builds, dev builds and a build
+ * whose flag is missing never do: fail closed.
+ */
+export function checksForDistribution(distribution: unknown): boolean {
+  return distribution === "direct";
+}
+
 export type Semver = readonly [major: number, minor: number, patch: number];
 
 /** "0.6.1" or "v0.6.1" → [0, 6, 1]; anything else (pre-releases included) → null. */

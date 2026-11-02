@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CHECK_EVERY_MS, checkDue, compareSemver, desktopIsOlder, MANIFEST_URL, manualCheck, parseSemver, pickUpdate, PLAY_URL, RELEASES_BASE } from "./update";
+import { CHECK_EVERY_MS, checkDue, checksForDistribution, compareSemver, desktopIsOlder, MANIFEST_URL, manualCheck, parseSemver, pickUpdate, PLAY_URL, RELEASES_BASE } from "./update";
 
 const apk = `${RELEASES_BASE}v0.6.1/Hivo-0.6.1-android-arm64.apk`;
 
@@ -89,5 +89,12 @@ describe("manualCheck", () => {
   });
   it("points Play builds at the app's own Play page", () => {
     expect(PLAY_URL).toBe("https://play.google.com/store/apps/details?id=fr.hivo.mobile");
+  });
+});
+
+describe("checksForDistribution", () => {
+  it("checks only builds explicitly marked direct (fails closed)", () => {
+    expect(checksForDistribution("direct")).toBe(true);
+    for (const d of ["play", "dev", "", undefined, null, 1]) expect(checksForDistribution(d)).toBe(false);
   });
 });
