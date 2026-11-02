@@ -22,7 +22,7 @@ export function PrivacyPage({ lang }: { lang: Lang }) {
           <a href={`/${lang}`} aria-label={t.back}>
             <LogoLockup size={28} />
           </a>
-          <nav aria-label="Language" className="flex gap-3 font-mono text-xs uppercase">
+          <nav aria-label={t.language} className="flex gap-3 font-mono text-xs uppercase">
             {(["fr", "en"] as const).map((l) => (
               <a key={l} href={`/${l}/privacy`} hrefLang={l} lang={l} aria-current={l === lang ? "page" : undefined} className={l === lang ? "text-cream" : "text-engrave hover:text-cream"}>
                 {l}
