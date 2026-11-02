@@ -117,13 +117,24 @@ describe("goneCrewIds (removed from a crew)", () => {
 });
 
 describe("myServerShares (rows nobody here knows)", () => {
-  it("lists my rows, unknown first, and flags duplicates of a song shared here", () => {
+  it("lists my rows, unknown first, and flags only unknown rows sharing a title", () => {
+    // "a2" has the title of a song shared from here: my other computer may
+    // share a different song with that title, so it isn't a duplicate.
     const rows = [row("a", { title: "Night Run" }), row("a2", { title: "night run " }), row("z", { title: "Lost" }), row("x", { owner_id: "someone", title: "Theirs" })];
     const out = myServerShares(rows, ws({ "/a.flp": shared("a") }), scope);
     expect(out.map((r) => [r.id, r.local, r.duplicate])).toEqual([
       ["z", false, false],
-      ["a2", false, true],
+      ["a2", false, false],
       ["a", true, false],
+    ]);
+  });
+
+  it("flags two unknown rows of mine with the same title, never a crewmate's", () => {
+    const rows = [row("o1", { title: "Lost" }), row("o2", { title: "lost" }), row("t", { owner_id: "someone", title: "Lost" })];
+    const out = myServerShares(rows, ws({}), scope);
+    expect(out.map((r) => [r.id, r.duplicate]).sort()).toEqual([
+      ["o1", true],
+      ["o2", true],
     ]);
   });
 });

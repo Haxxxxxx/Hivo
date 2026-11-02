@@ -19,6 +19,8 @@ const server = {
   limit: Infinity,
   calls: [] as Call[],
   removed: false,
+  /** My role in the crew on the server. */
+  myRole: "member" as "member" | "owner",
 };
 
 function rowFrom(r: Record<string, unknown>): CrewSongRow {
@@ -30,7 +32,7 @@ function query(table: string) {
   const st: { op: string; rows: Record<string, unknown>[]; ids: string[]; range: [number, number] | null; ignore: boolean } = { op: "select", rows: [], ids: [], range: null, ignore: false };
   const run = () => {
     if (st.op === "select") {
-      if (table === "crew_members") return { data: server.removed ? [] : [{ crew_id: CREW, user_id: ME, role: "member", display_name: "Me" }], error: null };
+      if (table === "crew_members") return { data: server.removed ? [] : [{ crew_id: CREW, user_id: ME, role: server.myRole, display_name: "Me" }], error: null };
       if (table === "songs") {
         const rows = [...server.songs].sort((a, b) => a.id.localeCompare(b.id));
         server.calls.push({ op: "select", table, ids: [] });
@@ -104,7 +106,8 @@ beforeEach(async () => {
   server.limit = Infinity;
   server.calls = [];
   server.removed = false;
-  useCrewStore.setState({ userId: ME, crews: [{ id: CREW, name: "Crew A", role: "member", displayName: "Me" }], activeCrewId: null, removedFrom: [] });
+  server.myRole = "member";
+  useCrewStore.setState({ userId: ME, crews: [{ id: CREW, name: "Crew A", role: "member", displayName: "Me" }], activeCrewId: null, removedFrom: [], nowOwnerOf: [] });
   await useCrewStore.getState().selectCrew(null);
 });
 
@@ -155,5 +158,39 @@ describe("crew push", () => {
     expect(meta.shareId).toBeUndefined();
     expect(useCrewStore.getState().removedFrom).toHaveLength(1);
     expect(server.calls.filter((c) => c.op === "upsert")).toHaveLength(0);
+  });
+});
+
+describe("crew review round 2", () => {
+  it("picks up my new role without a restart and says so once", async () => {
+    setLocal({}, []);
+    server.myRole = "owner";
+    await useCrewStore.getState().selectCrew(CREW);
+    expect(useCrewStore.getState().crews[0].role).toBe("owner");
+    expect(useCrewStore.getState().nowOwnerOf).toEqual(["Crew A"]);
+    // The next load changes nothing, so nothing is said again.
+    useCrewStore.getState().dismissOwnerNotice();
+    await useCrewStore.getState().syncNow();
+    expect(useCrewStore.getState().nowOwnerOf).toEqual([]);
+  });
+
+  it("moves a share to a new version: the same row is updated, never deleted", async () => {
+    server.songs = [rowFrom({ id: "s1", crew_id: CREW, title: "Old", stage: "prep", tags: [], credits: [], stage_updated_at: "2026-10-01T00:00:00.000Z" })];
+    setLocal({ "/p/Old.flp": { ...shared("s1"), status: "prep", stageBaseAt: "2026-10-01T00:00:00.000Z" }, "/p/New.flp": { status: "creation" } }, ["Old", "New"]);
+    await useCrewStore.getState().selectCrew(CREW);
+    server.calls = [];
+    useCrewStore.getState().moveShareTo("/p/Old.flp", "/p/New.flp");
+    const songs = useAppStore.getState().workspace.songs;
+    expect(songs["/p/New.flp"]).toMatchObject({ shared: true, shareId: "s1", status: "prep", stagePending: false });
+    expect(songs["/p/Old.flp"].shareId).toBeUndefined();
+    await useCrewStore.getState().syncNow();
+    expect(server.calls.filter((c) => c.op === "delete")).toHaveLength(0);
+    expect(server.songs.map((s) => [s.id, s.title])).toEqual([["s1", "New"]]);
+  });
+
+  it("remembers crewmates' names for later", async () => {
+    setLocal({}, []);
+    await useCrewStore.getState().selectCrew(CREW);
+    expect(useCrewStore.getState().knownNames[ME]).toBe("Me");
   });
 });
