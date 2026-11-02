@@ -94,7 +94,7 @@ export function DetectedFolders({ compact = false }: { compact?: boolean }) {
       )}
       <div className="flex items-center gap-3">
         <button onClick={() => void run("again", detectFolders)} disabled={busy !== null} className="flex items-center gap-1 text-xs text-engrave hover:text-cream">
-          <RefreshCw size={12} className={busy === "again" ? "animate-spin" : ""} /> {t.lookAgain}
+          <RefreshCw size={12} className={busy === "again" ? "motion-safe:animate-spin" : ""} /> {t.lookAgain}
         </button>
         {error && <span className="text-xs text-red-300">{error}</span>}
       </div>

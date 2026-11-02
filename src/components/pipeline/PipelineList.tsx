@@ -2,7 +2,7 @@ import { Fragment } from "react";
 import { useCollapsed } from "../../store/usePipelineView";
 import { formatRelative } from "../../lib/format";
 import { formatBpm } from "../../lib/songs";
-import { AddColumn, beforeKeyFor, CARD_FOCUS, ColumnHeader, ConflictDot, DropLine, openOnKey, SourceError, startSongDrag, T_PIPELINE, usePipelineDrop, useSource } from "./shared";
+import { AddColumn, beforeKeyFor, CardTitle, ColumnHeader, ConflictDot, DropLine, MoveMenu, SourceError, startSongDrag, T_PIPELINE, usePipelineDrop, useSource } from "./shared";
 import { tr } from "../../i18n";
 
 const ROW = "grid grid-cols-[minmax(0,1fr)_7rem_4.5rem_3.5rem_minmax(0,10rem)_7rem] items-center gap-3";
@@ -20,7 +20,8 @@ export function PipelineList() {
   return (
     <div className="flex-1 overflow-y-auto px-6 py-4" onDragEnd={dnd.end}>
       <SourceError />
-      <div className={`${ROW} px-3 pb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-engrave`} aria-hidden>
+      {/* Visual headers only: each row's cells carry their own label for screen readers. */}
+      <div className={`${ROW} px-3 pb-2 font-mono text-[10.5px] uppercase tracking-[0.14em] text-engrave`} aria-hidden>
         <span>{t.song}</span>
         <span>{t.saved}</span>
         <span>{t.bpm}</span>
@@ -49,26 +50,35 @@ export function PipelineList() {
                     <Fragment key={item.key}>
                       {dnd.spot?.columnId === column.id && dnd.spot.beforeKey === item.key && <DropLine />}
                       <div
-                        role="button"
-                        tabIndex={0}
-                        aria-label={item.title}
                         draggable
                         onDragStart={(e) => startSongDrag(e, item.key)}
                         onDragOver={(e) => dnd.over(e, column.id, query ? null : beforeKeyFor(e, items, i))}
                         onClick={item.open}
-                        onKeyDown={openOnKey(item.open)}
-                        className={`${ROW} cursor-grab rounded px-3 py-1.5 text-sm active:cursor-grabbing ${CARD_FOCUS} ${
+                        className={`${ROW} group/card cursor-grab rounded px-3 py-1.5 text-sm active:cursor-grabbing ${
                           item.selected ? "bg-raised ring-1 ring-orange-400/40" : "hover:bg-raised"
                         }`}
                       >
                         <span className="flex min-w-0 items-center gap-1.5">
-                          <span className="truncate font-medium text-cream">{item.title}</span>
+                          <CardTitle item={item} />
                           <ConflictDot on={item.conflict} />
+                          <MoveMenu item={item} />
                         </span>
-                        <span className="text-xs text-engrave">{item.savedMs ? formatRelative(item.savedMs) : "—"}</span>
-                        <span className="font-mono text-xs text-body">{formatBpm(item.bpm)}</span>
-                        <span className="font-mono text-xs text-body">{item.musicalKey || "—"}</span>
-                        <span className="truncate text-xs text-engrave">{item.tags.map((tag) => `#${tag}`).join(" ")}</span>
+                        <span className="text-xs text-engrave">
+                          <span className="sr-only">{t.saved}: </span>
+                          {item.savedMs ? formatRelative(item.savedMs) : "—"}
+                        </span>
+                        <span className="font-mono text-xs text-body">
+                          <span className="sr-only">{t.bpm}: </span>
+                          {formatBpm(item.bpm)}
+                        </span>
+                        <span className="font-mono text-xs text-body">
+                          <span className="sr-only">{t.key}: </span>
+                          {item.musicalKey || "—"}
+                        </span>
+                        <span className="truncate text-xs text-engrave">
+                          {item.tags.length > 0 && <span className="sr-only">{t.tags}: </span>}
+                          {item.tags.map((tag) => `#${tag}`).join(" ")}
+                        </span>
                         <span className="flex justify-end truncate text-xs text-body">{item.extra}</span>
                       </div>
                     </Fragment>

@@ -1,7 +1,7 @@
-import { createContext, useContext, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowLeft, ArrowRight, ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from "lucide-react";
+import { createContext, useContext, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { ArrowLeft, ArrowRight, ArrowRightLeft, ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from "lucide-react";
 import { usePipelineView, type PipelineScope, type PipelineViewKind } from "../../store/usePipelineView";
-import { stageColor, stageLabel, STAGE_ORDER, NAME_MAX } from "../../lib/pipeline";
+import { cardMoves, stageColor, stageLabel, STAGE_ORDER, NAME_MAX } from "../../lib/pipeline";
 import type { PipelineColumn, SongStatus } from "../../types";
 import { ConfirmButton, StatusDot } from "../ui";
 import { dict, tr } from "../../i18n";
@@ -79,6 +79,12 @@ export const T_PIPELINE = dict(
     youLower: "you",
     aCrewmate: "a crewmate",
     credits: "Credits",
+    // Keyboard moves
+    moveMenu: (title: string) => `Move ${title}`,
+    moveTo: "Move to…",
+    moveUp: "Move up",
+    moveDown: "Move down",
+    toColumn: "To the column",
   },
   {
     board: "Tableau",
@@ -145,6 +151,11 @@ export const T_PIPELINE = dict(
     youLower: "toi",
     aCrewmate: "quelqu'un du crew",
     credits: "Crédits",
+    moveMenu: (title: string) => `Déplacer ${title}`,
+    moveTo: "Déplacer vers…",
+    moveUp: "Monter",
+    moveDown: "Descendre",
+    toColumn: "Vers la colonne",
   },
 );
 
@@ -209,17 +220,72 @@ export function useSource(): PipelineSource {
   return s;
 }
 
-/** Enter and Space open a card like a click (cards are divs and rows, not buttons). */
-export function openOnKey(open?: () => void) {
-  return (e: KeyboardEvent<HTMLElement>) => {
-    if (e.key !== "Enter" && e.key !== " ") return;
-    if (e.key === " ") e.preventDefault();
-    open?.();
-  };
-}
-
 /** The visible focus ring of a card or row reached with the keyboard. */
 export const CARD_FOCUS = "focus-visible:outline-2 focus-visible:outline-cream";
+
+/** A card's or row's title: a real button when the song opens (the card
+ * itself is only a mouse target), plain text when it doesn't (a crewmate's
+ * song not on this computer), so nothing focusable does nothing. */
+export function CardTitle({ item, className = "" }: { item: PipelineItem; className?: string }) {
+  if (!item.open) return <span className={`truncate font-medium text-cream ${className}`}>{item.title}</span>;
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        item.open?.();
+      }}
+      aria-pressed={item.selected ?? undefined}
+      className={`min-w-0 truncate rounded text-left font-medium text-cream hover:underline ${CARD_FOCUS} ${className}`}
+    >
+      {item.title}
+    </button>
+  );
+}
+
+/** The keyboard way to move a card (dragging is mouse only): a native menu
+ * with up / down in its column and every other column, like the column
+ * picker on the website's crew board. Shown on hover and on focus. */
+export function MoveMenu({ item }: { item: PipelineItem }) {
+  const source = useSource();
+  const t = tr(T_PIPELINE);
+  const moves = cardMoves(source.groups, item.key, !source.query);
+  if (moves.length === 0) return null;
+  const columns = moves.filter((m) => m.kind === "column");
+  return (
+    <label
+      title={t.moveTo}
+      onClick={(e) => e.stopPropagation()}
+      className="relative flex shrink-0 cursor-pointer items-center rounded p-0.5 text-engrave opacity-0 hover:bg-rule hover:text-cream focus-within:opacity-100 focus-within:outline-2 focus-within:outline-cream group-hover/card:opacity-100 group-focus-within/card:opacity-100"
+    >
+      <ArrowRightLeft size={12} aria-hidden />
+      <select
+        value=""
+        aria-label={t.moveMenu(item.title)}
+        onChange={(e) => {
+          const move = moves.find((m) => m.id === e.target.value);
+          if (move) source.moveCard(item.key, move.columnId, move.beforeKey);
+        }}
+        className="absolute inset-0 cursor-pointer opacity-0"
+      >
+        <option value="" disabled>
+          {t.moveTo}
+        </option>
+        {moves.map((m) => m.kind === "up" && <option key={m.id} value={m.id}>{t.moveUp}</option>)}
+        {moves.map((m) => m.kind === "down" && <option key={m.id} value={m.id}>{t.moveDown}</option>)}
+        {columns.length > 0 && (
+          <optgroup label={t.toColumn}>
+            {columns.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+              </option>
+            ))}
+          </optgroup>
+        )}
+      </select>
+    </label>
+  );
+}
 
 // ---- Drag rules (HTML5 drag and drop; Tauri's own file drop is off) ----
 
@@ -394,7 +460,7 @@ export function ColumnHeader({
         <span className="shrink-0 text-xs text-engrave">{count}</span>
       </div>
       {renamed && !editing && (
-        <div className="mt-0.5 pl-[34px] font-mono text-[9.5px] uppercase tracking-wider text-engrave" title={t.stageCrewSees}>
+        <div className="mt-0.5 pl-[34px] font-mono text-[10.5px] uppercase tracking-wider text-engrave" title={t.stageCrewSees}>
           {stageLabel(column.stage)}
         </div>
       )}

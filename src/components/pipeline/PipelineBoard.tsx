@@ -3,7 +3,7 @@ import { ChevronRight } from "lucide-react";
 import { useCollapsed, usePipelineView } from "../../store/usePipelineView";
 import { stageColor } from "../../lib/pipeline";
 import { StatusDot } from "../ui";
-import { AddColumn, beforeKeyFor, CARD_FOCUS, ColumnHeader, ConflictDot, DropLine, openOnKey, SourceError, startSongDrag, T_PIPELINE, usePipelineDrop, useSource } from "./shared";
+import { AddColumn, beforeKeyFor, CardTitle, ColumnHeader, ConflictDot, DropLine, MoveMenu, SourceError, startSongDrag, T_PIPELINE, usePipelineDrop, useSource } from "./shared";
 import { tr } from "../../i18n";
 
 /** Kanban: one column per pipeline column. Drag cards between and within
@@ -67,21 +67,21 @@ export function PipelineBoard() {
                       <Fragment key={item.key}>
                         {dnd.spot?.columnId === column.id && dnd.spot.beforeKey === item.key && <DropLine />}
                         <div onDragOver={(e) => dnd.over(e, column.id, query ? null : beforeKeyFor(e, items, i))}>
+                          {/* The card is a mouse target; the title button and the
+                              move menu are its keyboard controls. */}
                           <div
                             draggable
-                            tabIndex={0}
-                            role="button"
-                            aria-label={item.title}
                             onDragStart={(e) => startSongDrag(e, item.key)}
                             onClick={item.open}
-                            onKeyDown={openOnKey(item.open)}
-                            className={`cursor-grab rounded-md border px-3 py-2 active:cursor-grabbing ${CARD_FOCUS} ${
+                            className={`group/card cursor-grab rounded-md border px-3 py-2 active:cursor-grabbing ${
                               item.selected ? "border-orange-400/40 bg-raised" : "border-rule bg-raised hover:border-rule-strong"
                             }`}
                           >
                             <div className="flex items-center gap-1.5">
-                              <span className="truncate text-sm font-medium text-cream">{item.title}</span>
+                              <CardTitle item={item} className="text-sm" />
                               <ConflictDot on={item.conflict} />
+                              <span className="ml-auto" />
+                              <MoveMenu item={item} />
                             </div>
                             {item.card}
                           </div>

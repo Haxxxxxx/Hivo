@@ -19,6 +19,9 @@ const T = dict(
     notSent: "Not sent to anyone yet.",
     notePlaceholder: "Note (feedback, price, link…)",
     logSend: "Log a send",
+    cancelNew: "Cancel new person",
+    removeCredit: (name: string) => `Remove ${name} from the credits`,
+    removeSend: (name: string) => `Remove the send to ${name}`,
   },
   {
     name: "Nom",
@@ -32,6 +35,9 @@ const T = dict(
     notSent: "Envoyé à personne pour l'instant.",
     notePlaceholder: "Note (retour, prix, lien…)",
     logSend: "Noter un envoi",
+    cancelNew: "Annuler la nouvelle personne",
+    removeCredit: (name: string) => `Retirer ${name} des crédits`,
+    removeSend: (name: string) => `Supprimer l'envoi à ${name}`,
   },
 );
 
@@ -119,7 +125,7 @@ function PersonPicker({ onPick, label }: { onPick: (personId: string) => void; l
           {label}
         </button>
         {people.length > 0 && (
-          <button type="button" onClick={() => setNaming(false)} className="text-engrave hover:text-cream">
+          <button type="button" onClick={() => setNaming(false)} aria-label={tr(T).cancelNew} className="text-engrave hover:text-cream">
             <X size={13} />
           </button>
         )}
@@ -199,7 +205,11 @@ export function SongCredits({ project }: { project: ProjectInfo }) {
               />
               %
             </label>
-            <button onClick={() => setCredits(credits.filter((_, j) => j !== i))} className="text-engrave hover:text-cream">
+            <button
+              onClick={() => setCredits(credits.filter((_, j) => j !== i))}
+              aria-label={t.removeCredit(byId.get(c.personId)?.name ?? t.unknown)}
+              className="text-engrave hover:text-cream"
+            >
               <X size={12} />
             </button>
           </div>
@@ -270,7 +280,11 @@ export function SongPitches({ project }: { project: ProjectInfo }) {
                     </option>
                   ))}
                 </select>
-                <button onClick={() => removePitch(project.path, p.id)} className="text-engrave opacity-0 hover:text-cream group-hover:opacity-100">
+                <button
+                  onClick={() => removePitch(project.path, p.id)}
+                  aria-label={t.removeSend(byId.get(p.personId)?.name ?? t.unknown)}
+                  className="text-engrave opacity-0 hover:text-cream focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
+                >
                   <X size={12} />
                 </button>
               </div>
@@ -278,7 +292,7 @@ export function SongPitches({ project }: { project: ProjectInfo }) {
                 value={p.note ?? ""}
                 onChange={(e) => updatePitch(project.path, p.id, { note: e.target.value })}
                 placeholder={t.notePlaceholder}
-                className="ml-5 mt-0.5 w-[calc(100%-1.25rem)] bg-transparent text-[11px] text-engrave placeholder:text-engrave focus:outline-none"
+                className="ml-5 mt-0.5 w-[calc(100%-1.25rem)] rounded border border-transparent bg-transparent text-[11px] text-engrave placeholder:text-engrave focus:border-hot focus:outline-none"
               />
             </div>
           );
