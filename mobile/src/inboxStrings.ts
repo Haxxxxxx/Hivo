@@ -1,7 +1,7 @@
 // Phase B step 4 on the phone: ideas, voice memos, shared files (BandLab
 // exports) and what happens to them. Every error state of docs/PHONE-SYNC.md
 // v1.1 has its sentence here.
-import { dict, tr } from "./lib/i18n";
+import { dict, plural, tr } from "./lib/i18n";
 import type { OutError } from "./lib/outbox";
 import type { ExtrasError } from "./store";
 
@@ -22,6 +22,7 @@ export const S = dict(
     ideaText: "Idea",
     ideaTextPlaceholder: "Lines, a concept, a hook… Use [Hook], [Verse 1] as headers.",
     forTarget: "For",
+    forTargetLabel: (what: string) => `For: ${what}`,
     noTarget: "Not for a beat or song yet",
     pickTarget: "Pick a prod, beat or song",
     clearTarget: "No target",
@@ -71,7 +72,17 @@ export const S = dict(
     recNamePlaceholder: "Name it (optional)",
     recMax: (min: number) => `Stops by itself at ${min} min.`,
     recTooShort: "Too short (under a second): not kept.",
-    recStopped: "The recording stopped (a call or another app took the microphone). What was recorded is kept.",
+    recStopped: "The recording stopped (from the notification, or another app took the microphone). What was recorded is kept.",
+    recCall: "A call took the microphone, so the recording stopped. What was recorded is kept.",
+    recInBackground: "Recording continues in the background: you can lock the phone or switch apps.",
+    noticeAskTitle: "Record with the screen off",
+    noticeAskBody: "While it records, Hivo shows a notification, so a take keeps going with the screen off or in another app. Android asks next whether Hivo may show notifications.",
+    noticeAskOk: "Continue",
+    noticeDenied: "Notifications are off, so keep Hivo on screen while you record: leaving it stops the take (what was recorded is kept). Allow notifications in the phone's settings to record with the screen off.",
+    noticeTitle: "Hivo is recording",
+    noticeText: "Tap to return",
+    noticeStop: "Stop",
+    noticeChannel: "Voice memo recording",
     recBackground: "Hivo left the screen, so the recording stopped. What was recorded is kept: keep it or record again.",
     discardTitle: "Discard this take?",
     discardBody: "It isn't kept anywhere yet.",
@@ -87,7 +98,7 @@ export const S = dict(
     pause: "Pause",
     // Share
     shareTitle: "Send to your computer",
-    shareFiles: (n: number) => (n === 1 ? "1 file" : `${n} files`),
+    shareFiles: (n: number) => plural(n, "1 file", `${n} files`),
     shareName: "Name",
     shareNamePlaceholder: "The song's name on the computer",
     shareSend: "Send to the computer",
@@ -126,6 +137,7 @@ export const S = dict(
     ideaText: "Idée",
     ideaTextPlaceholder: "Des lignes, un concept, un refrain… Utilise [Refrain], [Couplet 1] comme titres.",
     forTarget: "Pour",
+    forTargetLabel: (what: string) => `Pour${NB}: ${what}`,
     noTarget: "Pas encore pour une prod ou un son",
     pickTarget: "Choisis une prod, un beat ou un son",
     clearTarget: "Aucune cible",
@@ -173,7 +185,17 @@ export const S = dict(
     recNamePlaceholder: "Donne-lui un nom (facultatif)",
     recMax: (min: number) => `S'arrête tout seul à ${min}${NB}min.`,
     recTooShort: `Trop court (moins d'une seconde)${NB}: pas gardé.`,
-    recStopped: "L'enregistrement s'est arrêté (un appel ou une autre app a pris le micro). Ce qui a été enregistré est gardé.",
+    recStopped: "L'enregistrement s'est arrêté (depuis la notification, ou une autre app a pris le micro). Ce qui a été enregistré est gardé.",
+    recCall: "Un appel a pris le micro, l'enregistrement s'est arrêté. Ce qui a été enregistré est gardé.",
+    recInBackground: `L'enregistrement continue en arrière-plan${NB}: tu peux verrouiller le téléphone ou changer d'app.`,
+    noticeAskTitle: "Enregistrer écran éteint",
+    noticeAskBody: "Pendant l'enregistrement, Hivo affiche une notification, pour que la prise continue écran éteint ou dans une autre app. Android va ensuite te demander si Hivo peut afficher des notifications.",
+    noticeAskOk: "Continuer",
+    noticeDenied: `Les notifications sont coupées, alors garde Hivo à l'écran pendant l'enregistrement${NB}: le quitter arrête la prise (ce qui a été enregistré est gardé). Autorise les notifications dans les réglages du téléphone pour enregistrer écran éteint.`,
+    noticeTitle: "Hivo enregistre",
+    noticeText: "Touche pour revenir",
+    noticeStop: "Arrêter",
+    noticeChannel: "Enregistrement des mémos vocaux",
     recBackground: `Hivo a quitté l'écran, l'enregistrement s'est arrêté. Ce qui a été enregistré est gardé${NB}: garde-le ou recommence.`,
     discardTitle: `Jeter cette prise${NB}?`,
     discardBody: "Elle n'est encore gardée nulle part.",
@@ -188,7 +210,7 @@ export const S = dict(
     play: "Écouter",
     pause: "Pause",
     shareTitle: "Envoyer vers ton ordi",
-    shareFiles: (n: number) => (n === 1 ? "1 fichier" : `${n} fichiers`),
+    shareFiles: (n: number) => plural(n, `${n} fichier`, `${n} fichiers`),
     shareName: "Nom",
     shareNamePlaceholder: "Le nom du son sur l'ordi",
     shareSend: "Envoyer vers l'ordi",

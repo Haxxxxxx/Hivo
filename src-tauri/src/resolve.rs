@@ -22,6 +22,9 @@ pub struct Resolver {
     /// Sample libraries), by lowercased file name: a pack that lives at
     /// another path on this computer counts as moved, not missing.
     sample_libraries: Arc<HashMap<String, PathBuf>>,
+    /// Which build of the sample-library index this is (0: none): part of the
+    /// key resolved samples are cached under (scanner.rs).
+    sample_generation: u64,
     exists_cache: HashMap<String, bool>,
     folder_files: HashMap<PathBuf, HashMap<String, PathBuf>>,
 }
@@ -35,9 +38,10 @@ const LIBRARY_MAX_FILES: usize = 200_000;
 /// How long a sample-library index is reused before it's walked again.
 const LIBRARY_TTL: Duration = Duration::from_secs(10 * 60);
 
-/// (folders and their mtimes, when it was built, the index).
-type SampleIndex = (Vec<(PathBuf, Option<SystemTime>)>, Instant, Arc<HashMap<String, PathBuf>>);
+/// (folders and their mtimes, when it was built, its generation, the index).
+type SampleIndex = (Vec<(PathBuf, Option<SystemTime>)>, Instant, u64, Arc<HashMap<String, PathBuf>>);
 static SAMPLE_INDEX: Mutex<Option<SampleIndex>> = Mutex::new(None);
+static SAMPLE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn index_sample_folders(folders: &[PathBuf]) -> HashMap<String, PathBuf> {
     let mut index = HashMap::new();
@@ -82,12 +86,23 @@ pub(crate) fn native(raw: &str) -> String {
     }
 }
 
-fn lower_file_name(p: &Path) -> Option<String> {
-    p.file_name().map(|n| n.to_string_lossy().to_lowercase())
+/// A name as it's compared: NFC, then lowercased. macOS keeps a name in the
+/// form it was typed in (often NFD: "E" + combining accent), Windows and
+/// what a .flp stores are usually NFC, so "Été" must match either way.
+pub(crate) fn fold(s: &str) -> String {
+    if s.is_ascii() {
+        return s.to_ascii_lowercase();
+    }
+    use unicode_normalization::UnicodeNormalization;
+    s.nfc().collect::<String>().to_lowercase()
+}
+
+pub(crate) fn lower_file_name(p: &Path) -> Option<String> {
+    p.file_name().map(|n| fold(&n.to_string_lossy()))
 }
 
 fn lower_file_stem(p: &Path) -> Option<String> {
-    p.file_stem().map(|n| n.to_string_lossy().to_lowercase())
+    p.file_stem().map(|n| fold(&n.to_string_lossy()))
 }
 
 /// FL's `%FLStudioUserData%` is the folder that contains `Projects`
@@ -210,6 +225,7 @@ impl Resolver {
             user_data: None,
             installed_plugins,
             sample_libraries: Arc::new(HashMap::new()),
+            sample_generation: 0,
             exists_cache: HashMap::new(),
             folder_files: HashMap::new(),
         }
@@ -232,16 +248,43 @@ impl Resolver {
             .map(|f| (f.clone(), if is_remote_or_device(&f.to_string_lossy()) { None } else { std::fs::metadata(f).and_then(|m| m.modified()).ok() }))
             .collect();
         let mut cache = SAMPLE_INDEX.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((k, at, index)) = cache.as_ref() {
+        if let Some((k, at, generation, index)) = cache.as_ref() {
             if *k == key && at.elapsed() < LIBRARY_TTL {
                 self.sample_libraries = Arc::clone(index);
+                self.sample_generation = *generation;
                 return self;
             }
         }
         let index = Arc::new(index_sample_folders(folders));
-        *cache = Some((key, Instant::now(), Arc::clone(&index)));
+        let generation = SAMPLE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        *cache = Some((key, Instant::now(), generation, Arc::clone(&index)));
         self.sample_libraries = index;
+        self.sample_generation = generation;
         self
+    }
+
+    /// What resolved samples depend on besides the project and its folder:
+    /// the sample-library index build and this computer's FL folders.
+    pub fn context_key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (self.sample_generation, &self.factory_data, &self.user_data).hash(&mut h);
+        h.finish()
+    }
+
+    /// Hands over a song folder's file index built from the scan's own
+    /// listing, so `locate` doesn't walk the folder again.
+    pub fn prime_song_folder(&mut self, folder: &Path, files: impl FnOnce() -> HashMap<String, PathBuf>) {
+        if !self.folder_files.contains_key(folder) {
+            let files = files();
+            self.folder_files.insert(folder.to_path_buf(), files);
+        }
+    }
+
+    /// Where each stored sample is on this computer right now (the path
+    /// found, or None when it's missing), in order. What a render stages.
+    pub fn locate_all(&mut self, raw: &[String], project: &Path) -> Vec<(String, SampleStatus, Option<PathBuf>)> {
+        raw.iter().map(|r| self.locate(r, project)).collect()
     }
 
     /// Network-share and device paths count as missing without a lookup
@@ -358,7 +401,7 @@ impl Resolver {
                 let installed = p.path.as_deref().map(native).map(|path| {
                     self.exists(&path)
                         || lower_file_stem(Path::new(&path)).is_some_and(|s| self.installed_plugins.contains(&s))
-                        || self.installed_plugins.contains(&p.name.to_lowercase())
+                        || self.installed_plugins.contains(&fold(&p.name))
                 });
                 PluginInfo {
                     name: p.name.clone(),

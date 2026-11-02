@@ -3,7 +3,7 @@ import { cleanTitle } from "./launchKit";
 import { datedRelease } from "./releaseDates";
 import { isKitAccepted } from "./kitState";
 import { lastSaveMs, renderFreshness } from "./songs";
-import { dict, tr } from "../i18n";
+import { dict, plural, tr } from "../i18n";
 
 // Sync between the local workspace and the crew database (docs/ARCHITECTURE.md).
 // Pure functions: what to push for a shared song, which remote stage moves to
@@ -117,11 +117,29 @@ export function sharedCredits(credits: CrewCredit[]): CrewCredit[] {
   return out;
 }
 
-/** The row to upsert for one shared song, always within the database's checks. */
-export function sharedSongPayload(project: ProjectInfo, meta: SongMeta, ws: Workspace, scope: ShareScope): SharedSongPayload | null {
+/** Nothing could be read from inside the project this scan (damaged, caught
+ * mid-save, or a cloud placeholder never read before): what's read from it
+ * (the bpm) isn't known, which isn't the same as "no bpm". */
+export function unreadThisScan(project: ProjectInfo): boolean {
+  return !!project.readError || (!!project.inCloud && project.tempoBpm == null);
+}
+
+/** The row to upsert for one shared song, always within the database's
+ * checks. `lastGood`: the row the server has, whose read values are kept
+ * while the project can't be read (a half-written save must not push
+ * `bpm: null`). */
+export function sharedSongPayload(
+  project: ProjectInfo,
+  meta: SongMeta,
+  ws: Workspace,
+  scope: ShareScope,
+  lastGood?: Pick<CrewSongRow, "bpm">,
+): SharedSongPayload | null {
   if (!sharedHere(meta, scope)) return null;
   const name = (id: string) => ws.people.find((p) => p.id === id)?.name;
-  const bpm = project.tempoBpm != null && project.tempoBpm >= 10 && project.tempoBpm <= 522 ? Math.round(project.tempoBpm * 100) / 100 : null;
+  const read = project.tempoBpm != null && project.tempoBpm >= 10 && project.tempoBpm <= 522 ? Math.round(project.tempoBpm * 100) / 100 : null;
+  const kept = lastGood?.bpm == null ? null : Number(lastGood.bpm);
+  const bpm = unreadThisScan(project) ? (Number.isFinite(kept) ? kept : null) : read;
   const key = meta.key ? chars(meta.key.trim(), 8) : "";
   return {
     id: meta.shareId!,
@@ -154,10 +172,12 @@ export function shareElsewhere(meta: SongMeta | undefined, scope: ShareScope): {
   return { crewId: meta.shareCrewId ?? scope.crewId, mine: (meta.shareUserId ?? scope.userId) === scope.userId, shared: !!meta.shared };
 }
 
-/** Every shared song's payload, for one push. */
-export function sharedPayloads(projects: ProjectInfo[], ws: Workspace, scope: ShareScope): SharedSongPayload[] {
+/** Every shared song's payload, for one push. `remote`: my rows on the
+ * server by id (their read values stand in for an unreadable project's). */
+export function sharedPayloads(projects: ProjectInfo[], ws: Workspace, scope: ShareScope, remote?: Map<string, Pick<CrewSongRow, "bpm">>): SharedSongPayload[] {
   return projects.flatMap((p) => {
-    const row = sharedSongPayload(p, ws.songs[p.path] ?? {}, ws, scope);
+    const meta = ws.songs[p.path] ?? {};
+    const row = sharedSongPayload(p, meta, ws, scope, meta.shareId ? remote?.get(meta.shareId) : undefined);
     return row ? [row] : [];
   });
 }
@@ -478,15 +498,15 @@ export function syncFingerprint(projects: ProjectInfo[], ws: Workspace, scope: S
 const T_LIMIT = dict(
   {
     share: (n: number) =>
-      `${n} song${n === 1 ? " wasn't" : "s weren't"} shared: a crew takes up to ${SONGS_PER_CREW} songs from each person. Stop sharing some first (Settings → Crew lists what's on the server).`,
-    pushSongs: (n: number) => ` · ${n} new song${n === 1 ? "" : "s"} not shared (share limit reached: stop sharing some to make room)`,
-    pushReleases: (n: number) => ` · ${n} release${n === 1 ? "" : "s"} not shared (the crew has ${RELEASES_PER_CREW}, the most allowed)`,
+      `${n} song${plural(n, " wasn't", "s weren't")} shared: a crew takes up to ${SONGS_PER_CREW} songs from each person. Stop sharing some first (Settings → Crew lists what's on the server).`,
+    pushSongs: (n: number) => ` · ${n} new song${plural(n, "", "s")} not shared (share limit reached: stop sharing some to make room)`,
+    pushReleases: (n: number) => ` · ${n} release${plural(n, "", "s")} not shared (the crew has ${RELEASES_PER_CREW}, the most allowed)`,
   },
   {
     share: (n: number) =>
-      `${n} son${n === 1 ? " n'a pas été partagé" : "s n'ont pas été partagés"} : un crew prend jusqu'à ${SONGS_PER_CREW} sons par personne. Arrête d'en partager d'abord (Réglages → Crew liste ce qui est sur le serveur).`,
-    pushSongs: (n: number) => ` · ${n} nouveau${n === 1 ? " son non partagé" : "x sons non partagés"} (limite de partage atteinte : arrête d'en partager pour faire de la place)`,
-    pushReleases: (n: number) => ` · ${n} sortie${n === 1 ? " non partagée" : "s non partagées"} (le crew en a ${RELEASES_PER_CREW}, le maximum)`,
+      `${n} son${plural(n, " n'a pas été partagé", "s n'ont pas été partagés")} : un crew prend jusqu'à ${SONGS_PER_CREW} sons par personne. Arrête d'en partager d'abord (Réglages → Crew liste ce qui est sur le serveur).`,
+    pushSongs: (n: number) => ` · ${n} nouveau${plural(n, " son non partagé", "x sons non partagés")} (limite de partage atteinte : arrête d'en partager pour faire de la place)`,
+    pushReleases: (n: number) => ` · ${n} sortie${plural(n, " non partagée", "s non partagées")} (le crew en a ${RELEASES_PER_CREW}, le maximum)`,
   },
 );
 

@@ -29,7 +29,7 @@ import {
 } from "../lib/launchKit";
 import { busyDates, daysUntil, releaseOf } from "../lib/releaseDates";
 import { acceptFingerprint, exportedFolderName, exportFingerprint, exportStatus, isKitAccepted, isLossless, kitMaster, lastLyricsLanguage, previousKitFolder } from "../lib/kitState";
-import { dict, tr } from "../i18n";
+import { dict, plural, tr } from "../i18n";
 import { aiDisclosure, draftCopy, reviewKit } from "../lib/ai";
 import { formatRelative } from "../lib/format";
 import { stageRank, statusInfo } from "../lib/songs";
@@ -38,14 +38,14 @@ import { useVisibleSongs } from "./LibraryView";
 import { SongPicker } from "./SongPicker";
 import { ShortsPanel } from "./ShortsPanel";
 import { CoverConcepts } from "./CoverConcepts";
-import { ConfirmButton, StatusSelect, btn, btnPrimary } from "./ui";
+import { ConfirmButton, Modal, StatusSelect, btn, btnPrimary } from "./ui";
 import { canRenderInApp } from "../lib/daws";
 import { Card, CheckLine, FieldRow, KitStatus, StatusDot } from "../ui";
+import { errorReason, errorText } from "../lib/errors";
 
 // Snippet colors: the dark categorical slots, in fixed order (as elsewhere).
 const SNIPPET_COLORS = ["#ff5a1f", "#f2efe8", "#3ddc84"];
 
-const plural = (n: number) => (n === 1 ? "" : "s");
 
 const T = dict(
   {
@@ -60,7 +60,7 @@ const T = dict(
     renderNow: "Render now",
     rendering: "Rendering…",
     exportConfirm: (missing: number, flagged: number) => {
-      const what = [missing && `${missing} field${plural(missing)} still need${missing === 1 ? "s" : ""} you`, flagged && `the AI flagged ${flagged}`]
+      const what = [missing && `${missing} field${plural(missing, "", "s")} still need${plural(missing, "s", "")} you`, flagged && `the AI flagged ${flagged}`]
         .filter(Boolean)
         .join(" and ");
       return `${what[0].toUpperCase()}${what.slice(1)}. Export anyway? Open items go in checklist.md and the distributor sheet.`;
@@ -77,10 +77,10 @@ const T = dict(
     artistIdsHint: (artists: { name: string; profiles: unknown[] }[]) =>
       artists.length === 0
         ? "No one credited on this song yet (credit people in the song panel)."
-        : `Adds artist-ids.md and an \"Artist profiles\" section to the distributor sheet: ${artists.map((a) => `${a.name} (${a.profiles.length} ID${a.profiles.length === 1 ? "" : "s"})`).join(", ")}. Look up profiles in People to fill them.`,
+        : `Adds artist-ids.md and an \"Artist profiles\" section to the distributor sheet: ${artists.map((a) => `${a.name} (${a.profiles.length} ID${plural(a.profiles.length, "", "s")})`).join(", ")}. Look up profiles in People to fill them.`,
     exported: (open: number) => `Kit exported${open ? `, with ${open} open item(s) listed in checklist.md` : ""}.`,
     showFolder: "Show folder",
-    useSuggestions: (n: number) => `Use all ${n} AI suggestion${plural(n)}`,
+    useSuggestions: (n: number) => `Use all ${n} AI suggestion${plural(n, "", "s")}`,
     resetConfirm: "Undo every change you made in this kit?",
     clickAgain: "Sure? Click again",
     exportAnyway: "Export anyway",
@@ -100,8 +100,8 @@ const T = dict(
     notChecked: "Not checked yet.",
     changedSince: "Some values changed since the last check.",
     allRight: "Every field looks right.",
-    toLookAt: (n: number) => `${n} field${plural(n)} to look at.`,
-    notCheckedN: (n: number) => `${n} field${plural(n)} not checked. Re-check.`,
+    toLookAt: (n: number) => `${n} field${plural(n, "", "s")} to look at.`,
+    notCheckedN: (n: number) => `${n} field${plural(n, "", "s")} not checked. Re-check.`,
     noProblems: "No problems found.",
     aiLayer: "AI layer",
     writing: "Writing…",
@@ -179,10 +179,10 @@ const T = dict(
     renderNow: "Faire le rendu",
     rendering: "Rendu en cours…",
     exportConfirm: (missing: number, flagged: number) => {
-      const what = [missing && `${missing} champ${plural(missing)} à compléter`, flagged && `l'IA en a signalé ${flagged}`].filter(Boolean).join(" et ");
+      const what = [missing && `${missing} champ${plural(missing, "", "s")} à compléter`, flagged && `l'IA en a signalé ${flagged}`].filter(Boolean).join(" et ");
       return `${what[0].toUpperCase()}${what.slice(1)}. Exporter quand même ? Ce qui reste ouvert va dans checklist.md et la fiche distributeur.`;
     },
-    answerFirst: "Réponds d'abord aux champs marqués « À compléter »",
+    answerFirst: "Réponds d'abord aux champs marqués « À compléter »",
     markReviewed: "Marque toutes les valeurs pré-remplies comme relues",
     accepted: "Accepté",
     acceptAll: "Tout accepter",
@@ -194,16 +194,16 @@ const T = dict(
     artistIdsHint: (artists: { name: string; profiles: unknown[] }[]) =>
       artists.length === 0
         ? "Personne n'est crédité sur ce son pour l'instant (crédite des personnes dans le panneau du son)."
-        : `Ajoute artist-ids.md et une section « Profils artistes » à la fiche distributeur : ${artists.map((a) => `${a.name} (${a.profiles.length} ID${a.profiles.length > 1 ? "s" : ""})`).join(", ")}. Cherche les profils dans Personnes pour les remplir.`,
-    exported: (open: number) => `Kit exporté${open ? `, avec ${open} point${plural(open)} ouvert${plural(open)} dans checklist.md` : ""}.`,
+        : `Ajoute artist-ids.md et une section « Profils artistes » à la fiche distributeur : ${artists.map((a) => `${a.name} (${a.profiles.length} ID${plural(a.profiles.length, "", "s")})`).join(", ")}. Cherche les profils dans Personnes pour les remplir.`,
+    exported: (open: number) => `Kit exporté${open ? `, avec ${open} point${plural(open, "", "s")} ouvert${plural(open, "", "s")} dans checklist.md` : ""}.`,
     showFolder: "Ouvrir le dossier",
-    useSuggestions: (n: number) => (n === 1 ? "Utiliser la suggestion de l'IA" : `Utiliser les ${n} suggestions de l'IA`),
+    useSuggestions: (n: number) => plural(n, "Utiliser la suggestion de l'IA", `Utiliser les ${n} suggestions de l'IA`),
     resetConfirm: "Annuler tous tes changements dans ce kit ?",
     clickAgain: "Sûr ? Clique encore",
     exportAnyway: "Exporter quand même",
     cancel: "Annuler",
     resetAll: "Annuler toutes les modifs",
-    blankConfirm: "Vider toutes les valeurs pré-remplies pour remplir le kit à la main ? (« Annuler toutes les modifs » les remet.)",
+    blankConfirm: "Vider toutes les valeurs pré-remplies pour remplir le kit à la main ? (« Annuler toutes les modifs » les remet.)",
     startBlank: "Partir de zéro",
     metadata: "Métadonnées",
     releaseTiming: "Quand ça sort",
@@ -216,8 +216,8 @@ const T = dict(
     notChecked: "Pas encore vérifié.",
     changedSince: "Des valeurs ont changé depuis la dernière vérif.",
     allRight: "Tous les champs ont l'air bons.",
-    toLookAt: (n: number) => `${n} champ${plural(n)} à regarder.`,
-    notCheckedN: (n: number) => `${n} champ${plural(n)} pas vérifié${plural(n)}. Revérifie.`,
+    toLookAt: (n: number) => `${n} champ${plural(n, "", "s")} à regarder.`,
+    notCheckedN: (n: number) => `${n} champ${plural(n, "", "s")} pas vérifié${plural(n, "", "s")}. Revérifie.`,
     noProblems: "Aucun problème trouvé.",
     aiLayer: "Couche IA",
     writing: "Écriture…",
@@ -305,7 +305,7 @@ function useAnalysis(project: ProjectInfo | undefined, render: FileEntry | undef
         analysisCache.set(key, a);
         if (live) setState({ key, analysis: a, error: null, loading: false });
       })
-      .catch((e) => live && setState({ key, analysis: null, error: String(e), loading: false }));
+      .catch((e) => live && setState({ key, analysis: null, error: errorReason(e), loading: false }));
     return () => {
       live = false;
     };
@@ -459,7 +459,7 @@ export function LaunchKitView() {
     try {
       await startRender([project.path]);
     } catch (e) {
-      setExportState({ status: "error", message: e instanceof Error ? e.message : String(e) });
+      setExportState({ status: "error", message: errorText(e) });
     }
   }
 
@@ -494,7 +494,7 @@ export function LaunchKitView() {
       setExportState({ status: "done", dir });
       setGuide({ guide: kitGuide(lang, { title, master: masterExt ? `${masterBaseName(fields, project.name)}.${masterExt}` : null, snippets: snippets.map((s) => s.label) }), lang, dir });
     } catch (e) {
-      setExportState({ status: "error", message: String(e) });
+      setExportState({ status: "error", message: errorText(e) });
     }
   }
 
@@ -809,7 +809,7 @@ function AiPanel({ path, input, fields }: { path: string; input: KitInput; field
       if (!stillValid()) return;
       setKitAi(path, { review: { fields: checked.review, model: checked.model, atMs: Date.now() } });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setRunning(null);
     }
@@ -1049,10 +1049,13 @@ function Snippets({
             <div
               key={key}
               onClick={() => setSelected(key)}
+              onFocus={() => setSelected(key)}
               className={`flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs ${key === active ? "border-rule-strong bg-raised" : "border-transparent bg-panel"}`}
             >
               <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: SNIPPET_COLORS[i % 3] }} />
-              <span className="w-24 text-cream">{s.label}</span>
+              <button type="button" onClick={() => setSelected(key)} aria-pressed={key === active} className="w-24 rounded text-left text-cream focus-visible:outline-2 focus-visible:outline-cream">
+                {s.label}
+              </button>
               <TimeInput value={s.startSec} onCommit={(v) => onMove(key, clampStart(v, s.lengthSec))} />
               <span className="text-engrave">→ {formatDuration(s.startSec + s.lengthSec)}</span>
               <select
@@ -1197,62 +1200,49 @@ function TimeInput({ value, onCommit }: { value: number; onCommit: (seconds: num
 }
 
 
+const T_EXPORTED = dict(
+  { title: "Kit exported", inOrder: "In order", sameText: "The same text is in README.md, in the kit folder.", showFolder: "Show folder", gotIt: "Got it" },
+  { title: "Kit exporté", inOrder: "Dans l'ordre", sameText: "Le même texte est dans README.md, dans le dossier du kit.", showFolder: "Ouvrir le dossier", gotIt: "Compris" },
+);
+
 /** After an export: what's in the kit and what to do with it (same text as README.md). */
 function KitExportedDialog({ guide, lang, dir, onClose }: { guide: KitGuide; lang: KitLang; dir: string; onClose: () => void }) {
-  const fr = lang === "fr";
-  const close = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    close.current?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  // In the kit's language, like the guide it shows.
+  const t = T_EXPORTED[lang];
+  // Modal traps the focus, answers Escape and hands the focus back on close.
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6" onClick={onClose}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="kit-exported-title"
-        onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-lg border border-rule bg-raised shadow-2xl"
-      >
-        <div className="border-b border-rule px-5 py-4">
-          <h2 id="kit-exported-title" className="font-display text-xl uppercase tracking-tight text-cream">
-            {fr ? "Kit exporté" : "Kit exported"}
-          </h2>
-          <p className="mt-1 text-sm text-body">{guide.intro}</p>
-        </div>
-        <div className="min-h-0 flex-1 overflow-auto px-5 py-4 text-sm">
-          <ul className="flex flex-col gap-2.5">
-            {guide.items.map((i) => (
-              <li key={i.file}>
-                <span className="font-mono text-xs text-cream">{i.file}</span>
-                <div className="text-body">
-                  {i.what} <span className="text-engrave">{i.todo}</span>
-                </div>
-              </li>
-            ))}
-          </ul>
-          <h3 className="mt-5 text-xs font-semibold uppercase tracking-wider text-engrave">{fr ? "Dans l'ordre" : "In order"}</h3>
-          <ol className="mt-2 list-decimal pl-5 text-body">
-            {guide.steps.map((s) => (
-              <li key={s} className="py-0.5">
-                {s}
-              </li>
-            ))}
-          </ol>
-          <p className="mt-4 text-xs text-engrave">{fr ? "Le même texte est dans README.md, dans le dossier du kit." : "The same text is in README.md, in the kit folder."}</p>
-        </div>
-        <div className="flex justify-end gap-2 border-t border-rule px-5 py-3">
-          <button onClick={() => void api.revealInFileManager(dir)} className={btn}>
-            <FolderOpen size={14} /> {fr ? "Ouvrir le dossier" : "Show folder"}
-          </button>
-          <button ref={close} onClick={onClose} className={btnPrimary}>
-            {fr ? "Compris" : "Got it"}
-          </button>
-        </div>
+    <Modal title={t.title} onClose={onClose} width="max-w-2xl">
+      <p className="text-sm text-body">{guide.intro}</p>
+      <div className="mt-4 text-sm">
+        <ul className="flex flex-col gap-2.5">
+          {guide.items.map((i) => (
+            <li key={i.file}>
+              <span className="font-mono text-xs text-cream">{i.file}</span>
+              <div className="text-body">
+                {i.what} <span className="text-engrave">{i.todo}</span>
+              </div>
+            </li>
+          ))}
+        </ul>
+        <h3 className="mt-5 text-xs font-semibold uppercase tracking-wider text-engrave">{t.inOrder}</h3>
+        <ol className="mt-2 list-decimal pl-5 text-body">
+          {guide.steps.map((s) => (
+            <li key={s} className="py-0.5">
+              {s}
+            </li>
+          ))}
+        </ol>
+        <p className="mt-4 text-xs text-engrave">{t.sameText}</p>
       </div>
-    </div>
+      <div className="mt-5 flex justify-end gap-2 border-t border-rule pt-3">
+        <button onClick={() => void api.revealInFileManager(dir)} className={btn}>
+          <FolderOpen size={14} /> {t.showFolder}
+        </button>
+        <button onClick={onClose} className={btnPrimary}>
+          {t.gotIt}
+        </button>
+      </div>
+    </Modal>
   );
 }
 

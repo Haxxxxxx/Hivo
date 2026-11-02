@@ -41,11 +41,11 @@ const TEXT = {
   },
   emailFailed: {
     en: "The sign-in email couldn't be sent. Try again in a few minutes. If it keeps failing, tell whoever runs Hivo: the email sender needs checking.",
-    fr: "L'email de connexion n'a pas pu être envoyé. Réessaie dans quelques minutes. Si ça bloque encore, préviens la personne qui gère Hivo : l'envoi d'emails est à vérifier.",
+    fr: "L'email de connexion n'a pas pu être envoyé. Réessaie dans quelques minutes. Si ça bloque encore, préviens la personne qui gère Hivo\u202f: l'envoi d'emails est à vérifier.",
   },
   invalidInvite: {
     en: "That invite code didn't work: it's wrong, expired, used up or revoked (or you're already in 10 crews). Ask your crew for a new one.",
-    fr: "Ce code d'invitation ne marche pas : il est faux, expiré, déjà utilisé ou révoqué (ou tu es déjà dans 10 crews). Demande un nouveau code à ton crew.",
+    fr: "Ce code d'invitation ne marche pas\u202f: il est faux, expiré, déjà utilisé ou révoqué (ou tu es déjà dans 10 crews). Demande un nouveau code à ton crew.",
   },
   tooManyInvites: {
     en: "Too many wrong invite codes. Wait 10 minutes and try again.",
@@ -81,11 +81,11 @@ const TEXT = {
   },
   ownerOnly: {
     en: "Only the crew's owner can do that.",
-    fr: "Seul le propriétaire du crew peut faire ça.",
+    fr: "Il faut être propriétaire du crew pour faire ça.",
   },
   deleteOwnerOnly: {
     en: "Only the crew's owner can delete it.",
-    fr: "Seul le propriétaire du crew peut le supprimer.",
+    fr: "Il faut être propriétaire du crew pour le supprimer.",
   },
   inTen: {
     en: "You're already in 10 crews. Leave one first.",
@@ -93,15 +93,15 @@ const TEXT = {
   },
   offline: {
     en: "Can't reach the crew server. Are you online?",
-    fr: "Impossible de joindre le serveur du crew. Tu es bien connecté à internet ?",
+    fr: "Impossible de joindre le serveur du crew. Ta connexion internet marche\u202f?",
   },
   noCrew: {
     en: "You're signed in as {email}, but not in a crew yet. Enter the invite code your crew sent you (8 letters and numbers).",
-    fr: "Tu es connecté en tant que {email}, mais tu n'es pas encore dans un crew. Entre le code d'invitation que ton crew t'a envoyé (8 lettres et chiffres).",
+    fr: "Ta session est ouverte avec {email}, mais tu n'es pas encore dans un crew. Entre le code d'invitation que ton crew t'a envoyé (8 lettres et chiffres).",
   },
   noInviteYet: {
     en: "No code yet? Ask your crew's owner to make one in Hivo (Crew → Members & invites) or on hi-vo.fr (Crew tab → New invite code).",
-    fr: "Pas encore de code ? Demande au propriétaire du crew d'en créer un dans Hivo (Crew → Membres et invitations) ou sur hi-vo.fr (onglet Crew → Nouveau code d'invitation).",
+    fr: "Pas encore de code\u202f? Demande à la personne propriétaire du crew d'en créer un dans Hivo (Crew → Membres et invitations) ou sur hi-vo.fr (onglet Crew → Nouveau code d'invitation).",
   },
   movedMeanwhile: {
     en: "{who} moved it to {stage} just before you. Move it again if you still want to.",
@@ -111,6 +111,45 @@ const TEXT = {
   inviteMessage: {
     en: "Join {crew} on Hivo.\n1. First send me the email you'll sign in with, so I can add it.\n2. Get the app or open {url}, then sign in with that email (you get a 6-digit code, no password).\n3. Enter this invite code: {code} (valid 7 days).",
     fr: "Rejoins {crew} sur Hivo.\n1. Envoie-moi d'abord l'email avec lequel tu vas te connecter, pour que je l'ajoute.\n2. Télécharge l'app ou ouvre {url}, puis connecte-toi avec cet email (tu reçois un code à 6 chiffres, sans mot de passe).\n3. Entre ce code d'invitation\u202f: {code} (valable 7 jours).",
+  },
+  // What the server says (supabase/migrations: raise exception), one entry each.
+  signInFirst: { en: "Sign in first.", fr: "Connecte-toi d'abord." },
+  songNotFound: { en: "That song isn't shared with the crew any more.", fr: "Ce son n'est plus partagé avec le crew." },
+  unknownStage: { en: "That stage doesn't exist.", fr: "Cette étape n'existe pas." },
+  shareLimit: {
+    en: "You've shared the most songs allowed ({n}). Stop sharing some first.",
+    fr: "Tu as partagé le maximum de sons autorisé ({n}). Arrête d'en partager quelques-uns d'abord.",
+  },
+  releaseLimit: {
+    en: "This crew has the most shared releases allowed ({n}). Stop sharing one first.",
+    fr: "Ce crew a le maximum de sorties partagées autorisé ({n}). Arrête d'en partager une d'abord.",
+  },
+  tooManyOpenInvites: {
+    en: "Too many open invite codes. Revoke some first.",
+    fr: "Trop de codes d'invitation en cours. Révoques-en quelques-uns d'abord.",
+  },
+  inviteOwnerOnly: { en: "Only a crew owner can make invite codes.", fr: "Il faut être propriétaire du crew pour créer des codes d'invitation." },
+  inviteRetry: { en: "A new invite code couldn't be made. Try again.", fr: "Impossible de créer un nouveau code d'invitation. Réessaie." },
+  columnsOwnerOnly: { en: "Only a crew owner can edit the columns.", fr: "Il faut être propriétaire du crew pour modifier les colonnes." },
+  columnsInvalid: {
+    en: "Those columns can't be saved: 1 to 30 columns, each named (1 to 40 characters), every stage with at least one.",
+    fr: "Ces colonnes ne peuvent pas être enregistrées\u202f: de 1 à 30 colonnes, chacune avec un nom (1 à 40 caractères), et au moins une par étape.",
+  },
+  columnGone: { en: "That column isn't in this crew any more. Reload the board.", fr: "Cette colonne n'est plus dans ce crew. Recharge le tableau." },
+  cardsInvalid: { en: "That move couldn't be saved. Reload the board and try again.", fr: "Ce déplacement n'a pas pu être enregistré. Recharge le tableau et réessaie." },
+  profileOnlyName: { en: "Only your display name can change.", fr: "Seul ton nom affiché peut changer." },
+  crewLocked: { en: "A crew's id and owner can't be changed this way.", fr: "L'identifiant et le propriétaire d'un crew ne se changent pas comme ça." },
+  passwordsOff: {
+    en: "Passwords are off: sign in with the code sent by email.",
+    fr: "Pas de mot de passe ici\u202f: connecte-toi avec le code reçu par email.",
+  },
+  // The app's own messages.
+  sharingOff: { en: "Crew sharing is off in this build.", fr: "Le partage avec le crew est désactivé dans cette version." },
+  livePaused: { en: "Live updates paused. Reconnecting…", fr: "Mises à jour en direct en pause. Reconnexion…" },
+  chooseCrew: { en: "Choose a crew first.", fr: "Choisis d'abord un crew." },
+  sharedElsewhere: {
+    en: "This release is shared with another crew. Stop sharing it there first.",
+    fr: "Cette sortie est partagée avec un autre crew. Arrête de la partager là-bas d'abord.",
   },
   signInHint: {
     en: "Your crew admin adds your email first. Then you get a 6-digit code here, no password.",
@@ -145,7 +184,22 @@ export function crewErrorMessage(e: unknown, lang: UiLang = currentUiLang()): st
   if (/over_email_send_rate_limit|email rate limit/i.test(msg)) return t("emailLimit");
   if (/error sending .*email|email address not authorized|email_address_not_authorized|smtp/i.test(msg)) return t("emailFailed");
   if (/wait 10 minutes/i.test(msg)) return t("tooManyInvites");
-  if (/share limit|release limit|too many open invites/i.test(msg)) return msg.charAt(0).toUpperCase() + msg.slice(1) + ".";
+  const limit = /(share|release) limit reached \((\d+)/i.exec(msg);
+  if (limit) return crewText(limit[1].toLowerCase() === "share" ? "shareLimit" : "releaseLimit", lang, { n: limit[2] });
+  if (/too many open invites/i.test(msg)) return t("tooManyOpenInvites");
+  if (/^sign in first$/i.test(msg)) return t("signInFirst");
+  if (/^song not found$/i.test(msg)) return t("songNotFound");
+  if (/^unknown stage/i.test(msg)) return t("unknownStage");
+  if (/^invite code (not found|expired|already used up)$/i.test(msg)) return t("invalidInvite");
+  if (/only a crew owner can create invites/i.test(msg)) return t("inviteOwnerOnly");
+  if (/could not generate a unique invite code/i.test(msg)) return t("inviteRetry");
+  if (/only a crew owner can edit the columns/i.test(msg)) return t("columnsOwnerOnly");
+  if (/^column not in this crew$|^bad column id$/i.test(msg)) return t("columnGone");
+  if (/every stage needs a column|each column must be an object|columns must be a list|column names are|column .* listed twice/i.test(msg)) return t("columnsInvalid");
+  if (/^bad card (order|id)$|cards must be a list/i.test(msg)) return t("cardsInvalid");
+  if (/only display_name can change/i.test(msg)) return t("profileOnlyName");
+  if (/crew_id and owner_id cannot change/i.test(msg)) return t("crewLocked");
+  if (/passwords are disabled/i.test(msg)) return t("passwordsOff");
   if (/rate limit|too many/i.test(msg)) return t("tooManyTries");
   if (/jwt expired|invalid jwt|refresh token/i.test(msg)) return t("expired");
   if (/they already own 3 crews/i.test(msg)) return t("theyOwnThree");

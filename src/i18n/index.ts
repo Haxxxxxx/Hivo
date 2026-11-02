@@ -45,6 +45,13 @@ export function tr<T>(d: Record<Lang, T>): T {
   return d[currentLang()];
 }
 
+/** Picks the singular or the plural for `n` in the current language (or
+ * `lang`). French takes the singular for 0 and 1 ("0 son", "1 son", "2 sons"),
+ * English only for 1 ("0 songs", "1 song"). */
+export function plural(n: number, one: string, other: string, lang: Lang = currentLang()): string {
+  return new Intl.PluralRules(lang === "fr" ? "fr-FR" : "en-US").select(n) === "one" ? one : other;
+}
+
 /** For Intl / toLocale* calls: French, or the system's own format in English. */
 export function locale(): string | undefined {
   return currentLang() === "fr" ? "fr-FR" : undefined;

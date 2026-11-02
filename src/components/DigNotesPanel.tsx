@@ -57,7 +57,7 @@ const T = dict(
     session: "Vue session",
     sessionTitle: "Les notes en grand, dans une fenêtre gardée devant FL Studio",
     startSong: "Démarrer un son",
-    startSongTitle: "Un nouveau son à partir de cette prod : ses notes et ses mémos du téléphone passent au son ; le fichier de la prod reste où il est",
+    startSongTitle: "Un nouveau son à partir de cette prod : ses notes et ses mémos du téléphone passent au son ; le fichier de la prod reste où il est",
   },
 );
 

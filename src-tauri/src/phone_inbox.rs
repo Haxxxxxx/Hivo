@@ -9,6 +9,7 @@
 //! an ordinary sealed request, so every byte is authenticated; the offset of
 //! a file is the length of its `.part` file, which makes resuming free.
 
+use crate::error::app_err;
 use crate::actions::validate_name;
 use crate::sketch::{is_sketch_audio, SKETCH_DIR};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
@@ -88,6 +89,18 @@ pub fn io_error(e: &io::Error, what: &str) -> String {
         "disk full".to_string()
     } else {
         format!("{what}: {e}")
+    }
+}
+
+/// `io_error` for the desktop's filing commands: a coded error (the
+/// webview translates it). Upload errors stay plain: they're the phone's
+/// protocol (docs/PHONE-SYNC.md).
+fn desk_io(e: &io::Error, what: &str) -> String {
+    let plain = io_error(e, what);
+    if plain == "disk full" {
+        app_err("io.diskFull", plain).into()
+    } else {
+        app_err("inbox.io", plain).into()
     }
 }
 
@@ -631,7 +644,7 @@ impl Inbox {
     }
 
     fn get_ready(&self, id: &str) -> Result<InboxItem, String> {
-        lock(&self.items).iter().find(|i| i.id == id && i.ready()).cloned().ok_or_else(|| GONE.to_string())
+        lock(&self.items).iter().find(|i| i.id == id && i.ready()).cloned().ok_or_else(gone)
     }
 
     /// Each file's path in the inbox and its name on the phone, in order.
@@ -646,7 +659,7 @@ impl Inbox {
                 if p.is_file() {
                     Ok((p, f.name.clone()))
                 } else {
-                    Err(format!("file missing: {}", f.name))
+                    Err(app_err("inbox.fileMissing", format!("file missing: {}", f.name)).with("name", f.name.as_str()).into())
                 }
             })
             .collect()
@@ -655,7 +668,7 @@ impl Inbox {
     /// Sets the status (filed somewhere, dismissed, or back to new).
     pub fn mark(&self, id: &str, status: Status, filed_to: Option<String>) -> Result<(), String> {
         let mut items = lock(&self.items);
-        let item = items.iter_mut().find(|i| i.id == id).ok_or(GONE)?;
+        let item = items.iter_mut().find(|i| i.id == id).ok_or_else(gone)?;
         item.status = status;
         item.filed_to = if status == Status::Filed { filed_to.map(|f| clip_line(&f, 4096)) } else { None };
         item.filed_at = if status == Status::New { None } else { Some(now_ms()) };
@@ -674,7 +687,7 @@ impl Inbox {
     fn filing<T>(&self, id: &str, filed_to: &str, filed_as: &str, copied_to: Option<String>, work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
         let before = {
             let mut items = lock(&self.items);
-            let item = items.iter_mut().find(|i| i.id == id).ok_or(GONE)?;
+            let item = items.iter_mut().find(|i| i.id == id).ok_or_else(gone)?;
             let before = item.clone();
             item.status = Status::Filed;
             item.filed_to = Some(clip_line(filed_to, 4096));
@@ -726,7 +739,7 @@ impl Inbox {
     pub fn file_sketch(&self, id: &str, parent: &Path, name: &str) -> Result<FiledSketch, String> {
         let item = self.get_ready(id)?;
         if item.item_type == ItemType::Idea {
-            return Err("An idea has no audio to file as a song.".to_string());
+            return Err(app_err("inbox.ideaNoAudio", "An idea has no audio to file as a song.").into());
         }
         let name = validate_name(name)?;
         let song = parent.join(name);
@@ -737,13 +750,13 @@ impl Inbox {
         }
         let sources = self.file_paths(&item)?;
         if song.exists() {
-            return Err(format!("\"{name}\" already exists in that folder: pick another name."));
+            return Err(app_err("inbox.nameTaken", format!("\"{name}\" already exists in that folder: pick another name.")).with("name", name).into());
         }
         let filled = self.filing(id, &key, "song", None, || {
-            fs::create_dir_all(&dir).map_err(|e| io_error(&e, "could not create the song folder"))?;
+            fs::create_dir_all(&dir).map_err(|e| desk_io(&e, "could not create the song folder"))?;
             let mut created = Vec::new();
             match fill_sketch(&sources, &dir, &mut created) {
-                Ok(f) if f.total() == 0 => Err("No audio in this zip.".to_string()),
+                Ok(f) if f.total() == 0 => Err(app_err("inbox.zipNoAudio", "No audio in this zip.").into()),
                 other => other,
             }
             .inspect_err(|_| {
@@ -764,10 +777,10 @@ impl Inbox {
     pub fn attach_to_song_folder(&self, id: &str, song_folder: &Path, song_key: &str, memo_sub: Option<&str>) -> Result<Vec<String>, String> {
         let item = self.get_ready(id)?;
         if item.item_type == ItemType::Idea {
-            return Err("An idea has no audio to copy.".to_string());
+            return Err(app_err("inbox.ideaNoAudio", "An idea has no audio to copy.").into());
         }
         if !song_folder.is_dir() {
-            return Err("This song's folder isn't there any more.".to_string());
+            return Err(app_err("inbox.songFolderGone", "This song's folder isn't there any more.").into());
         }
         let sources = self.file_paths(&item)?;
         if item.item_type == ItemType::Sketch {
@@ -778,10 +791,10 @@ impl Inbox {
             }
             return self.filing(id, &key, "folder", None, || {
                 let made_dir = !dir.exists();
-                fs::create_dir_all(&dir).map_err(|e| io_error(&e, "could not create the BandLab folder"))?;
+                fs::create_dir_all(&dir).map_err(|e| desk_io(&e, "could not create the BandLab folder"))?;
                 let mut created = Vec::new();
                 let result = match fill_sketch(&sources, &dir, &mut created) {
-                    Ok(f) if f.total() == 0 => Err("No audio in this zip.".to_string()),
+                    Ok(f) if f.total() == 0 => Err(app_err("inbox.zipNoAudio", "No audio in this zip.").into()),
                     other => other,
                 };
                 if result.is_err() {
@@ -796,7 +809,7 @@ impl Inbox {
                 result.map(|_| created.iter().map(|p| p.to_string_lossy().to_string()).collect())
             });
         }
-        let (src, name) = sources.first().ok_or("This memo has no audio.")?;
+        let (src, name) = sources.first().ok_or_else(|| String::from(app_err("inbox.memoNoAudio", "This memo has no audio.")))?;
         // Filed to the song by its key (the drawer matches on it), the copy
         // in `copied_to`. A retry whose answer was lost answers the same.
         let song = format!("song:{song_key}");
@@ -814,7 +827,7 @@ impl Inbox {
         let target = memo_target(&dir, &item, name);
         let path = target.to_string_lossy().to_string();
         self.filing(id, &song, "folder", Some(path.clone()), || {
-            fs::create_dir_all(&dir).map_err(|e| io_error(&e, "could not create the Voice memos folder"))?;
+            fs::create_dir_all(&dir).map_err(|e| desk_io(&e, "could not create the Voice memos folder"))?;
             copy_new(src, &target)
         })?;
         Ok(vec![path])
@@ -826,7 +839,7 @@ impl Inbox {
     pub fn link_memo(&self, id: &str, target_key: &str, beats_folder: &Path) -> Result<String, String> {
         let item = self.get_ready(id)?;
         if item.item_type != ItemType::Memo {
-            return Err("Only a voice memo can be linked to a beat or a prod.".to_string());
+            return Err(app_err("inbox.onlyMemo", "Only a voice memo can be linked to a beat or a prod.").into());
         }
         if item.status == Status::Filed && item.filed_to.as_deref() == Some(target_key) {
             if let Some(copy) = item.copied_to.as_deref().filter(|c| Path::new(c).is_file()) {
@@ -834,22 +847,24 @@ impl Inbox {
             }
         }
         if !beats_folder.is_dir() {
-            return Err("This beats folder isn't there any more.".to_string());
+            return Err(app_err("inbox.beatFolderGone", "This beats folder isn't there any more.").into());
         }
         let sources = self.file_paths(&item)?;
-        let (src, name) = sources.first().ok_or("This memo has no audio.")?;
+        let (src, name) = sources.first().ok_or_else(|| String::from(app_err("inbox.memoNoAudio", "This memo has no audio.")))?;
         let dir = beats_folder.join(BEAT_MEMOS_DIR);
         let target = memo_target(&dir, &item, name);
         let path = target.to_string_lossy().to_string();
         self.filing(id, target_key, "link", Some(path.clone()), || {
-            fs::create_dir_all(&dir).map_err(|e| io_error(&e, "could not create the _memos folder"))?;
+            fs::create_dir_all(&dir).map_err(|e| desk_io(&e, "could not create the _memos folder"))?;
             copy_new(src, &target)
         })?;
         Ok(path)
     }
 }
 
-const GONE: &str = "That item isn't in the phone inbox any more.";
+fn gone() -> String {
+    app_err("inbox.gone", "That item isn't in the phone inbox any more.").into()
+}
 
 /// `<dir>/<memo title>.<ext>` (or "Voice memo"), never an existing file.
 fn memo_target(dir: &Path, item: &InboxItem, name: &str) -> PathBuf {
@@ -939,12 +954,12 @@ fn part_len(dir: &Path, slot: &FileSlot) -> u64 {
 
 /// Copies without ever replacing an existing file.
 fn copy_new(from: &Path, to: &Path) -> Result<(), String> {
-    let mut src = fs::File::open(from).map_err(|e| io_error(&e, "could not read the file"))?;
-    let mut out = fs::OpenOptions::new().write(true).create_new(true).open(to).map_err(|e| io_error(&e, "could not write the file"))?;
+    let mut src = fs::File::open(from).map_err(|e| desk_io(&e, "could not read the file"))?;
+    let mut out = fs::OpenOptions::new().write(true).create_new(true).open(to).map_err(|e| desk_io(&e, "could not write the file"))?;
     if let Err(e) = io::copy(&mut src, &mut out) {
         drop(out);
         let _ = fs::remove_file(to);
-        return Err(io_error(&e, "could not copy the file"));
+        return Err(desk_io(&e, "could not copy the file"));
     }
     Ok(())
 }
@@ -962,7 +977,7 @@ fn fill_sketch(sources: &[(PathBuf, String)], dir: &Path, created: &mut Vec<Path
     let mut budget = MAX_UNZIP_BYTES;
     for (src, name) in sources {
         if ext_of(name) == "zip" {
-            fs::create_dir_all(&stems_dir).map_err(|e| io_error(&e, "could not create the Stems folder"))?;
+            fs::create_dir_all(&stems_dir).map_err(|e| desk_io(&e, "could not create the Stems folder"))?;
             filled.stems += unzip_audio(src, &stems_dir, &mut budget, created)?;
             continue;
         }
@@ -985,11 +1000,11 @@ fn fill_sketch(sources: &[(PathBuf, String)], dir: &Path, created: &mut Vec<Path
 /// can land outside `dir`), never over an existing file, within `budget`.
 /// Each file made is pushed to `created`.
 pub fn unzip_audio(zip_path: &Path, dir: &Path, budget: &mut u64, created: &mut Vec<PathBuf>) -> Result<usize, String> {
-    let file = fs::File::open(zip_path).map_err(|e| io_error(&e, "could not read the zip"))?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|_| "This zip can't be read.".to_string())?;
+    let file = fs::File::open(zip_path).map_err(|e| desk_io(&e, "could not read the zip"))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|_| String::from(app_err("inbox.badZip", "This zip can't be read.")))?;
     let mut count = 0;
     for i in 0..archive.len() {
-        let mut entry = archive.by_index(i).map_err(|_| "This zip can't be read.".to_string())?;
+        let mut entry = archive.by_index(i).map_err(|_| String::from(app_err("inbox.badZip", "This zip can't be read.")))?;
         if !entry.is_file() {
             continue;
         }
@@ -1000,20 +1015,20 @@ pub fn unzip_audio(zip_path: &Path, dir: &Path, budget: &mut u64, created: &mut 
             continue;
         }
         if entry.size() > *budget {
-            return Err("The zip unpacks to more than 2 GB of audio.".to_string());
+            return Err(app_err("inbox.zipTooBig", "The zip unpacks to more than 2 GB of audio.").into());
         }
         let clean = crate::audio::safe_name(file_name);
         let stem = Path::new(&clean).file_stem().unwrap_or_default().to_string_lossy().to_string();
         let ext = ext_of(&clean);
         let target = crate::actions::free_path(dir, &stem, &ext);
-        let mut out = fs::OpenOptions::new().write(true).create_new(true).open(&target).map_err(|e| io_error(&e, "could not write the audio"))?;
+        let mut out = fs::OpenOptions::new().write(true).create_new(true).open(&target).map_err(|e| desk_io(&e, "could not write the audio"))?;
         created.push(target.clone());
         let limit = *budget + 1;
-        let written = io::copy(&mut (&mut entry).take(limit), &mut out).map_err(|e| io_error(&e, "could not unpack the zip"))?;
+        let written = io::copy(&mut (&mut entry).take(limit), &mut out).map_err(|e| desk_io(&e, "could not unpack the zip"))?;
         if written > *budget {
             drop(out);
             let _ = fs::remove_file(&target);
-            return Err("The zip unpacks to more than 2 GB of audio.".to_string());
+            return Err(app_err("inbox.zipTooBig", "The zip unpacks to more than 2 GB of audio.").into());
         }
         *budget -= written;
         count += 1;
@@ -1238,13 +1253,13 @@ mod tests {
         let empty = d.0.join("empty.zip");
         zip_with(&empty, &[("readme.txt", b"x")]);
         upload(&inbox, "s3", "sketch", &[("empty.zip", fs::read(&empty).unwrap())]);
-        assert_eq!(inbox.file_sketch("dev.s3", &projects, "Empty").unwrap_err(), "No audio in this zip.");
+        assert_eq!(crate::error::detail_of(&inbox.file_sketch("dev.s3", &projects, "Empty").unwrap_err()), "No audio in this zip.");
         assert!(!projects.join("Empty").exists());
         // A file deleted by hand: "file missing", nothing created.
         let v = inbox.list().into_iter().find(|v| v.item.id == "dev.s2").unwrap();
         fs::remove_file(&v.files[0].path).unwrap();
         assert!(inbox.list().iter().find(|v| v.item.id == "dev.s2").unwrap().files[0].missing);
-        assert!(inbox.file_sketch("dev.s2", &projects, "Other").unwrap_err().starts_with("file missing"));
+        assert!(crate::error::detail_of(&inbox.file_sketch("dev.s2", &projects, "Other").unwrap_err()).starts_with("file missing"));
         assert!(!projects.join("Other").exists());
     }
 
@@ -1302,7 +1317,7 @@ mod tests {
         let inbox = Inbox::open(d.0.join("inbox"));
         upload(&inbox, "m1", "memo", &[("rec.m4a", b"take".to_vec())]);
         let beats = d.0.join("Beats");
-        assert_eq!(inbox.link_memo("dev.m1", "beat:/b.wav", &beats).unwrap_err(), "This beats folder isn't there any more.");
+        assert_eq!(crate::error::detail_of(&inbox.link_memo("dev.m1", "beat:/b.wav", &beats).unwrap_err()), "This beats folder isn't there any more.");
         assert_eq!(inbox.list()[0].item.status, Status::New, "a failure leaves it new");
         fs::create_dir_all(&beats).unwrap();
         let copy = inbox.link_memo("dev.m1", "beat:/b.wav", &beats).unwrap();
@@ -1378,7 +1393,7 @@ mod tests {
         let inbox = Inbox::open(d.0.join("inbox"));
         upload(&inbox, "m1", "memo", &[("rec.m4a", b"take".to_vec())]);
         let song = d.0.join("Envy");
-        assert_eq!(inbox.attach_to_song_folder("dev.m1", &song, "/Envy/Envy.flp", None).unwrap_err(), "This song's folder isn't there any more.");
+        assert_eq!(crate::error::detail_of(&inbox.attach_to_song_folder("dev.m1", &song, "/Envy/Envy.flp", None).unwrap_err()), "This song's folder isn't there any more.");
         fs::create_dir_all(&song).unwrap();
         let out = inbox.attach_to_song_folder("dev.m1", &song, "/Envy/Envy.flp", None).unwrap();
         assert_eq!(PathBuf::from(&out[0]), song.join(MEMOS_DIR).join("Night run.m4a"));

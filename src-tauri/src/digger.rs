@@ -29,6 +29,7 @@
 //! built here and every output is sanitized (lengths, https links only).
 //! Links only: nothing is ever downloaded.
 
+use crate::error::{app_err, detail_of};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -201,7 +202,7 @@ pub fn analyze_beat(path: &Path, want_excerpt: bool) -> Result<(BeatFacts, Optio
         (frames as f64) < MAX_DECODE_SEC * sr as f64
     })?;
     if rate == 0 || frames == 0 {
-        return Err(format!("{name}: the file has no audio"));
+        return Err(app_err("audio.empty", format!("{name}: the file has no audio")).with("name", name.as_str()).into());
     }
     let low_rate = LOW_RATE.min(rate) as usize;
     let duration_sec = frames as f64 / rate as f64;
@@ -518,7 +519,7 @@ fn sanitize_queries(v: &Value, skip: &[String]) -> Vec<String> {
 fn sanitize_analysis(v: &Value) -> Result<Analysis, String> {
     let summary = clip(v.get("summary").and_then(Value::as_str).unwrap_or_default(), 600);
     if summary.is_empty() {
-        return Err("Gemini's answer was empty. Try again.".to_string());
+        return Err(app_err("gemini.noText", "Gemini's answer was empty. Try again.").into());
     }
     let mut traits: Vec<String> = Vec::new();
     for t in strings(v, "traits") {
@@ -943,8 +944,8 @@ pub const MAX_LAST_DIG_BYTES: usize = 1024 * 1024;
 
 fn last_dig_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     use tauri::Manager;
-    let dir = app.path().app_config_dir().map_err(|e| format!("could not resolve app config dir: {e}"))?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create config dir: {e}"))?;
+    let dir = app.path().app_config_dir().map_err(|e| app_err("config.dir", format!("could not resolve app config dir: {e}")))?;
+    std::fs::create_dir_all(&dir).map_err(|e| app_err("config.dir", format!("could not create config dir: {e}")))?;
     Ok(dir.join(LAST_DIG_FILE))
 }
 
@@ -955,11 +956,11 @@ pub fn last_dig_bytes(state: &Value) -> Result<Option<Vec<u8>>, String> {
         return Ok(None);
     }
     if !state.is_object() {
-        return Err("not a dig".to_string());
+        return Err(app_err("dig.invalid", "not a dig").into());
     }
     let raw = serde_json::to_vec(state).map_err(|e| e.to_string())?;
     if raw.len() > MAX_LAST_DIG_BYTES {
-        return Err("The dig is too big to keep.".to_string());
+        return Err(app_err("dig.tooBig", "The dig is too big to keep.").into());
     }
     Ok(Some(raw))
 }
@@ -969,11 +970,11 @@ pub fn save_last_dig(app: AppHandle, state: Value) -> Result<(), String> {
     let path = last_dig_path(&app)?;
     match last_dig_bytes(&state)? {
         None => match std::fs::remove_file(&path) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("could not forget the dig: {e}")),
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(app_err("dig.forget", format!("could not forget the dig: {e}")).into()),
             _ => Ok(()),
         },
         // Owner-only and atomic: it holds notes and paths.
-        Some(raw) => crate::workspace::write_atomic(&path, &raw).map_err(|e| format!("could not keep the dig: {e}")),
+        Some(raw) => crate::workspace::write_atomic(&path, &raw).map_err(|e| app_err("dig.keep", format!("could not keep the dig: {}", detail_of(&e))).into()),
     }
 }
 
@@ -1006,7 +1007,7 @@ pub fn analyse_all(paths: &[std::path::PathBuf], want_excerpt: bool) -> (Vec<Ana
     for p in paths {
         match analyze_beat(p, want_excerpt) {
             Ok(a) => ok.push(a),
-            Err(error) => failed.push(FailedBeat { name: clip(&p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(), 120), error: clip(&error, 300) }),
+            Err(error) => failed.push(FailedBeat { name: clip(&p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(), 120), error: crate::error::clip(&error, 300) }),
         }
     }
     (ok, failed)
@@ -1015,39 +1016,40 @@ pub fn analyse_all(paths: &[std::path::PathBuf], want_excerpt: bool) -> (Vec<Ana
 #[tauri::command]
 pub async fn dig_beats(app: AppHandle, request: DigRequest) -> Result<DigResult, String> {
     if request.beats.is_empty() {
-        return Err("Pick at least one beat.".to_string());
+        return Err(app_err("dig.noBeats", "Pick at least one beat.").into());
     }
     if request.beats.len() > MAX_BEATS {
-        return Err(format!("{MAX_BEATS} beats max."));
+        return Err(app_err("dig.tooManyBeats", format!("{MAX_BEATS} beats max.")).with("max", MAX_BEATS).into());
     }
     if !matches!(request.language.as_str(), "fr" | "en") {
-        return Err("unknown language".to_string());
+        return Err(app_err("dig.language", "unknown language").into());
     }
     let scope = crate::scope::Scope::load(&app)?;
     let send_audio = scope.dig_send_audio;
     let paths = request.beats.iter().map(|p| scope.beat(p)).collect::<Result<Vec<_>, _>>()?;
     let model = crate::settings::load(&app)?.ai_model;
 
-    let (analysed, failed) = tauri::async_runtime::spawn_blocking(move || analyse_all(&paths, send_audio)).await.map_err(|e| format!("beat analysis stopped: {e}"))?;
+    let (analysed, failed) = tauri::async_runtime::spawn_blocking(move || analyse_all(&paths, send_audio)).await.map_err(|e| app_err("task.failed", format!("beat analysis stopped: {e}")))?;
     if analysed.is_empty() {
-        let why = failed.iter().map(|f| format!("{}: {}", f.name, f.error)).collect::<Vec<_>>().join("; ");
-        return Err(format!("None of the picked beats could be read. {why}"));
+        let why = failed.iter().map(|f| format!("{}: {}", f.name, detail_of(&f.error))).collect::<Vec<_>>().join("; ");
+        let names = failed.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ");
+        return Err(app_err("dig.noneRead", format!("None of the picked beats could be read. {why}")).with("names", names).into());
     }
     let facts: Vec<BeatFacts> = analysed.iter().map(|(f, _)| f.clone()).collect();
     let excerpts: Vec<Vec<u8>> = analysed.iter().filter_map(|(_, e)| e.as_ref().map(|(s, rate)| wav_bytes(s, *rate))).collect();
     if excerpts.iter().map(Vec::len).sum::<usize>() > MAX_AUDIO_BYTES {
-        return Err("The excerpts are too big to send. Try fewer beats.".to_string());
+        return Err(app_err("dig.excerptsTooBig", "The excerpts are too big to send. Try fewer beats.").into());
     }
 
     let language = language_name(&request.language);
     let (used, v) = crate::ai::generate_raw(&app, model.clone(), &analysis_body(&facts, &excerpts, language)?).await?;
     let text = crate::ai::extract_text(&v).ok_or_else(|| crate::ai::empty_reason(&v))?;
-    let raw: Value = serde_json::from_str(&text).map_err(|e| format!("Gemini's answer wasn't valid JSON ({e}). Try again."))?;
+    let raw: Value = serde_json::from_str(&text).map_err(|e| app_err("gemini.badJson", format!("Gemini's answer wasn't valid JSON ({e}). Try again.")))?;
     let analysis = sanitize_analysis(&raw)?;
 
     let (web, web_searches, web_error) = match web_search(&app, model, &web_body(&analysis)).await {
         WebSearch::Done(web, searches, error) => (resolve_links(web).await, searches, error),
-        WebSearch::Off => (Vec::new(), Vec::new(), Some(WEB_OFF.to_string())),
+        WebSearch::Off => (Vec::new(), Vec::new(), Some(app_err("dig.webOff", WEB_OFF).into())),
     };
     Ok(DigResult { model: used, audio_sent: !excerpts.is_empty(), beats: facts, failed, analysis, web, web_searches, web_error })
 }
@@ -1069,7 +1071,7 @@ async fn web_search(app: &AppHandle, model: Option<String>, body: &Value) -> Web
     match crate::ai::generate_raw(app, model, body).await {
         Ok((_, v)) => {
             let (links, searches) = parse_grounding(&v);
-            let err = links.is_empty().then(|| "Google Search found no links this time. Use the searches above.".to_string());
+            let err = links.is_empty().then(|| app_err("dig.noLinks", "Google Search found no links this time. Use the searches above.").into());
             WebSearch::Done(links, searches, err)
         }
         // A 429 (quota, or busy every retry) is the free tier; anything
@@ -1098,10 +1100,10 @@ pub struct DigDeeperResult {
 async fn new_queries(app: &AppHandle, model: Option<String>, analysis: &Analysis, found_titles: &[String], liked: &[String]) -> Result<Vec<String>, String> {
     let (_, v) = crate::ai::generate_raw(app, model, &queries_body(analysis, found_titles, liked)).await?;
     let text = crate::ai::extract_text(&v).ok_or_else(|| crate::ai::empty_reason(&v))?;
-    let raw: Value = serde_json::from_str(&text).map_err(|e| format!("Gemini's answer wasn't valid JSON ({e}). Try again."))?;
+    let raw: Value = serde_json::from_str(&text).map_err(|e| app_err("gemini.badJson", format!("Gemini's answer wasn't valid JSON ({e}). Try again.")))?;
     let queries = sanitize_queries(&raw, &analysis.queries);
     if queries.is_empty() {
-        return Err("Gemini had no new searches this time. Try again.".to_string());
+        return Err(app_err("dig.noNewSearches", "Gemini had no new searches this time. Try again.").into());
     }
     Ok(queries)
 }
@@ -1117,7 +1119,7 @@ fn drop_found(links: Vec<WebLink>, exclude: &[String]) -> Vec<WebLink> {
 #[tauri::command]
 pub async fn dig_deeper(app: AppHandle, request: DigDeeperRequest) -> Result<DigDeeperResult, String> {
     if !matches!(request.language.as_str(), "fr" | "en") {
-        return Err("unknown language".to_string());
+        return Err(app_err("dig.language", "unknown language").into());
     }
     let DeeperInput { analysis, exclude, found_titles, liked } = sanitize_deeper(&request)?;
     let model = crate::settings::load(&app)?.ai_model;
@@ -1125,7 +1127,7 @@ pub async fn dig_deeper(app: AppHandle, request: DigDeeperRequest) -> Result<Dig
         WebSearch::Done(web, web_searches, web_error) => {
             // Final addresses first: the exclusion keys of untitled links use them.
             let web = drop_found(resolve_links(web).await, &exclude);
-            let web_error = web_error.or_else(|| web.is_empty().then(|| "Nothing new this time. Try again later or use the searches above.".to_string()));
+            let web_error = web_error.or_else(|| web.is_empty().then(|| app_err("dig.nothingNew", "Nothing new this time. Try again later or use the searches above.").into()));
             Ok(DigDeeperResult { web, web_searches, web_error, queries: Vec::new() })
         }
         // No grounding on this key: new searches instead, and no WEB_OFF

@@ -48,6 +48,9 @@ x25519-dalek = { version = "3", features = ["static_secrets"] }
 hkdf = "0.13"
 sha2 = "0.11"
 if-addrs = "0.15"
+# NFC before comparing file names (scanner, resolver, render output): macOS
+# keeps names decomposed, Windows and .flp paths composed. MIT/Apache-2.0.
+unicode-normalization = "0.1"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"

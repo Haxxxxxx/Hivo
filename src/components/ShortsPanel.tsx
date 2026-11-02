@@ -8,7 +8,8 @@ import type { FileEntry, ProjectInfo, Snippet } from "../types";
 import { usePickedConcept } from "./CoverConcepts";
 import { kitFolderName, previousKitFolder } from "../lib/kitState";
 import { btn, btnPrimary } from "./ui";
-import { dict, tr } from "../i18n";
+import { dict, plural, tr } from "../i18n";
+import { errorText, errorReason, errorTextOr } from "../lib/errors";
 
 const T = dict(
   {
@@ -35,7 +36,7 @@ const T = dict(
     setPath: "set its path in Settings",
     looking: "Looking for ffmpeg…",
     rendering: (n: number) => `Rendering ${n} shorts…`,
-    render: (n: number) => `Render ${n} short${n === 1 ? "" : "s"}`,
+    render: (n: number) => `Render ${n} short${plural(n, "", "s")}`,
     showInFolder: "Show in folder",
   },
   {
@@ -48,7 +49,7 @@ const T = dict(
     chooseFolder: "Choisir le dossier d'export",
     needFfmpeg: "Il faut ffmpeg (gratuit, une seule install). Les étapes sont juste en dessous.",
     checkAgain: "Revérifier",
-    confirmFound: (path: string) => `ffmpeg trouvé ici : ${path}. Confirme-le une fois dans les Réglages avant qu'il serve.`,
+    confirmFound: (path: string) => `ffmpeg trouvé ici : ${path}. Confirme-le une fois dans les Réglages avant qu'il serve.`,
     openSettings: "Ouvrir les Réglages",
     heading: "Shorts pour Reels, TikTok et YouTube Shorts",
     previewAlt: "Aperçu de la mise en page 9:16",
@@ -62,7 +63,7 @@ const T = dict(
     setPath: "indique son chemin dans les Réglages",
     looking: "Recherche de ffmpeg…",
     rendering: (n: number) => `Rendu de ${n} shorts…`,
-    render: (n: number) => `Faire le rendu de ${n} short${n === 1 ? "" : "s"}`,
+    render: (n: number) => `Faire le rendu de ${n} short${plural(n, "", "s")}`,
     showInFolder: "Afficher dans le dossier",
   },
 );
@@ -114,6 +115,7 @@ export function ShortsPanel({
     producers: value("producers"),
     key: value("key"),
     releaseDate: value("releaseDate"),
+    lang: meta?.launchKit?.captionLanguage ?? settings.captionLanguage ?? "fr",
   };
   const layoutKey = JSON.stringify(layoutInput);
   const art = useCoverArt(project.path, kitFolderName(meta, layoutInput.title));
@@ -157,7 +159,7 @@ export function ShortsPanel({
       });
       setState({ kind: "done", results });
     } catch (e) {
-      setState({ kind: "error", message: e instanceof Error ? e.message : String(e) });
+      setState({ kind: "error", message: errorText(e) });
     }
   }
 
@@ -178,7 +180,7 @@ export function ShortsPanel({
           ) : status ? (
             <div className="rounded-md border border-amber-400/20 bg-amber-500/[0.06] p-2.5 text-amber-100/80">
               <div className="flex items-center gap-1.5 font-medium">
-                <AlertTriangle size={12} /> {status.error ?? (status.found ? t.confirmFound(status.found) : t.notFound)}
+                <AlertTriangle size={12} /> {errorTextOr(status.error) ?? (status.found ? t.confirmFound(status.found) : t.notFound)}
               </div>
               <div className="mt-1 text-engrave">
                 {t.installOnce}
@@ -224,7 +226,7 @@ export function ShortsPanel({
               </div>
             ) : (
               <div key={r.label} className="max-w-[200px] text-[11px] text-red-300">
-                {r.label}: {r.error}
+                {r.label}: {errorReason(r.error)}
               </div>
             ),
           )}

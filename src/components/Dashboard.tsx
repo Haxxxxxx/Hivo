@@ -3,6 +3,7 @@ import type React from "react";
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronRight,
   Disc3,
   FolderInput,
   FolderSearch,
@@ -12,6 +13,7 @@ import {
   Trophy,
 } from "lucide-react";
 import { useAppStore } from "../store/useAppStore";
+import { usePipelineView } from "../store/usePipelineView";
 import { formatBytes, formatRelative } from "../lib/format";
 import { localDayMs } from "../lib/launchKit";
 import { isKitAccepted } from "../lib/kitState";
@@ -156,11 +158,10 @@ const T = dict(
     moved: (days: number) => `Moved · ${days} days`,
     crewPipeline: "Crew pipeline",
     whosOnWhat: "Who's on what",
-    memberTitle: "Shared songs · finished (Prep or later)",
-    memberSongs: (n: number, done: number) => `${n} song${s(n)} · ${done} done`,
-    movedTitle: (days: number) => `Songs they last moved in the past ${days} days`,
-    movedCount: (n: number) => `${n} moved`,
-    nothingShared: "nothing shared",
+    memberTitle: "Shared songs · being made · finished (Prep or later)",
+    memberSongs: (n: number, making: number, done: number) => `${n} song${s(n)} · ${making} being made · ${done} done`,
+    openTheirs: (name: string) => `Open ${name}'s songs on the crew board`,
+    openYours: "Open your songs on the crew board",
     readyToShip: (n: number) => `Ready to ship · ${n}`,
     nothingReady: "Nothing in Prep with a mixdown and an accepted Launch Kit yet.",
     noDate: "no date",
@@ -187,7 +188,7 @@ const T = dict(
     inProgress: "En cours",
     finished: "Finis",
     releases: "Sorties",
-    pickUp: "Reprends là où tu t'es arrêté",
+    pickUp: "Reprends là où tu en étais",
     kitToDo: "Launch Kit à faire",
     open: "Ouvrir",
     studioActivity: "Activité studio — sauvegardes par semaine, 12 derniers mois",
@@ -252,11 +253,11 @@ const T = dict(
     moved: (days: number) => `Bougés · ${days} jours`,
     crewPipeline: "Pipeline du crew",
     whosOnWhat: "Qui est sur quoi",
-    memberTitle: "Sons partagés · finis (Prépa ou après)",
-    memberSongs: (n: number, done: number) => `${n} son${s(n)} · ${done} fini${done > 1 ? "s" : ""}`,
-    movedTitle: (days: number) => `Sons qu'il ou elle a bougés ces ${days} derniers jours`,
-    movedCount: (n: number) => `${n} bougé${s(n)}`,
-    nothingShared: "rien de partagé",
+    memberTitle: "Sons partagés · en cours · finis (Prépa ou après)",
+    memberSongs: (n: number, making: number, done: number) =>
+      `${n} son${s(n)} · ${making} en cours · ${done} fini${done > 1 ? "s" : ""}`,
+    openTheirs: (name: string) => `Ouvrir les sons de ${name} sur le tableau du crew`,
+    openYours: "Ouvrir tes sons sur le tableau du crew",
     readyToShip: (n: number) => `Prêt à sortir · ${n}`,
     nothingReady: "Rien en Prépa avec un mixdown et un Launch Kit validé pour l'instant.",
     noDate: "pas de date",
@@ -439,7 +440,18 @@ function MyDashboard({ editing }: { editing: boolean }) {
                     onClick={() => (kit ? useAppStore.getState().openLaunchKit(p.path) : openDetail(p.path))}
                     className="group cursor-pointer rounded-lg border border-rule bg-raised p-3 hover:border-rule-strong"
                   >
-                    <div className="truncate text-sm font-medium text-cream">{p.name}</div>
+                    {/* The card is a mouse target; the title is its keyboard control. */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (kit) useAppStore.getState().openLaunchKit(p.path);
+                        else openDetail(p.path);
+                      }}
+                      className="block w-full truncate rounded text-left text-sm font-medium text-cream focus-visible:outline-2 focus-visible:outline-cream"
+                    >
+                      {p.name}
+                    </button>
                     <div className="mt-1 flex items-center gap-1.5 text-[11px] text-body">
                       <StatusDot color={s.color} size={6} /> {s.label}
                       {kit && <span className="text-engrave">· {t.kitToDo}</span>}
@@ -453,7 +465,7 @@ function MyDashboard({ editing }: { editing: boolean }) {
                             // A BandLab sketch has no project yet: show its folder.
                             (isSketch(p) ? revealInFileManager(p.path) : openInFlStudio(p.path)).catch((err) => console.error("couldn't open the project", err));
                           }}
-                          className="flex items-center gap-1 text-engrave opacity-0 hover:text-orange-300 group-hover:opacity-100"
+                          className="flex items-center gap-1 text-engrave opacity-0 hover:text-orange-300 focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
                         >
                           <PlayCircle size={13} /> {t.open}
                         </button>
@@ -813,9 +825,9 @@ function ActivityCurve() {
               style={{ left: `${xAt(hover) * 100}%`, top: `${(points[hover].y / CURVE_H) * 100}%` }}
             />
           )}
-          <span className="pointer-events-none absolute right-0 top-0 -translate-y-1/2 bg-panel pl-1 text-[9px] text-engrave">{t.perWeekMax(max)}</span>
+          <span className="pointer-events-none absolute right-0 top-0 -translate-y-1/2 bg-panel pl-1 text-[10.5px] text-engrave">{t.perWeekMax(max)}</span>
         </div>
-        <div className="relative mt-1 h-[13px] text-[9px] text-engrave">
+        <div className="relative mt-1 h-[13px] text-[10.5px] text-engrave">
           {months.map((m, w) =>
             m ? (
               <span key={w} className="absolute whitespace-nowrap" style={{ left: `${xAt(w) * 100}%` }}>
@@ -856,14 +868,14 @@ function ActivityHeatmap() {
     <div className="relative">
       <div className="flex gap-4">
         <div className="flex gap-[2px] overflow-x-auto pb-1">
-          <div className="mr-1 flex flex-col gap-[2px] pt-[15px] text-[9px] leading-[11px] text-engrave">
+          <div className="mr-1 flex flex-col gap-[2px] pt-[15px] text-[10.5px] leading-[11px] text-engrave">
             {t.weekdays.split(",").map((d, i) => (
               <span key={i} className="h-[11px]">{d}</span>
             ))}
           </div>
           {Array.from({ length: weeks }, (_, w) => (
             <div key={w} className="flex flex-col gap-[2px]">
-              <span className="h-[13px] w-[11px] overflow-visible whitespace-nowrap text-[9px] leading-[11px] text-engrave">
+              <span className="h-[13px] w-[11px] overflow-visible whitespace-nowrap text-[10.5px] leading-[11px] text-engrave">
                 {months[w]}
               </span>
               {days.slice(w * 7, w * 7 + 7).map((d, i) => (
@@ -1185,6 +1197,11 @@ function CrewDashboard() {
     if (path) openDetail(path);
     else setView("crewBoard");
   };
+  // A member row opens the crew board on that member's songs.
+  const openMember = (id: string) => {
+    usePipelineView.getState().setCrewMember(id);
+    setView("crewBoard");
+  };
   const t = tr(T);
   const who = (id: string, name: string) => (id === userId ? t.you : name);
 
@@ -1230,16 +1247,19 @@ function CrewDashboard() {
           <Card title={t.whosOnWhat}>
             <div className="flex flex-col gap-2 text-xs">
               {stats.members.map((m) => (
-                <div key={m.userId} className="flex items-center gap-3">
+                <button
+                  key={m.userId}
+                  type="button"
+                  onClick={() => openMember(m.userId)}
+                  title={m.userId === userId ? t.openYours : t.openTheirs(m.name)}
+                  className="flex items-center gap-3 rounded px-1 py-0.5 text-left hover:bg-raised"
+                >
                   <span className="min-w-0 flex-1 truncate text-cream">{who(m.userId, m.name)}</span>
                   <span className="tabular-nums text-engrave" title={t.memberTitle}>
-                    {t.memberSongs(m.songs, m.finished)}
+                    {t.memberSongs(m.songs, m.making, m.finished)}
                   </span>
-                  <span className="w-20 text-right tabular-nums text-body" title={t.movedTitle(RECENT_DAYS)}>
-                    {m.recentMoves ? t.movedCount(m.recentMoves) : "—"}
-                  </span>
-                  <span className="w-24 text-right text-engrave">{m.lastActivityMs ? formatRelative(m.lastActivityMs) : t.nothingShared}</span>
-                </div>
+                  <ChevronRight size={12} className="shrink-0 text-engrave" aria-hidden />
+                </button>
               ))}
             </div>
           </Card>

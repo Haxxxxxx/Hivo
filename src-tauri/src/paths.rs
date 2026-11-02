@@ -8,6 +8,7 @@
 //! files goes through the same check (the webview can't call the opener's
 //! open-path directly).
 
+use crate::error::app_err;
 use crate::daws::Daw;
 use std::path::{Path, PathBuf};
 
@@ -37,7 +38,7 @@ pub fn is_remote_or_device(path: &str) -> bool {
 
 fn refuse_remote(path: &str) -> Result<(), String> {
     if is_remote_or_device(path) {
-        return Err("network and device paths aren't opened from Hivo".to_string());
+        return Err(app_err("open.remote", "network and device paths aren't opened from Hivo").into());
     }
     Ok(())
 }
@@ -45,7 +46,7 @@ fn refuse_remote(path: &str) -> Result<(), String> {
 fn check_project(path: &str) -> Result<(), String> {
     refuse_remote(path)?;
     if Daw::of_project(Path::new(path)).is_none() {
-        return Err("only DAW project files can be opened".to_string());
+        return Err(app_err("open.notProject", "only DAW project files can be opened").into());
     }
     Ok(())
 }
@@ -55,7 +56,7 @@ fn check_project(path: &str) -> Result<(), String> {
 pub fn open_project(app: tauri::AppHandle, path: String) -> Result<(), String> {
     check_project(&path)?;
     crate::scope::Scope::load(&app)?.project(&path)?;
-    tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|e| format!("couldn't open it: {e}"))
+    tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|e| app_err("open.failed", format!("couldn't open it: {e}")).into())
 }
 
 /// Shows a file from a linked folder or the export folder in Finder / Explorer.
@@ -63,7 +64,7 @@ pub fn open_project(app: tauri::AppHandle, path: String) -> Result<(), String> {
 pub fn reveal_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
     refuse_remote(&path)?;
     crate::scope::Scope::load(&app)?.known_file(&path)?;
-    tauri_plugin_opener::reveal_item_in_dir(&path).map_err(|e| format!("couldn't show it: {e}"))
+    tauri_plugin_opener::reveal_item_in_dir(&path).map_err(|e| app_err("reveal.failed", format!("couldn't show it: {e}")).into())
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@
 //! exception). Leasing or downloading stays between the user and the
 //! producer's page.
 
+use crate::error::{app_err, path_err};
 use crate::digger::safe_url;
 use crate::scope::Scope;
 use serde::{Deserialize, Serialize};
@@ -61,7 +62,7 @@ impl Lead {
         // Kept as sent (trimmed), not re-serialized: the file name hashes the
         // same string the webview hashes (leadHash in src/lib/digger.ts).
         let raw = self.url.trim().to_string();
-        safe_url(&raw).ok_or("That link can't be saved (https links only).")?;
+        safe_url(&raw).ok_or_else(|| String::from(app_err("lead.badLink", "That link can't be saved (https links only).")))?;
         Ok(Lead {
             url: raw,
             title: clip(&self.title, MAX_TITLE),
@@ -152,9 +153,9 @@ pub fn lead_markdown(lead: &Lead, date: &str) -> String {
 /// an earlier save of the same url. Returns the file's path.
 pub fn write_lead(folder: &Path, lead: &Lead, date: &str) -> Result<PathBuf, String> {
     let dir = folder.join(LEADS_DIR);
-    fs::create_dir_all(&dir).map_err(|e| format!("couldn't create {}: {e}", dir.display()))?;
+    fs::create_dir_all(&dir).map_err(|e| path_err("io.create", &dir, format!("couldn't create {}: {e}", dir.display())))?;
     let path = dir.join(lead_file_name(lead));
-    fs::write(&path, lead_markdown(lead, date)).map_err(|e| format!("couldn't write {}: {e}", path.display()))?;
+    fs::write(&path, lead_markdown(lead, date)).map_err(|e| path_err("io.write", &path, format!("couldn't write {}: {e}", path.display())))?;
     Ok(path)
 }
 
@@ -313,7 +314,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 #[tauri::command]
 pub fn save_lead(app: AppHandle, lead: Lead) -> Result<String, String> {
     let scope = Scope::load(&app)?;
-    let folder = scope.beat_folders().first().ok_or("Add a beats folder in Settings first.")?;
+    let folder = scope.beat_folders().first().ok_or_else(|| String::from(app_err("lead.noBeatFolder", "Add a beats folder in Settings first.")))?;
     let lead = lead.sanitized()?;
     write_lead(folder, &lead, &today()).map(|p| p.to_string_lossy().to_string())
 }
@@ -332,7 +333,7 @@ pub fn list_leads(app: AppHandle) -> Result<Vec<SavedLead>, String> {
 pub fn delete_lead(app: AppHandle, path: String) -> Result<(), String> {
     let scope = Scope::load(&app)?;
     let real = scope.lead_file(&path)?;
-    fs::remove_file(&real).map_err(|e| format!("couldn't delete {}: {e}", real.display()))
+    fs::remove_file(&real).map_err(|e| path_err("io.delete", &real, format!("couldn't delete {}: {e}", real.display())))
 }
 
 #[cfg(test)]

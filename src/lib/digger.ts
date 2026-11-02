@@ -143,9 +143,11 @@ export function embedUrl(id: string): string | null {
 }
 
 /** Letters and digits only, lowercased, single spaces: what a title and a
- * file name share once a converter or a download has mangled punctuation. */
+ * file name share once a converter or a download has mangled punctuation.
+ * NFC first: a macOS file name is often decomposed ("E" + accent), and the
+ * accent alone isn't a letter. */
 export function titleKey(s: string): string {
-  return s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  return s.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 }
 
 /** Containment only counts when the shorter name is at least this share of
@@ -464,7 +466,7 @@ export function restoreDig(raw: unknown): KeptDig | null {
     model: str(d.model, 80),
     audioSent: d.audioSent === true,
     beats,
-    failed: (Array.isArray(d.failed) ? d.failed : []).flatMap((x) => (obj(x) ? [{ name: str(obj(x)!.name, 120), error: str(obj(x)!.error, 300) }] : [])),
+    failed: (Array.isArray(d.failed) ? d.failed : []).flatMap((x) => (obj(x) ? [{ name: str(obj(x)!.name, 120), error: str(obj(x)!.error, 1000) }] : [])),
     analysis: { summary: str(a.summary), traits: strs(a.traits, 6), tempo: str(a.tempo, 40), queries: strs(a.queries, 6), ...(str(a.heard) ? { heard: str(a.heard) } : {}) },
     web: restoreLinks(d.web),
     webSearches: strs(d.webSearches, 6),

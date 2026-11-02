@@ -3,9 +3,10 @@ import { Sparkles } from "lucide-react";
 import { digIsStale, useDigger } from "../store/useDigger";
 import { useAppStore } from "../store/useAppStore";
 import { beatFactsLine, nameQueries } from "../lib/digger";
-import { currentLang, dict, tr } from "../i18n";
+import { currentLang, dict, plural, tr } from "../i18n";
 import type { YoutubeStatus } from "../types";
 import { chip, label, secondary } from "./DigResults";
+import { errorDetail, errorReason } from "../lib/errors";
 
 // The right side of the Digger: the picked beats, the AI dig (what they
 // share, what Gemini heard, the searches, "Go deeper"). The results live
@@ -32,13 +33,13 @@ const T = dict(
     aiSearches: "Searches from the dig",
     round: (n: number) => `Round ${n}`,
     deeper: "Go deeper",
-    deeperSeeded: (n: number) => `Go deeper · seeded from ${n} pick${n > 1 ? "s" : ""}`,
+    deeperSeeded: (n: number) => `Go deeper · seeded from ${n} pick${plural(n, "", "s")}`,
     deeperRunning: "Digging deeper…",
     find: "Find similar beats",
     ideas: "Searches from your picks",
     noKey: "Add a YouTube key in Settings to see results in the app. Without one, searches open in your browser.",
     setUp: "Settings",
-    failed: (n: number) => `${n} beat${n > 1 ? "s" : ""} couldn't be read, the dig went on without ${n > 1 ? "them" : "it"}:`,
+    failed: (n: number) => `${n} beat${plural(n, "", "s")} couldn't be read, the dig went on without ${plural(n, "it", "them")}:`,
     tryAgain: "Try again",
     tryAgainTitle: "Tries Gemini's web search again now (for example after a new key) as a new round.",
   },
@@ -60,13 +61,13 @@ const T = dict(
     aiSearches: "Recherches tirées de l'analyse",
     round: (n: number) => `Tour ${n}`,
     deeper: "Creuser plus loin",
-    deeperSeeded: (n: number) => `Creuser plus loin · à partir de ${n} sélection${n > 1 ? "s" : ""}`,
+    deeperSeeded: (n: number) => `Creuser plus loin · à partir de ${n} sélection${plural(n, "", "s")}`,
     deeperRunning: "On creuse…",
     find: "Trouver des prods proches",
     ideas: "Recherches tirées de tes choix",
     noKey: "Ajoute une clé YouTube dans les Réglages pour voir les résultats dans l'app. Sans clé, les recherches s'ouvrent dans ton navigateur.",
     setUp: "Réglages",
-    failed: (n: number) => `${n} prod${n > 1 ? "s" : ""} illisible${n > 1 ? "s" : ""}, la recherche a continué sans${NB}:`,
+    failed: (n: number) => `${n} prod${plural(n, "", "s")} illisible${plural(n, "", "s")}, la recherche a continué sans${NB}:`,
     tryAgain: "Réessayer",
     tryAgainTitle: "Relance la recherche web de Gemini maintenant (par exemple après une nouvelle clé), dans un nouveau tour.",
   },
@@ -173,8 +174,8 @@ export function DigPanel({ yt, round }: Props) {
               <span>{t.failed(dig.failed.length)}</span>
               <ul className="flex flex-col gap-0.5">
                 {dig.failed.map((f, i) => (
-                  <li key={i} className="truncate text-engrave" title={f.error}>
-                    {f.name}: {f.error}
+                  <li key={i} className="truncate text-engrave" title={errorDetail(f.error)}>
+                    {f.name}: {errorReason(f.error)}
                   </li>
                 ))}
               </ul>
@@ -214,7 +215,7 @@ export function DigPanel({ yt, round }: Props) {
           )}
           {dig.webError && (
             <p className="text-[11px] text-engrave">
-              {dig.webError}{" "}
+              {errorReason(dig.webError)}{" "}
               <button onClick={() => void d.retryWeb(currentLang(), !!yt?.configured)} disabled={d.diggingDeeper || d.digging} title={t.tryAgainTitle} className="underline hover:text-cream disabled:opacity-40">
                 {t.tryAgain}
               </button>

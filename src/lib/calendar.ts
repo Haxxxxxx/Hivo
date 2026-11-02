@@ -1,5 +1,5 @@
 import type { Album, AlbumKind, ProjectInfo, Workspace } from "../types";
-import { dict, locale, tr } from "../i18n";
+import { dict, locale, plural, tr } from "../i18n";
 import { kitTitleFor, parseDate } from "./launchKit";
 import { datedRelease } from "./releaseDates";
 import { isKitAccepted, kitMaster, masterFreshness } from "./kitState";
@@ -37,7 +37,7 @@ export interface CalendarEntry {
   checks: CalendarCheck[];
 }
 
-const s = (n: number) => (n === 1 ? "" : "s");
+const s = (n: number) => plural(n, "", "s");
 
 const T = dict(
   {
@@ -45,21 +45,21 @@ const T = dict(
     notFinishedSoon: (n: number) => `${n} track${s(n)} not finished, and it's under a week away`,
     stillInProgress: (n: number) => `${n} track${s(n)} still in Creation/Production`,
     kitNotAccepted: (n: number) => `Launch Kit not accepted for ${n} track${s(n)}`,
-    stuckInPrep: (n: number) => `Released, but ${n} track${n === 1 ? " is" : "s are"} still in Prep: move to Release or Promotion`,
+    stuckInPrep: (n: number) => `Released, but ${n} track${plural(n, " is", "s are")} still in Prep: move to Release or Promotion`,
     notFound: (n: number) => `${n} track${s(n)} not found (moved or renamed)`,
     mixdownNotReady: (n: number) => `${n} track${s(n)}: mixdown outdated or missing (render before you export the kit)`,
-    otherKitDate: (n: number) => `${n} track${s(n)} ${n === 1 ? "has" : "have"} another date typed in ${n === 1 ? "its" : "their"} Launch Kit, and the kit exports that one: set the same date on both`,
+    otherKitDate: (n: number) => `${n} track${s(n)} ${plural(n, "has", "have")} another date typed in ${plural(n, "its", "their")} Launch Kit, and the kit exports that one: set the same date on both`,
   },
   {
     notFriday: "Pas un vendredi : les nouveaux sons sortent partout le vendredi",
-    notFinishedSoon: (n: number) => `${n} morceau${n === 1 ? " pas fini" : "x pas finis"}, et c'est dans moins d'une semaine`,
-    stillInProgress: (n: number) => `${n} morceau${n === 1 ? "" : "x"} encore en Création/Production`,
-    kitNotAccepted: (n: number) => `Launch Kit pas validé pour ${n} morceau${n === 1 ? "" : "x"}`,
+    notFinishedSoon: (n: number) => `${n} morceau${plural(n, " pas fini", "x pas finis")}, et c'est dans moins d'une semaine`,
+    stillInProgress: (n: number) => `${n} morceau${plural(n, "", "x")} encore en Création/Production`,
+    kitNotAccepted: (n: number) => `Launch Kit pas validé pour ${n} morceau${plural(n, "", "x")}`,
     stuckInPrep: (n: number) =>
-      `Sorti, mais ${n} morceau${n === 1 ? " est" : "x sont"} encore en Prépa : passe-${n === 1 ? "le" : "les"} en Sortie ou Promo`,
-    notFound: (n: number) => `${n} morceau${n === 1 ? " introuvable" : "x introuvables"} (déplacé${s(n)} ou renommé${s(n)})`,
-    mixdownNotReady: (n: number) => `${n} morceau${n === 1 ? "" : "x"} : mixdown pas à jour ou absent (fais le rendu avant d'exporter le kit)`,
-    otherKitDate: (n: number) => `${n} morceau${n === 1 ? " a" : "x ont"} une autre date tapée dans ${n === 1 ? "son" : "leur"} Launch Kit, et c'est celle que le kit exporte : mets la même date des deux côtés`,
+      `Sorti, mais ${n} morceau${plural(n, " est", "x sont")} encore en Prépa : passe-${plural(n, "le", "les")} en Sortie ou Promo`,
+    notFound: (n: number) => `${n} morceau${plural(n, " introuvable", "x introuvables")} (déplacé${s(n)} ou renommé${s(n)})`,
+    mixdownNotReady: (n: number) => `${n} morceau${plural(n, "", "x")} : mixdown pas à jour ou absent (fais le rendu avant d'exporter le kit)`,
+    otherKitDate: (n: number) => `${n} morceau${plural(n, " a", "x ont")} une autre date tapée dans ${plural(n, "son", "leur")} Launch Kit, et c'est celle que le kit exporte : mets la même date des deux côtés`,
   },
 );
 

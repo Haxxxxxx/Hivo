@@ -71,6 +71,10 @@ export interface ProjectInfo {
    * counted: another linked song has the same name, and the file name can't
    * say which one it came from. */
   ambiguousExports?: number;
+  /** A cloud placeholder (iCloud Drive, OneDrive, Dropbox): not downloaded
+   * to this computer, so it isn't opened (that would download it). What's
+   * read from inside comes from an earlier read, when there was one. */
+  inCloud?: boolean;
 }
 
 /** What `scan_projects` returns: the projects, and the linked folders that
@@ -78,6 +82,10 @@ export interface ProjectInfo {
 export interface ScanResult {
   projects: ProjectInfo[];
   unreachable: string[];
+  /** Symlinked folders / junctions the walk didn't follow: how many, and a
+   * few of them. */
+  skippedLinks?: number;
+  skippedLinkExamples?: string[];
 }
 
 export interface PluginInfo {
@@ -142,8 +150,13 @@ export interface RenderEvent {
   projectPath: string;
   projectName: string;
   status: RenderStatus;
+  /** An error (Rust's English message); warnings are the fields below. */
   message: string | null;
   outputPath: string | null;
+  /** Samples staged from where the scan found them (moved). */
+  movedSamples?: number;
+  /** Stored sample paths that couldn't be staged: silent in the mixdown. */
+  missingSamples?: string[];
 }
 
 // ---- Workspace: the app's own data, which FL Studio doesn't store ----

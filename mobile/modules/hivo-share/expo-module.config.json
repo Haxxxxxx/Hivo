@@ -1,6 +1,6 @@
 {
   "platforms": ["android"],
   "android": {
-    "modules": ["expo.modules.hivoshare.HivoShareModule"]
+    "modules": ["expo.modules.hivoshare.HivoShareModule", "expo.modules.hivoshare.HivoRecordingModule"]
   }
 }

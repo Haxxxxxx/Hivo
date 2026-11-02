@@ -1,12 +1,10 @@
 // The Digger's converter link (Settings → Digger). Hivo never calls these
 // sites and never downloads audio: the link opens in the user's browser.
-// Two helpers make the `{url}` slot easy to get right:
-// - `templateFromExample`: the address of a converter page *after* a video
-//   link was pasted on it usually carries that link (plain or
-//   percent-encoded); swapping it for `{url}` gives the template, whatever
-//   the site.
-// - `KNOWN_CONVERTERS`: a few sites whose link format is known, so pasting
-//   their home page is enough.
+// Hivo names no converter site: the user sets their own https link.
+// `templateFromExample` makes the `{url}` slot easy to get right: the
+// address of a converter page *after* a video link was pasted on it usually
+// carries that link (plain or percent-encoded); swapping it for `{url}`
+// gives the template, whatever the site.
 
 /** A YouTube video link as it appears plain inside another address:
  * watch?v=, youtu.be/ or /shorts/ with the 11-char id. Nothing after the id
@@ -39,45 +37,14 @@ export function templateFromExample(address: string): string | null {
   return inside ? decoded.replace(inside[0], "{url}") : null;
 }
 
-export interface KnownConverter {
-  /** Host (without www.) the user's link is matched on. */
-  host: string;
-  name: string;
-  /** The link with the slot, when the site reads the address from its
-   * link; null when it only takes it on the page (paste). */
-  template: string | null;
-}
-
-/** Sites whose link format is known. Only formats checked against the
- * site's own code or docs go here (date noted); a `null` template means
- * the site is recognized but no pre-fill format is known. Anything not
- * listed works through `templateFromExample` or the clipboard. */
-export const KNOWN_CONVERTERS: KnownConverter[] = [
-  // web/src/components/save/Omnibox.svelte reads `#<link>` (or `?u=`) and
-  // decodes it (checked 2026-10-24).
-  { host: "cobalt.tools", name: "cobalt", template: "https://cobalt.tools/#{url}" },
-  { host: "notube.lol", name: "NoTube", template: null },
-];
-
-/** The known site a converter link belongs to, if any. */
-export function knownConverter(address: string): KnownConverter | null {
-  let host: string;
-  try {
-    host = new URL(address.trim()).hostname.toLowerCase().replace(/^www\./, "");
-  } catch {
-    return null;
-  }
-  return KNOWN_CONVERTERS.find((c) => host === c.host || host.endsWith(`.${c.host}`)) ?? null;
-}
-
 /** What to save for what the user typed: a template from an example
- * address, the known site's template for a bare page of a known site, else
- * the address itself. */
-export function converterTemplateFor(address: string): { template: string; recognized: "example" | "known" | null; site: KnownConverter | null } {
+ * address, else the address itself. There are no built-in sites: the
+ * converter is whatever https link the user sets (docs/GUARDRAILS.md,
+ * Digger exception: links only). A template saved before the presets were
+ * removed is a plain string and keeps working as is. */
+export function converterTemplateFor(address: string): { template: string; recognized: "example" | null } {
   const a = address.trim();
-  const site = knownConverter(a);
   const fromExample = templateFromExample(a);
-  if (fromExample) return { template: fromExample, recognized: "example", site };
-  if (site?.template && !a.includes("{url}")) return { template: site.template, recognized: "known", site };
-  return { template: a, recognized: null, site };
+  if (fromExample) return { template: fromExample, recognized: "example" };
+  return { template: a, recognized: null };
 }

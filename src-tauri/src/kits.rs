@@ -8,6 +8,7 @@
 //! the same folder on a case-insensitive file system (APFS, NTFS), so the
 //! cleanup never treats that folder as an old one.
 
+use crate::error::{app_err, path_err};
 use crate::audio::safe_name;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
@@ -69,7 +70,7 @@ pub fn read_manifest(dir: &Path) -> Option<KitManifest> {
 
 pub fn write_manifest(dir: &Path, manifest: &KitManifest) -> Result<(), String> {
     let text = serde_json::to_string_pretty(manifest).map_err(|e| e.to_string())?;
-    write_new(&dir.join(KIT_MANIFEST), text.as_bytes()).map_err(|e| format!("could not write {KIT_MANIFEST}: {e}"))
+    write_new(&dir.join(KIT_MANIFEST), text.as_bytes()).map_err(|e| path_err("io.write", &dir.join(KIT_MANIFEST), format!("could not write {KIT_MANIFEST}: {e}")))
 }
 
 /// Clears `path` for a fresh file: a regular file is removed, nothing there
@@ -105,9 +106,9 @@ pub fn copy_new(src: &Path, dest: &Path) -> io::Result<()> {
 pub fn sub_dir(dir: &Path, name: &str) -> Result<PathBuf, String> {
     let sub = dir.join(name);
     if is_link(&sub) {
-        return Err(format!("{} is a link: refusing to write through it", sub.display()));
+        return Err(path_err("io.link", &sub, format!("{} is a link: refusing to write through it", sub.display())));
     }
-    fs::create_dir_all(&sub).map_err(|e| format!("could not create {}: {e}", sub.display()))?;
+    fs::create_dir_all(&sub).map_err(|e| path_err("io.create", &sub, format!("could not create {}: {e}", sub.display())))?;
     Ok(sub)
 }
 
@@ -116,14 +117,14 @@ pub fn sub_dir(dir: &Path, name: &str) -> Result<PathBuf, String> {
 pub fn kits_root(output: &Path) -> Result<PathBuf, String> {
     let kits = output.join(crate::scanner::LAUNCH_KITS_DIR);
     if is_link(&kits) {
-        return Err(format!("{} is a link: refusing to write through it", kits.display()));
+        return Err(path_err("io.link", &kits, format!("{} is a link: refusing to write through it", kits.display())));
     }
-    fs::create_dir_all(&kits).map_err(|e| format!("could not create {}: {e}", kits.display()))?;
+    fs::create_dir_all(&kits).map_err(|e| path_err("io.create", &kits, format!("could not create {}: {e}", kits.display())))?;
     let (Ok(out), Ok(real)) = (output.canonicalize(), kits.canonicalize()) else {
-        return Err("the export folder can't be reached".to_string());
+        return Err(app_err("kit.outputUnreachable", "the export folder can't be reached").into());
     };
     if real.parent() != Some(out.as_path()) {
-        return Err("the Launch Kits folder isn't inside the export folder".to_string());
+        return Err(app_err("kit.outsideOutput", "the Launch Kits folder isn't inside the export folder").into());
     }
     Ok(kits)
 }
@@ -131,13 +132,13 @@ pub fn kits_root(output: &Path) -> Result<PathBuf, String> {
 /// A kit folder must be a real folder directly inside the kits root.
 pub fn check_kit_dir(kits: &Path, dir: &Path) -> Result<(), String> {
     if is_link(dir) {
-        return Err(format!("{} is a link: refusing to write through it", dir.display()));
+        return Err(path_err("io.link", dir, format!("{} is a link: refusing to write through it", dir.display())));
     }
     let (Ok(root), Ok(real)) = (kits.canonicalize(), dir.canonicalize()) else {
-        return Err(format!("could not reach {}", dir.display()));
+        return Err(path_err("io.unreachable", dir, format!("could not reach {}", dir.display())));
     };
     if real.parent() != Some(root.as_path()) || !real.is_dir() {
-        return Err(format!("{} isn't a kit folder", dir.display()));
+        return Err(path_err("kit.notKitFolder", dir, format!("{} isn't a kit folder", dir.display())));
     }
     Ok(())
 }
@@ -193,7 +194,7 @@ pub fn resolve_kit_dir(output: &Path, title: &str, owner: &str, previous: Option
     if let Some(i) = pick {
         let name = &names[i];
         let mut dir = kits.join(name);
-        fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+        fs::create_dir_all(&dir).map_err(|e| path_err("io.create", &dir, format!("could not create {}: {e}", dir.display())))?;
         // A case-only title change: rename the folder to the new spelling.
         if let Some(old) = on_disk_name(&kits, &dir) {
             let tmp = kits.join(format!(".{name}.renaming"));
@@ -210,7 +211,7 @@ pub fn resolve_kit_dir(output: &Path, title: &str, owner: &str, previous: Option
         }
         return Ok(dir);
     }
-    Err(format!("too many Launch Kits are called {base}"))
+    Err(app_err("kit.tooMany", format!("too many Launch Kits are called {base}")).with("name", base.as_str()).into())
 }
 
 /// A manifest entry the cleanup may remove: a plain file name, or one in

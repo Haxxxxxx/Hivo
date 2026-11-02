@@ -1,3 +1,4 @@
+use crate::error::app_err;
 use crate::models::Settings;
 use crate::paths::is_remote_or_device;
 use crate::scope::{fl_studio_binary, is_ffmpeg};
@@ -10,8 +11,8 @@ fn settings_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app
         .path()
         .app_config_dir()
-        .map_err(|e| format!("could not resolve app config dir: {e}"))?;
-    fs::create_dir_all(&dir).map_err(|e| format!("could not create config dir: {e}"))?;
+        .map_err(|e| app_err("config.dir", format!("could not resolve app config dir: {e}")))?;
+    fs::create_dir_all(&dir).map_err(|e| app_err("config.dir", format!("could not create config dir: {e}")))?;
     Ok(dir.join("settings.json"))
 }
 
@@ -26,12 +27,12 @@ fn load_from(path: &Path) -> Result<(Settings, Option<PathBuf>), String> {
     if !path.exists() {
         return Ok((Settings::default(), None));
     }
-    let raw = fs::read(path).map_err(|e| format!("could not read settings: {e}"))?;
+    let raw = fs::read(path).map_err(|e| app_err("settings.read", format!("could not read settings: {e}")))?;
     match serde_json::from_slice(&raw) {
         Ok(settings) => Ok((settings, None)),
         Err(parse) => {
             let bad = crate::workspace::bad_path(path);
-            fs::rename(path, &bad).map_err(|e| format!("could not parse settings ({parse}) or move them aside: {e}"))?;
+            fs::rename(path, &bad).map_err(|e| app_err("settings.read", format!("could not parse settings ({parse}) or move them aside: {e}")))?;
             eprintln!("settings.json didn't parse ({parse}): moved to {}", bad.display());
             Ok((Settings::default(), Some(bad)))
         }
@@ -119,7 +120,7 @@ fn converter_template(raw: Option<&str>) -> Result<Option<String>, String> {
     if ok {
         Ok(Some(t.to_string()))
     } else {
-        Err(format!("The converter link must start with https:// ({MAX_CONVERTER_CHARS} characters max)."))
+        Err(app_err("settings.badConverter", format!("The converter link must start with https:// ({MAX_CONVERTER_CHARS} characters max).")).with("max", MAX_CONVERTER_CHARS).into())
     }
 }
 
@@ -164,13 +165,13 @@ async fn pick(app: &AppHandle, folder: bool) -> Result<Option<PathBuf>, String> 
         picked.and_then(|p| p.into_path().ok())
     })
     .await
-    .map_err(|e| format!("the picker failed: {e}"))
+    .map_err(|e| app_err("picker.failed", format!("the picker failed: {e}")).into())
 }
 
 fn usable_folder(path: &Path) -> Result<String, String> {
     let s = path.to_string_lossy().to_string();
     if is_remote_or_device(&s) || !path.is_dir() {
-        return Err(format!("not a folder on this computer: {s}"));
+        return Err(app_err("folder.notLocal", format!("not a folder on this computer: {s}")).with("path", s.as_str()).into());
     }
     Ok(s)
 }
@@ -180,9 +181,12 @@ fn usable_folder(path: &Path) -> Result<String, String> {
 /// the home folder or a system folder.
 fn linkable_folder(app: &AppHandle, folder: &Path, what: &str) -> Result<String, String> {
     if too_broad(folder, app.path().home_dir().ok().as_deref()) {
-        return Err(format!(
-            "Pick the folder where your {what} are, not a whole drive, your home folder or a system folder: the app can read every file in it."
-        ));
+        return Err(app_err(
+            "folder.tooBroad",
+            format!("Pick the folder where your {what} are, not a whole drive, your home folder or a system folder: the app can read every file in it."),
+        )
+        .with("what", what)
+        .into());
     }
     usable_folder(folder)
 }
@@ -213,7 +217,7 @@ pub async fn pick_watched_folder(app: AppHandle) -> Result<Settings, String> {
 pub fn link_detected_folder(app: AppHandle, path: String) -> Result<Settings, String> {
     let found = detected_folders(&app);
     if !found.iter().any(|(_, p)| p.to_string_lossy() == path) {
-        return Err(format!("not a detected DAW folder: {path}"));
+        return Err(app_err("folder.notDetected", format!("not a detected DAW folder: {path}")).with("path", path.as_str()).into());
     }
     add_watched(&app, Path::new(&path))
 }
@@ -244,16 +248,16 @@ pub struct Repointed {
 #[tauri::command]
 pub async fn repoint_watched_folder(app: AppHandle, folder: String) -> Result<Option<Repointed>, String> {
     if !load(&app)?.watched_folders.contains(&folder) {
-        return Err(format!("not a linked folder: {folder}"));
+        return Err(app_err("folder.notLinked", format!("not a linked folder: {folder}")).with("path", folder.as_str()).into());
     }
     let Some(picked) = pick(&app, true).await? else { return Ok(None) };
     let to = linkable_folder(&app, &picked, "projects")?;
     let mut saved = load(&app)?;
     if to != folder && saved.watched_folders.contains(&to) {
-        return Err(format!("{to} is already linked"));
+        return Err(app_err("folder.alreadyLinked", format!("{to} is already linked")).with("path", to.as_str()).into());
     }
     let Some(slot) = saved.watched_folders.iter_mut().find(|f| **f == folder) else {
-        return Err(format!("not a linked folder: {folder}"));
+        return Err(app_err("folder.notLinked", format!("not a linked folder: {folder}")).with("path", folder.as_str()).into());
     };
     *slot = to.clone();
     store(&app, &saved)?;
@@ -396,7 +400,8 @@ pub async fn pick_output_folder(app: AppHandle) -> Result<Settings, String> {
 }
 
 fn set_fl_studio(app: &AppHandle, path: &Path) -> Result<Settings, String> {
-    let exe = fl_studio_binary(path).ok_or_else(|| format!("That isn't FL Studio: {}", path.display()))?;
+    let exe = fl_studio_binary(path)
+        .ok_or_else(|| String::from(app_err("flStudio.notFl", format!("That isn't FL Studio: {}", path.display())).with("path", path.display().to_string())))?;
     let mut saved = load(app)?;
     saved.fl_studio_path = Some(exe.to_string_lossy().to_string());
     store(app, &saved)?;
@@ -414,7 +419,7 @@ pub async fn pick_fl_studio(app: AppHandle) -> Result<Settings, String> {
 /// Fills in the FL Studio path found on this machine.
 #[tauri::command]
 pub fn use_detected_fl_studio(app: AppHandle) -> Result<Settings, String> {
-    let found = detect_fl_studio().ok_or("FL Studio wasn't found. Pick it by hand.")?;
+    let found = detect_fl_studio().ok_or_else(|| String::from(app_err("flStudio.notFound", "FL Studio wasn't found. Pick it by hand.")))?;
     set_fl_studio(&app, Path::new(&found))
 }
 
@@ -422,7 +427,7 @@ pub fn use_detected_fl_studio(app: AppHandle) -> Result<Settings, String> {
 pub async fn pick_ffmpeg(app: AppHandle) -> Result<Settings, String> {
     let Some(path) = pick(&app, false).await? else { return load(&app) };
     if !is_ffmpeg(&path) {
-        return Err(format!("That isn't ffmpeg: {}", path.display()));
+        return Err(app_err("ffmpeg.notFfmpeg", format!("That isn't ffmpeg: {}", path.display())).with("path", path.display().to_string()).into());
     }
     let mut saved = load(&app)?;
     saved.ffmpeg_path = Some(path.to_string_lossy().to_string());
@@ -435,9 +440,9 @@ pub async fn pick_ffmpeg(app: AppHandle) -> Result<Settings, String> {
 /// `shown` must be that same path, so what gets saved is what was confirmed.
 #[tauri::command]
 pub fn use_detected_ffmpeg(app: AppHandle, shown: String) -> Result<Settings, String> {
-    let found = crate::shorts::detect_ffmpeg().ok_or("ffmpeg wasn't found. Pick it by hand.")?;
+    let found = crate::shorts::detect_ffmpeg().ok_or_else(|| String::from(app_err("ffmpeg.notFound", "ffmpeg wasn't found. Pick it by hand.")))?;
     if found.to_string_lossy() != shown {
-        return Err("ffmpeg isn't where it was a moment ago. Check again.".to_string());
+        return Err(app_err("ffmpeg.moved", "ffmpeg isn't where it was a moment ago. Check again.").into());
     }
     let mut saved = load(&app)?;
     saved.ffmpeg_path = Some(found.to_string_lossy().to_string());
@@ -454,7 +459,7 @@ pub fn clear_path_setting(app: AppHandle, which: String) -> Result<Settings, Str
         "flStudio" => saved.fl_studio_path = None,
         "ffmpeg" => saved.ffmpeg_path = None,
         "outputFolder" => unlinked = saved.output_folder.take(),
-        other => return Err(format!("unknown setting: {other}")),
+        other => return Err(app_err("settings.unknown", format!("unknown setting: {other}")).with("name", other).into()),
     }
     store(&app, &saved)?;
     if let Some(previous) = unlinked {

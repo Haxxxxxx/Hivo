@@ -25,6 +25,7 @@
 //! paired before 1.2 keep their key and get unbound replies only while they
 //! don't say 1.2 (`StoredDevice::derived` = false: "Re-pair to upgrade").
 
+use crate::error::app_err;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use base64::Engine;
 use chacha20poly1305::aead::{Aead, Generate, KeyInit, Payload};
@@ -1457,11 +1458,11 @@ pub fn phone_sync_open_firewall() -> Result<(), String> {
             .args(["/name", "Microsoft.WindowsFirewall", "/page", "pageConfigureApps"])
             .spawn()
             .map(|_| ())
-            .map_err(|e| format!("could not open the firewall settings: {e}"))
+            .map_err(|e| app_err("phone.firewall", format!("could not open the firewall settings: {e}")).into())
     }
     #[cfg(not(windows))]
     {
-        Err("Only on Windows.".to_string())
+        Err(app_err("phone.windowsOnly", "Only on Windows.").into())
     }
 }
 
@@ -1512,7 +1513,7 @@ async fn confirm(app: &AppHandle, what: Confirm, lang: Option<&str>) -> bool {
 }
 
 fn state_inner(app: &AppHandle) -> Result<Arc<Inner>, String> {
-    app.try_state::<PhoneSync>().map(|s| s.0.clone()).ok_or_else(|| "Phone sync isn't available (no config folder).".to_string())
+    app.try_state::<PhoneSync>().map(|s| s.0.clone()).ok_or_else(|| app_err("phone.unavailable", "Phone sync isn't available (no config folder).").into())
 }
 
 #[tauri::command]
@@ -1567,11 +1568,11 @@ fn new_pairing(inner: &Inner, repair: Option<&str>, port: u16, hosts: &[Ipv4Addr
 pub async fn phone_sync_pair(app: AppHandle, lang: Option<String>) -> Result<Pairing, String> {
     let inner = state_inner(&app)?;
     let Some(port) = inner.port() else {
-        return Err("Turn phone sync on first.".to_string());
+        return Err(app_err("phone.off", "Turn phone sync on first.").into());
     };
     let hosts = lan_addresses();
     if hosts.is_empty() {
-        return Err("No local network address found. Connect this computer to Wi-Fi (or a local network) first.".to_string());
+        return Err(app_err("phone.noLan", "No local network address found. Connect this computer to Wi-Fi (or a local network) first.").into());
     }
     // A new key that unlocks this computer's songs and notes: confirmed natively.
     if !confirm(&app, Confirm::Pair, lang.as_deref()).await {
@@ -1587,11 +1588,11 @@ pub async fn phone_sync_pair(app: AppHandle, lang: Option<String>) -> Result<Pai
 pub fn phone_sync_repair(app: AppHandle, device_id: String) -> Result<Pairing, String> {
     let inner = state_inner(&app)?;
     let Some(port) = inner.port() else {
-        return Err("Turn phone sync on first.".to_string());
+        return Err(app_err("phone.off", "Turn phone sync on first.").into());
     };
     let hosts = lan_addresses();
     if hosts.is_empty() {
-        return Err("No local network address found. Connect this computer to Wi-Fi (or a local network) first.".to_string());
+        return Err(app_err("phone.noLan", "No local network address found. Connect this computer to Wi-Fi (or a local network) first.").into());
     }
     new_pairing(&inner, Some(&device_id), port, &hosts)
 }
@@ -1660,23 +1661,23 @@ pub fn phone_inbox_list(app: AppHandle) -> Result<InboxList, String> {
 pub async fn phone_inbox_file_sketch(app: AppHandle, id: String, parent_folder: String, name: String) -> Result<crate::phone_inbox::FiledSketch, String> {
     let scope = crate::scope::Scope::load(&app)?;
     if scope.folders().is_empty() {
-        return Err("Link a project folder in Settings first.".to_string());
+        return Err(app_err("phone.noProjectFolder", "Link a project folder in Settings first.").into());
     }
     let parent = scope.folder_in_roots(&parent_folder)?;
     let inner = state_inner(&app)?;
-    tauri::async_runtime::spawn_blocking(move || inner.inbox.file_sketch(&id, &parent, &name)).await.map_err(|e| format!("filing failed: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || inner.inbox.file_sketch(&id, &parent, &name)).await.map_err(|e| app_err("task.failed", format!("filing failed: {e}")))?
 }
 
 /// The folder of a song: its project's folder, or a sketch's song folder.
 pub fn song_folder(scope: &crate::scope::Scope, key: &str) -> Result<PathBuf, String> {
     if let Ok(p) = scope.project(key) {
-        return p.parent().map(Path::to_path_buf).ok_or_else(|| "invalid project path".to_string());
+        return p.parent().map(Path::to_path_buf).ok_or_else(|| app_err("project.badPath", "invalid project path").into());
     }
-    let dir = scope.folder_in_roots(key).map_err(|_| "This song's folder isn't there any more.".to_string())?;
+    let dir = scope.folder_in_roots(key).map_err(|_| String::from(app_err("inbox.songFolderGone", "This song's folder isn't there any more.")))?;
     if dir.file_name().is_some_and(|n| n == crate::sketch::SKETCH_DIR) {
-        return dir.parent().map(Path::to_path_buf).ok_or_else(|| "invalid sketch path".to_string());
+        return dir.parent().map(Path::to_path_buf).ok_or_else(|| app_err("project.badPath", "invalid sketch path").into());
     }
-    Err("That isn't a song in a linked folder.".to_string())
+    Err(app_err("inbox.notASong", "That isn't a song in a linked folder.").into())
 }
 
 /// The memo sub-folder for a project whose folder holds other projects too
@@ -1708,7 +1709,7 @@ pub async fn phone_inbox_attach_song(app: AppHandle, id: String, song_path: Stri
         inner.inbox.attach_to_song_folder(&id, &folder, &song_path, sub.as_deref())
     })
     .await
-    .map_err(|e| format!("copy failed: {e}"))?
+    .map_err(|e| app_err("task.failed", format!("copy failed: {e}")))?
 }
 
 /// Links a memo to a beat or a saved prod and copies its audio into that
@@ -1720,7 +1721,7 @@ pub async fn phone_inbox_link_memo(app: AppHandle, id: String, kind: String, tar
     let folder = beats_folder_for(&scope, &kind, &target_id)?;
     let key = format!("{kind}:{target_id}");
     let inner = state_inner(&app)?;
-    tauri::async_runtime::spawn_blocking(move || inner.inbox.link_memo(&id, &key, &folder)).await.map_err(|e| format!("copy failed: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || inner.inbox.link_memo(&id, &key, &folder)).await.map_err(|e| app_err("task.failed", format!("copy failed: {e}")))?
 }
 
 /// The beats folder a beat or a saved prod belongs to (from settings only).
@@ -1733,14 +1734,14 @@ pub fn beats_folder_for(scope: &crate::scope::Scope, kind: &str, target_id: &str
                 .iter()
                 .find(|f| f.canonicalize().map(crate::paths::plain).is_ok_and(|r| real.starts_with(r)))
                 .cloned()
-                .ok_or_else(|| "That beat isn't inside a beats folder linked in Settings.".to_string())
+                .ok_or_else(|| app_err("scope.beatDenied", "That beat isn't inside a beats folder linked in Settings.").with("path", target_id).into())
         }
         "prod" => {
             if target_id.len() != 8 || !target_id.chars().all(|c| c.is_ascii_hexdigit()) {
                 return Err("bad request".to_string());
             }
             let holds = |f: &&PathBuf| crate::leads::hashes_in(&f.join(crate::leads::LEADS_DIR)).iter().any(|l| l.hash == target_id);
-            folders.iter().find(holds).or(folders.first()).cloned().ok_or_else(|| "Add a beats folder in Settings first.".to_string())
+            folders.iter().find(holds).or(folders.first()).cloned().ok_or_else(|| app_err("lead.noBeatFolder", "Add a beats folder in Settings first.").into())
         }
         _ => Err("bad request".to_string()),
     }
@@ -1756,7 +1757,7 @@ pub fn phone_inbox_mark(app: AppHandle, id: String, status: String, filed_to: Op
         "new" => Status::New,
         "filed" => Status::Filed,
         "dismissed" => Status::Dismissed,
-        _ => return Err(format!("unknown status: {status}")),
+        _ => return Err(app_err("inbox.badStatus", format!("unknown status: {status}")).with("status", status.as_str()).into()),
     };
     state_inner(&app)?.inbox.mark(&id, status, filed_to)
 }

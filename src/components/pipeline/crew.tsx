@@ -5,10 +5,12 @@ import { useAppStore } from "../../store/useAppStore";
 import { usePipelineView } from "../../store/usePipelineView";
 import { crewEdits, crewPipeline, groupCrewSongs } from "../../lib/crewBoard";
 import { crewCreditsText, crewMixdown, nameOf, pathsByShareId } from "../../lib/crewSync";
+import { songsOfMember } from "../../lib/crewStats";
 import { formatRelative } from "../../lib/format";
 import type { CrewSongRow, PipelineConfig } from "../../types";
 import { T_PIPELINE, type PipelineItem, type PipelineSource } from "./shared";
 import { tr } from "../../i18n";
+import { errorText } from "../../lib/errors";
 
 // The crew's pipeline: every song the crew shares, in the crew's columns
 // (crew_columns on the server, the same on the website). The owner edits
@@ -35,6 +37,8 @@ export function useCrewSource(): PipelineSource {
   const workspace = useAppStore((s) => s.workspace);
   const openDetail = useAppStore((s) => s.openDetail);
   const query = usePipelineView((s) => s.query.crew);
+  const member = usePipelineView((s) => s.crewMember);
+  const setCrewMember = usePipelineView((s) => s.setCrewMember);
   const [error, setError] = useState<string | null>(null);
   const activeCrewId = useCrewStore((s) => s.activeCrewId);
   // A refused move in one crew isn't news in another.
@@ -45,7 +49,7 @@ export function useCrewSource(): PipelineSource {
     // Current members first, else the last name seen here (a former member).
     const name = (id: string | null | undefined) => nameOf(id, members, knownNames);
     const localPath = pathsByShareId(workspace);
-    const fail = (e: unknown) => setError(e instanceof Error ? e.message : String(e));
+    const fail = (e: unknown) => setError(errorText(e));
     const save = (next: PipelineConfig) => {
       setError(null);
       saveCrewColumns(next).catch(fail);
@@ -101,13 +105,17 @@ export function useCrewSource(): PipelineSource {
         open: path ? () => openDetail(path) : undefined,
       };
     };
-    const shown = songs.filter((s) => matches(s, query));
+    // A member of another crew (after switching crews) scopes nothing.
+    const scopedTo = member && members.some((m) => m.user_id === member) ? member : null;
+    const mineOnly = songsOfMember(songs, scopedTo);
+    const shown = mineOnly.filter((s) => matches(s, query));
     return {
       scope: "crew",
       query,
       total: songs.length,
       shown: shown.length,
       editable: owner,
+      scoped: scopedTo ? { label: scopedTo === userId ? t.onlyYours : t.onlyOf(name(scopedTo) ?? t.crewmate), clear: () => setCrewMember(null) } : null,
       error,
       clearError: () => setError(null),
       groups: groupCrewSongs(shown, cfg).map((g) => ({ column: g.column, items: g.songs.map(item) })),
@@ -121,5 +129,5 @@ export function useCrewSource(): PipelineSource {
         moveCrewCard(key, columnId, beforeKey).catch(fail);
       },
     } satisfies PipelineSource;
-  }, [songs, columns, members, knownNames, userId, owner, workspace, query, error, saveCrewColumns, moveCrewCard, openDetail]);
+  }, [songs, columns, members, knownNames, userId, owner, workspace, query, member, setCrewMember, error, saveCrewColumns, moveCrewCard, openDetail]);
 }
