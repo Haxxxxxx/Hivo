@@ -16,6 +16,16 @@ Use the generic `tauri-v2` skill for the framework; this is what's decided here.
   destroy permission, `opener:allow-open-url` + `allow-default-urls`,
   `updater:default`, `process:default`. Add a permission only with the feature
   that needs it, and check the id in `src-tauri/gen/schemas` after `cargo check`.
+- **App commands are ACL'd**: `src-tauri/build.rs` declares every command
+  (`AppManifest::commands`, which generates `allow-<command>`), `default.json`
+  grants each one to the main window, `session.json` grants none (the session
+  window only uses events, keep-on-top and close). A new command goes in
+  `generate_handler!`, `build.rs` and `default.json`; the Rust test
+  `app_commands_are_declared_and_granted` fails otherwise, and a missing grant
+  is a "not allowed" error at runtime.
+- `freezePrototype` stays off: the bundled QR code library assigns
+  `exports.toString` on a plain object, which throws once `Object.prototype`
+  is frozen (the override mistake).
 - Plugin versions: the npm package and the Rust crate must share a major.minor
   (`npm run check:tauri`, also in CI). Stay on the 2.x lines, not 3.0 alphas.
 
@@ -34,6 +44,15 @@ Use the generic `tauri-v2` skill for the framework; this is what's decided here.
   the webview's `tauri://localhost` origin sends no referrer and YouTube answers
   error 153 without one. The wrapper's own CSP (`web/vercel.json`) lists the
   app origins in `frame-ancestors`; a new app origin must be added there.
+  The iframe is sandboxed (`allow-scripts allow-same-origin
+  allow-presentation`, inherited by the YouTube frame inside): no popups,
+  forms or top navigation.
+- Linked folders (watched, beats, samples, export) refuse a drive or volume
+  root, the home folder or above, `~/Library` / `~/AppData` and the system
+  folders (`too_broad` in `settings.rs`). An unlinked folder is
+  `forbid_directory`'d on the asset scope unless a still-linked folder
+  overlaps it; Tauri can't un-forbid, so relinking it the same session needs
+  a restart for playback.
 - `media-src`/`img-src` allow the `asset:` protocol; folders are allowed from
   Rust (`asset_protocol_scope().allow_directory`) only for the user's own folders.
 
