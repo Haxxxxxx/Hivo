@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { converterTemplateFor, knownConverter, templateFromExample } from "./converters";
+import * as converters from "./converters";
+import { converterTemplateFor, templateFromExample } from "./converters";
 
 const video = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 
@@ -17,25 +18,27 @@ describe("templateFromExample", () => {
   });
 
   it("gives null without a video link, a template already, or https", () => {
-    expect(templateFromExample("https://notube.lol/fr/youtube-app-445")).toBeNull();
+    expect(templateFromExample("https://converter.example/fr/app")).toBeNull();
     expect(templateFromExample("https://example.com/?u={url}")).toBeNull();
     expect(templateFromExample(`http://example.com/?u=${video}`)).toBeNull();
     expect(templateFromExample("https://example.com/?u=%E0%A4%A")).toBeNull();
   });
 });
 
-describe("known converters", () => {
-  it("recognizes a known site by host", () => {
-    expect(knownConverter("https://cobalt.tools/")?.name).toBe("cobalt");
-    expect(knownConverter("https://www.notube.lol/fr/youtube-app-445")?.name).toBe("NoTube");
-    expect(knownConverter("https://notube.lol.evil.com/")).toBeNull();
-    expect(knownConverter("not a url")).toBeNull();
+describe("converterTemplateFor", () => {
+  it("names no built-in site: only the user's own link", () => {
+    expect(Object.keys(converters).sort()).toEqual(["converterTemplateFor", "templateFromExample"]);
+    // A site's home page is saved as typed (no preset fills a template in).
+    expect(converterTemplateFor("https://converter.example/")).toEqual({ template: "https://converter.example/", recognized: null });
   });
 
   it("picks the template to save", () => {
-    expect(converterTemplateFor("https://cobalt.tools/")).toMatchObject({ template: "https://cobalt.tools/#{url}", recognized: "known" });
-    expect(converterTemplateFor("https://notube.lol/fr/youtube-app-445")).toMatchObject({ template: "https://notube.lol/fr/youtube-app-445", recognized: null });
-    expect(converterTemplateFor(`https://notube.lol/fr/go?v=${video}`)).toMatchObject({ template: "https://notube.lol/fr/go?v={url}", recognized: "example" });
-    expect(converterTemplateFor("https://cobalt.tools/#{url}")).toMatchObject({ template: "https://cobalt.tools/#{url}", recognized: null });
+    expect(converterTemplateFor(`https://converter.example/go?v=${video}`)).toEqual({ template: "https://converter.example/go?v={url}", recognized: "example" });
+    expect(converterTemplateFor("  https://converter.example/page  ")).toEqual({ template: "https://converter.example/page", recognized: null });
+  });
+
+  it("keeps a template saved before the presets were removed", () => {
+    // What a preset used to save is a plain {url} template: saved again, it stays the same.
+    expect(converterTemplateFor("https://converter.example/#{url}")).toEqual({ template: "https://converter.example/#{url}", recognized: null });
   });
 });
