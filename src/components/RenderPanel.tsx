@@ -62,7 +62,7 @@ export function RenderPanel() {
           <div key={path} className="flex items-center gap-2 px-2 py-1.5 text-xs">
             {job.status === "queued" && <Clock size={13} className="shrink-0 text-engrave" />}
             {job.status === "rendering" && (
-              <Loader2 size={13} className="shrink-0 animate-spin text-orange-400" />
+              <Loader2 size={13} className="shrink-0 motion-safe:animate-spin text-orange-400" />
             )}
             {job.status === "done" && (
               <CheckCircle2 size={13} className="shrink-0 text-emerald-400" />

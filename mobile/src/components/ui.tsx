@@ -1,11 +1,15 @@
 import type { ReactNode } from "react";
-import { Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
+import { Pressable, StyleSheet, Text, View, type Insets, type StyleProp, type ViewStyle } from "react-native";
 import { C, engrave, FONT, RADIUS } from "../theme";
 
-/** Status is a lit LED, never a tinted pill. */
-export function Led({ color, size = 8 }: { color: string; size?: number }) {
+/** Status is a lit LED, never a tinted pill. Pass `label` when no word sits
+ * next to it, so its meaning isn't colour alone. */
+export function Led({ color, size = 8, label }: { color: string; size?: number; label?: string }) {
   return (
     <View
+      accessible={label ? true : undefined}
+      accessibilityRole={label ? "image" : undefined}
+      accessibilityLabel={label}
       style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: color, shadowColor: color, shadowOpacity: 0.8, shadowRadius: 3, shadowOffset: { width: 0, height: 0 } }}
     />
   );
@@ -21,13 +25,16 @@ type ButtonProps = {
   variant?: "primary" | "secondary" | "quiet" | "danger";
   disabled?: boolean;
   style?: StyleProp<ViewStyle>;
+  /** Grow the touch area of a compact button to 48 dp without growing it. */
+  hitSlop?: Insets;
 };
 
 /** Orange only for the one main action per screen. */
-export function Button({ label, onPress, variant = "secondary", disabled, style }: ButtonProps) {
+export function Button({ label, onPress, variant = "secondary", disabled, style, hitSlop }: ButtonProps) {
   return (
     <Pressable
       accessibilityRole="button"
+      hitSlop={hitSlop}
       onPress={onPress}
       disabled={disabled}
       style={({ pressed }) => [

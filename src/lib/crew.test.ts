@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { CrewSongRow, ProjectInfo, Workspace } from "../types";
-import { stalledSongs } from "./crew";
-import { crewStats } from "./crewStats";
+import type { CrewMemberRow, CrewSongRow, Person, ProjectInfo, Workspace } from "../types";
+import { crewActivity, stalledSongs } from "./crew";
+import { crewStats, songsOfMember } from "./crewStats";
 import { lastSaveMs } from "./songs";
 
 const NOW = Date.UTC(2026, 9, 14, 12);
@@ -85,5 +85,51 @@ describe("crew stalled card", () => {
       ["Old unsorted", 25],
       ["Old", 40],
     ]);
+  });
+});
+
+describe("who's on what (no ranking, no activity times)", () => {
+  const member = (user_id: string, display_name: string) => ({ user_id, display_name }) as unknown as CrewMemberRow;
+  const shared = (id: string, owner_id: string, stage: CrewSongRow["stage"], savedDaysAgo: number) =>
+    ({
+      id,
+      title: id,
+      stage,
+      owner_id,
+      last_saved_at: new Date(NOW - savedDaysAgo * DAY).toISOString(),
+      stage_updated_at: new Date(NOW - savedDaysAgo * DAY).toISOString(),
+      stage_updated_by: owner_id,
+    }) as unknown as CrewSongRow;
+
+  it("lists members by name with counts only", () => {
+    const songs = [shared("s1", "u2", "creation", 1), shared("s2", "u2", "prep", 1), shared("s3", "u1", "production", 90), shared("s4", "u1", null, 90)];
+    const stats = crewStats(songs, [member("u2", "Zed"), member("u1", "Abe"), member("u3", "Mo")], NOW);
+    // By name, not by who saved last (Zed is the most recent).
+    expect(stats.members.map((m) => m.name)).toEqual(["Abe", "Mo", "Zed"]);
+    expect(stats.members[0]).toEqual({ userId: "u1", name: "Abe", songs: 2, making: 2, finished: 0 });
+    expect(stats.members[2]).toEqual({ userId: "u2", name: "Zed", songs: 2, making: 1, finished: 1 });
+    for (const m of stats.members) {
+      expect(m).not.toHaveProperty("lastActivityMs");
+      expect(m).not.toHaveProperty("recentMoves");
+    }
+  });
+
+  it("scopes the crew board to one member's songs", () => {
+    const songs = [shared("s1", "u2", "creation", 1), shared("s2", "u1", "prep", 1)];
+    expect(songsOfMember(songs, "u1").map((s) => s.id)).toEqual(["s2"]);
+    expect(songsOfMember(songs, "nobody")).toEqual([]);
+    expect(songsOfMember(songs, null)).toBe(songs);
+  });
+
+  it("lists the people in the workspace by name, without a last session", () => {
+    const people = [
+      { id: "p1", name: "Zed", aliases: [] },
+      { id: "p2", name: "Abe", aliases: [] },
+    ] as unknown as Person[];
+    const songs = [song("Recent", 1), song("Old", 300)].map((p) => ({ ...p, trackNames: [] }));
+    const workspace = { ...ws({}), people, songs: { "/p/Recent.flp": { credits: [{ personId: "p1", role: "" }] }, "/p/Old.flp": { credits: [{ personId: "p2", role: "" }] } } } as unknown as Workspace;
+    const out = crewActivity(people, songs, workspace);
+    expect(out.map((m) => m.person.name)).toEqual(["Abe", "Zed"]);
+    expect(out[0]).not.toHaveProperty("lastSessionMs");
   });
 });

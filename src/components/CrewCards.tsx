@@ -28,8 +28,8 @@ const T = dict(
     people: "People",
     addCrewBefore: "Add the crew in",
     addCrewAfter: "to see who's working on what. Names in mixer tracks are picked up automatically.",
-    active: (n: number) => `${n} active`,
-    noSessions: "no sessions",
+    active: (n: number, total: number) => `${total} song${total === 1 ? "" : "s"} · ${n} being made`,
+    openPerson: (name: string) => `Open ${name} in People`,
     byStage: "Their songs by stage",
   },
   {
@@ -51,8 +51,8 @@ const T = dict(
     people: "Personnes",
     addCrewBefore: "Ajoute le crew dans",
     addCrewAfter: "pour voir qui bosse sur quoi. Les noms dans les pistes du mixer sont repérés tout seuls.",
-    active: (n: number) => `${n} en cours`,
-    noSessions: "aucune session",
+    active: (n: number, total: number) => `${total} son${total > 1 ? "s" : ""} · ${n} en cours`,
+    openPerson: (name: string) => `Ouvrir ${name} dans Personnes`,
     byStage: "Ses sons par étape",
   },
 );
@@ -137,7 +137,7 @@ export function StalledCard({ songs }: { songs: ProjectInfo[] }) {
         <div className="flex flex-col gap-1">
           {stalled.slice(0, 5).map((s) => (
             <button key={s.song.path} onClick={() => openDetail(s.song.path)} className="flex items-center gap-2 rounded px-1 py-0.5 text-left text-xs hover:bg-panel">
-              <StatusDot color={statusInfo(s.status).color} size={6} />
+              <StatusDot color={statusInfo(s.status).color} size={6} label={statusInfo(s.status).label} />
               <span className="min-w-0 flex-1 truncate text-cream">{s.song.name}</span>
               <span className="shrink-0 tabular-nums text-engrave">{t.idleDays(s.idleDays)}</span>
             </button>
@@ -149,7 +149,8 @@ export function StalledCard({ songs }: { songs: ProjectInfo[] }) {
   );
 }
 
-/** Who's working on what (the people in the workspace, by their sessions). */
+/** Who's working on what: the people in the workspace and their songs by
+ * stage, by name. Each row opens the person. */
 export function CrewWhoCard({ songs }: { songs: ProjectInfo[] }) {
   const workspace = useAppStore((s) => s.workspace);
   const openPerson = useAppStore((s) => s.openPerson);
@@ -169,11 +170,11 @@ export function CrewWhoCard({ songs }: { songs: ProjectInfo[] }) {
       ) : (
         <div className="flex flex-col gap-1.5">
           {crew.slice(0, 5).map((m) => (
-            <button key={m.person.id} onClick={() => openPerson(m.person.id)} className="flex flex-col gap-1 rounded px-1 py-0.5 text-left hover:bg-panel">
+            <button key={m.person.id} onClick={() => openPerson(m.person.id)} title={t.openPerson(m.person.name)} className="flex flex-col gap-1 rounded px-1 py-0.5 text-left hover:bg-panel">
               <div className="flex items-center gap-2 text-xs">
                 <span className="min-w-0 flex-1 truncate text-cream">{m.person.name}</span>
                 <span className="shrink-0 text-body">
-                  {t.active(m.active)} · {m.lastSessionMs ? formatRelative(m.lastSessionMs) : t.noSessions}
+                  {t.active(m.active, m.songs.length)}
                 </span>
               </div>
               <div className="flex h-1.5 gap-px overflow-hidden rounded-full bg-raised" title={t.byStage}>
@@ -183,6 +184,11 @@ export function CrewWhoCard({ songs }: { songs: ProjectInfo[] }) {
               </div>
             </button>
           ))}
+          {crew.length > 5 && (
+            <button onClick={() => openPerson(null)} className="self-start px-1 text-[11px] text-engrave underline hover:text-cream">
+              {t.more(crew.length - 5)}
+            </button>
+          )}
         </div>
       )}
     </Card>

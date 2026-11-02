@@ -3,6 +3,7 @@ import type { ProjectInfo, Workspace } from "../types";
 import {
   addColumn,
   canRemoveColumn,
+  cardMoves,
   columnOf,
   defaultPipeline,
   filterSongs,
@@ -174,5 +175,40 @@ describe("pipeline model", () => {
     applyLang("fr");
     expect(resolvePipeline(w).columns.find((c) => c.id === "a")!.name).toBe("Création");
     applyLang("en");
+  });
+});
+
+describe("cardMoves", () => {
+  const groups = [
+    { column: { id: "a", name: "Ideas" }, items: [{ key: "1" }, { key: "2" }, { key: "3" }] },
+    { column: { id: "b", name: "Mix" }, items: [{ key: "4" }] },
+    { column: { id: "c", name: "Out" }, items: [] },
+  ];
+
+  it("offers up, down and every other column", () => {
+    expect(cardMoves(groups, "2")).toEqual([
+      { id: "up", kind: "up", columnId: "a", beforeKey: "1" },
+      { id: "down", kind: "down", columnId: "a", beforeKey: null },
+      { id: "column:b", kind: "column", columnId: "b", name: "Mix", beforeKey: null },
+      { id: "column:c", kind: "column", columnId: "c", name: "Out", beforeKey: null },
+    ]);
+  });
+
+  it("moves down before the card after the next one", () => {
+    expect(cardMoves(groups, "1").find((m) => m.kind === "down")?.beforeKey).toBe("3");
+  });
+
+  it("has no up for the first card, no down for the last, neither for a lone card", () => {
+    expect(cardMoves(groups, "1").some((m) => m.kind === "up")).toBe(false);
+    expect(cardMoves(groups, "3").some((m) => m.kind === "down")).toBe(false);
+    expect(cardMoves(groups, "4").map((m) => m.id)).toEqual(["column:a", "column:c"]);
+  });
+
+  it("offers only other columns while reordering is off", () => {
+    expect(cardMoves(groups, "2", false).map((m) => m.id)).toEqual(["column:b", "column:c"]);
+  });
+
+  it("knows nothing about a card that isn't on the board", () => {
+    expect(cardMoves(groups, "nope")).toEqual([]);
   });
 });

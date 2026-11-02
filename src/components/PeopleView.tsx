@@ -40,6 +40,7 @@ const T = dict(
     logHint: 'Log a send from any song\'s panel ("Sent to").',
     removePerson: "Remove person",
     confirmRemove: "Also removes their credits and send log. Click again",
+    personName: "Name",
   },
   {
     people: "Personnes",
@@ -69,6 +70,7 @@ const T = dict(
     logHint: "Note un envoi depuis le panneau de n'importe quel son (« Envoyé à »).",
     removePerson: "Supprimer la personne",
     confirmRemove: "Supprime aussi ses crédits et son historique d'envois. Clique encore",
+    personName: "Nom",
   },
 );
 
@@ -234,7 +236,8 @@ function PersonDetail({ person }: { person: Person }) {
           <input
             value={person.name}
             onChange={(e) => updatePerson(person.id, { name: e.target.value })}
-            className="min-w-0 flex-1 bg-transparent text-2xl font-semibold text-cream focus:outline-none"
+            aria-label={t.personName}
+            className="min-w-0 flex-1 rounded border border-transparent bg-transparent text-2xl font-semibold text-cream focus:border-hot focus:outline-none"
           />
         </div>
 

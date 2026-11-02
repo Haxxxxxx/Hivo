@@ -8,6 +8,7 @@ import { X } from "lucide-react";
 import { STATUSES, UNSORTED, statusInfo } from "../lib/songs";
 import type { SongStatus } from "../types";
 import { dict, tr } from "../i18n";
+import { confirmNext, CONFIRM_DISARM_MS, type ConfirmEvent, type ConfirmState } from "../lib/confirmArm";
 
 const T = dict(
   { remove: (tag: string) => `Remove ${tag}`, addTag: "Add tag…", close: "Close" },
@@ -56,10 +57,14 @@ export function StatusSelect({
   );
 }
 
-/** A lit LED. `glow={false}` for an unlit or dense one. */
-export function StatusDot({ color, size = 8, glow = true }: { color: string; size?: number; glow?: boolean }) {
+/** A lit LED. `glow={false}` for an unlit or dense one. Pass `label` when no
+ * word sits next to the dot, so its meaning isn't colour alone. */
+export function StatusDot({ color, size = 8, glow = true, label }: { color: string; size?: number; glow?: boolean; label?: string }) {
   return (
     <span
+      role={label ? "img" : undefined}
+      aria-label={label}
+      aria-hidden={label ? undefined : true}
       className="inline-block shrink-0 rounded-full"
       style={{ width: size, height: size, background: color, boxShadow: glow ? `0 0 ${size}px ${color}` : undefined }}
     />
@@ -202,7 +207,9 @@ export function Modal({
   );
 }
 
-/** Two-step button for anything destructive: first click arms, second acts. */
+/** Two-step button for anything destructive: first click arms, second acts.
+ * It disarms on its own after a few seconds, but never while it has focus,
+ * and the armed state is announced to screen readers. */
 export function ConfirmButton({
   label,
   confirmLabel,
@@ -216,20 +223,36 @@ export function ConfirmButton({
   className?: string;
   disabled?: boolean;
 }) {
-  const [armed, setArmed] = useState(false);
+  const [state, setState] = useState<ConfirmState>({ armed: false, focused: false });
+  const current = useRef(state);
+  const step = (event: ConfirmEvent) => {
+    const next = confirmNext(current.current, event);
+    current.current = next.state;
+    setState(next.state);
+    if (next.fire) onConfirm();
+  };
+  const { armed, focused } = state;
   useEffect(() => {
-    if (!armed) return;
-    const t = setTimeout(() => setArmed(false), 4000);
+    if (!armed || focused) return;
+    const t = setTimeout(() => step("timeout"), CONFIRM_DISARM_MS);
     return () => clearTimeout(t);
-  }, [armed]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [armed, focused]);
   return (
-    <button
-      disabled={disabled}
-      onClick={() => (armed ? (setArmed(false), onConfirm()) : setArmed(true))}
-      className={`${className} ${armed ? "!border-missing !bg-missing !font-bold !text-chassis" : ""}`}
-    >
-      {armed ? confirmLabel : label}
-    </button>
+    <>
+      <button
+        disabled={disabled}
+        onClick={() => step("click")}
+        onFocus={() => step("focus")}
+        onBlur={() => step("blur")}
+        className={`${className} ${armed ? "!border-missing !bg-missing !font-bold !text-chassis" : ""}`}
+      >
+        {armed ? confirmLabel : label}
+      </button>
+      <span role="status" className="sr-only">
+        {armed ? confirmLabel : ""}
+      </span>
+    </>
   );
 }
 

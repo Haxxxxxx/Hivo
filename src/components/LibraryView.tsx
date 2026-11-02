@@ -113,6 +113,9 @@ const T = dict(
     anotherFolder: "Another folder…",
     linkFolder: "Link a project folder",
     loadSample: "Load sample data",
+    clearSelection: "Clear the selection",
+    selectAll: "Select all shown songs",
+    selectSong: (name: string) => `Select ${name}`,
   },
   {
     colSong: "Son",
@@ -183,6 +186,9 @@ const T = dict(
     anotherFolder: "Un autre dossier…",
     linkFolder: "Lier un dossier de projets",
     loadSample: "Charger les données d'exemple",
+    clearSelection: "Vider la sélection",
+    selectAll: "Sélectionner tous les sons affichés",
+    selectSong: (name: string) => `Sélectionner ${name}`,
   },
 );
 
@@ -402,7 +408,7 @@ export function LibraryView() {
           className={btn}
           title={t.rescan}
         >
-          <RefreshCw size={14} className={scanning ? "animate-spin" : ""} />
+          <RefreshCw size={14} className={scanning ? "motion-safe:animate-spin" : ""} />
         </button>
         <Toggle active={favoritesOnly} onClick={() => setFavoritesOnly(!favoritesOnly)}>
           <Star size={14} /> {t.favorites}
@@ -528,7 +534,7 @@ export function LibraryView() {
             <Download size={14} />
             {rendering ? t.rendering : t.exportN(selectedPaths.length)}
           </button>
-          <button onClick={clearSelection} className="rounded p-1 text-engrave hover:text-cream">
+          <button onClick={clearSelection} aria-label={t.clearSelection} className="rounded p-1 text-engrave hover:text-cream">
             <X size={15} />
           </button>
         </div>
@@ -602,6 +608,9 @@ export function LibraryView() {
                 <th className="w-8 px-2 py-2">
                   <button
                     onClick={() => (allSelected ? clearSelection() : selectAll(filtered.map((p) => p.path)))}
+                    role="checkbox"
+                    aria-checked={allSelected}
+                    aria-label={t.selectAll}
                     className="flex text-engrave hover:text-body"
                   >
                     {allSelected ? <CheckSquare size={15} /> : <Square size={15} />}
@@ -641,7 +650,13 @@ export function LibraryView() {
                     }`}
                   >
                     <td className="rounded-l-md px-2 py-2" onClick={(e) => e.stopPropagation()}>
-                      <button onClick={() => toggleSelected(project.path)} className="flex text-engrave hover:text-body">
+                      <button
+                        onClick={() => toggleSelected(project.path)}
+                        role="checkbox"
+                        aria-checked={isSelected}
+                        aria-label={t.selectSong(songLabel(project, songs))}
+                        className="flex text-engrave hover:text-body"
+                      >
                         {isSelected ? <CheckSquare size={15} className="text-orange-400" /> : <Square size={15} />}
                       </button>
                     </td>
@@ -661,9 +676,17 @@ export function LibraryView() {
                             {dawOf(project).short}
                           </span>
                         )}
-                        <span className="truncate font-medium text-cream" title={project.path}>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openDetail(isOpen ? null : project.path);
+                          }}
+                          aria-expanded={isOpen}
+                          className="truncate rounded text-left font-medium text-cream hover:underline focus-visible:outline-2 focus-visible:outline-cream"
+                          title={project.path}
+                        >
                           {songLabel(project, songs)}
-                        </span>
+                        </button>
                         {hasProblems(project) && <ProblemIcon project={project} />}
                         {project.inCloud && (
                           <span title={t.inCloud} aria-label={t.inCloud} className="shrink-0 text-engrave">
@@ -671,7 +694,7 @@ export function LibraryView() {
                           </span>
                         )}
                         {project.isTemplate && (
-                          <span className="rounded bg-rule px-1.5 text-[10px]  text-engrave">{t.template}</span>
+                          <span className="rounded bg-rule px-1.5 text-[10.5px] text-body">{t.template}</span>
                         )}
                       </div>
                       {meta?.tags && meta.tags.length > 0 && (
@@ -691,7 +714,7 @@ export function LibraryView() {
                             {detectKey(project.trackNames)}?
                           </span>
                         ) : (
-                          <span className="text-engrave/50">—</span>
+                          <span className="text-engrave">—</span>
                         ))}
                     </td>
                     <td className="whitespace-nowrap px-2 py-2 font-mono text-[13px] text-body">{formatDate(lastSaveMs(project))}</td>
@@ -763,7 +786,11 @@ function FolderPane({ tree, selected, onSelect }: { tree: FolderNode[]; selected
           <button onClick={() => onSelect(on ? null : n.path)} className="flex min-w-0 flex-1 items-center gap-1.5 text-left" title={n.path}>
             <Folder size={12} className="shrink-0" aria-hidden />
             <span className="truncate">{n.name}</span>
-            {n.issues > 0 && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-missing" title={t.folderIssues(n.issues)} />}
+            {n.issues > 0 && (
+              <span className="flex shrink-0" title={t.folderIssues(n.issues)}>
+                <StatusDot color="#ff4040" size={6} glow={false} label={t.folderIssues(n.issues)} />
+              </span>
+            )}
             <span className={`ml-auto shrink-0 font-mono text-[10.5px] ${on ? "text-chassis/70" : "text-engrave"}`}>{n.count}</span>
           </button>
         </div>

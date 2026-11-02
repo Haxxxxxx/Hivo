@@ -122,7 +122,9 @@ export function SessionWindow() {
 
   useEffect(() => {
     const target = playing ? lineRef.current : sectionRefs.current[pos.section];
-    target?.scrollIntoView({ behavior: "smooth", block: playing ? "center" : "start" });
+    // Smooth only for those who don't ask the system for less motion.
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    target?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: playing ? "center" : "start" });
   }, [pos.section, pos.line, playing]);
 
   const resize = useCallback((step: number) => {
@@ -170,7 +172,7 @@ export function SessionWindow() {
       <header className="flex items-center gap-2 border-b border-rule bg-panel px-3 py-2">
         <div className="min-w-0 flex-1">
           <div className="truncate font-display text-lg uppercase leading-tight tracking-tight">{data.title}</div>
-          <div className={`${engrave} text-[9.5px]`}>
+          <div className={engrave}>
             {data.bpm ? t.bpm(data.bpm) : t.noBpm}
             {sections.length > 0 && ` · ${t.section(pos.section + 1, sections.length)}`}
           </div>

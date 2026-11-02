@@ -23,6 +23,7 @@ const T = dict(
     refused: (n: number) => `${n} path${n === 1 ? "" : "s"} refused (not audio, hidden or network)`,
     missing: (n: number) => `${n} sample${n === 1 ? "" : "s"} couldn't be found and aren't included`,
     howToOpen: "Open a package directly from FL (File → Open) — samples relink automatically.",
+    dismiss: "Close the packages panel",
   },
   {
     checkTitle: (songs: number) => `Vérifie ce qui part dans ${songs === 1 ? "le pack zip" : "les packs zip"}`,
@@ -45,6 +46,7 @@ const T = dict(
     missing: (n: number) =>
       n === 1 ? "1 sample introuvable, pas inclus" : `${n} samples introuvables, pas inclus`,
     howToOpen: "Ouvre un pack directement depuis FL (File → Open) — les samples se relient tout seuls.",
+    dismiss: "Fermer le panneau des packs",
   },
 );
 
@@ -160,7 +162,7 @@ export function PackagePanel() {
     <div className="absolute bottom-4 left-60 z-30 w-96 rounded-lg border border-rule bg-raised shadow-2xl">
       <div className="flex items-center justify-between border-b border-rule px-4 py-3">
         <div className="flex items-center gap-2 text-sm font-medium text-cream">
-          {packaging && <Loader2 size={14} className="animate-spin text-orange-400" />}
+          {packaging && <Loader2 size={14} className="motion-safe:animate-spin text-orange-400" />}
           {packaging ? t.packaging(results.length) : t.ready}
         </div>
         <div className="flex items-center gap-1">
@@ -173,7 +175,7 @@ export function PackagePanel() {
             </button>
           )}
           {!packaging && (
-            <button onClick={dismiss} className="rounded p-1 text-engrave hover:bg-rule hover:text-cream">
+            <button onClick={dismiss} aria-label={t.dismiss} className="rounded p-1 text-engrave hover:bg-rule hover:text-cream">
               <X size={14} />
             </button>
           )}
