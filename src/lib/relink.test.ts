@@ -94,6 +94,43 @@ describe("applyRelinks", () => {
     expect(out.songs["/p/Idea/BandLab"]).toBeUndefined();
     expect(out.albums[0].trackPaths).toEqual(["/p/Idea/Idea.flp"]);
   });
+
+  it("carries the Launch Kit's picked master along with the song's folder (r2 #5)", () => {
+    const out = applyRelinks(
+      ws({
+        "/old/Night Run/Night Run.flp": { launchKit: { master: "/old/Night Run/Night Run.wav", acceptedAtMs: 1, acceptedFingerprint: "abc" } },
+        "/old/B/B.flp": { launchKit: { master: "/exports/B.wav" } },
+      }),
+      [
+        { from: "/old/Night Run/Night Run.flp", to: "/new/Night Run/Night Run.flp", reason: "moved" },
+        { from: "/old/B/B.flp", to: "/new/B/B.flp", reason: "moved" },
+      ],
+    );
+    expect(out.songs["/new/Night Run/Night Run.flp"].launchKit).toEqual({ master: "/new/Night Run/Night Run.wav", acceptedAtMs: 1, acceptedFingerprint: "abc" });
+    expect(out.songs["/new/B/B.flp"].launchKit?.master).toBe("/exports/B.wav");
+  });
+
+  it("works with Windows separators and a re-pointed drive", () => {
+    const w = ws({ "D:\\Music\\Envy\\Envy.flp": { launchKit: { master: "D:\\Music\\Envy\\Mixdowns\\Envy.wav" } } });
+    const out = applyRelinks(w, rootRelinks(w, "D:\\Music", "E:\\Music"));
+    expect(out.songs["E:\\Music\\Envy\\Envy.flp"].launchKit?.master).toBe("E:\\Music\\Envy\\Mixdowns\\Envy.wav");
+  });
+
+  it("a rename in place keeps the master as it is", () => {
+    const out = applyRelinks(ws({ "/p/A/A.flp": { launchKit: { master: "/p/A/A.wav" } } }), [{ from: "/p/A/A.flp", to: "/p/A/A v2.flp", reason: "renamed" }]);
+    expect(out.songs["/p/A/A v2.flp"].launchKit?.master).toBe("/p/A/A.wav");
+  });
+
+  it("keeps the board's hand-sorted order (r2 #5)", () => {
+    const w: Workspace = {
+      ...ws({ "/p/A/A.flp": { status: "prep" }, "/p/B/B.flp": { status: "prep" } }),
+      pipeline: { columns: [{ id: "c1", name: "Prep", stage: "prep" }], order: { c1: ["/p/B/B.flp", "/p/A/A.flp"], c2: ["/p/C/C.flp"] } },
+    };
+    const out = applyRelinks(w, [{ from: "/p/A/A.flp", to: "/q/A/A.flp", reason: "moved" }]);
+    expect(out.pipeline?.order).toEqual({ c1: ["/p/B/B.flp", "/q/A/A.flp"], c2: ["/p/C/C.flp"] });
+    expect(out.pipeline?.columns).toBe(w.pipeline?.columns);
+    expect(applyRelinks(ws({ "/p/A/A.flp": {} }), [{ from: "/p/A/A.flp", to: "/q/A/A.flp", reason: "moved" }]).pipeline).toBeUndefined();
+  });
 });
 
 describe("rootRelinks", () => {

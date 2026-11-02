@@ -47,26 +47,37 @@ export function hashString(s: string): string {
 
 const masterKey = (m: FileEntry | undefined) => (m ? `${m.path}|${m.modifiedAtMs}` : "");
 
-/** What "Accept all" vouches for that lives outside the kit's edits (edits
- * clear the acceptance on their own): the master file, the credits and the
- * release the song is on (with its date). */
-export function acceptFingerprint(project: ProjectInfo, meta: SongMeta | undefined, albums: Album[]): string {
+/** The master as "Accept all" saw it: its file name and time, not its
+ * folder, so a song whose folder moved (a relink, a re-pointed linked
+ * folder) stays accepted. */
+const acceptedMasterKey = (m: FileEntry | undefined) => (m ? `${m.path.split(/[\\/]/).pop()}|${m.modifiedAtMs}` : "");
+
+function fingerprintOf(project: ProjectInfo, meta: SongMeta | undefined, albums: Album[], key: (m: FileEntry | undefined) => string): string {
   const release = releaseOf(albums, project.path);
   return hashString(
     JSON.stringify([
-      masterKey(kitMaster(project, meta)),
+      key(kitMaster(project, meta)),
       (meta?.credits ?? []).map((c) => [c.personId, c.role, c.split ?? null]),
       release ? [release.id, release.title, release.kind, release.releaseDate, release.trackPaths.indexOf(project.path)] : null,
     ]),
   );
 }
 
+/** What "Accept all" vouches for that lives outside the kit's edits (edits
+ * clear the acceptance on their own): the master file, the credits and the
+ * release the song is on (with its date). */
+export function acceptFingerprint(project: ProjectInfo, meta: SongMeta | undefined, albums: Album[]): string {
+  return fingerprintOf(project, meta, albums, acceptedMasterKey);
+}
+
 /** "Accepted", unless the master, credits or release changed since. Kits
- * accepted before the fingerprint existed stay accepted. */
+ * accepted before the fingerprint existed stay accepted, and so do kits
+ * accepted with the older full-path fingerprint. */
 export function isKitAccepted(project: ProjectInfo, meta: SongMeta | undefined, albums: Album[]): boolean {
   const kit = meta?.launchKit;
   if (!kit?.acceptedAtMs) return false;
-  return !kit.acceptedFingerprint || kit.acceptedFingerprint === acceptFingerprint(project, meta, albums);
+  if (!kit.acceptedFingerprint || kit.acceptedFingerprint === acceptFingerprint(project, meta, albums)) return true;
+  return kit.acceptedFingerprint === fingerprintOf(project, meta, albums, masterKey);
 }
 
 /** What an export wrote: every value, the master file (path + time) and the
