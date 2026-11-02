@@ -13,6 +13,17 @@
 - `Wordmark` uses `cardMode: column` (its Sizes story is wider than a grid cell: `[GRID_OVERFLOW]`).
 - Previews for `LogoMark`, `Wordmark` and `SourceBadge` were authored in the Hivo/System 02 re-sync (2026-10-13); every card was re-graded or spot-checked against System 02 then.
 
+## Re-sync without the converter (2026-11-02)
+
+The design system is now the claude.ai artifact named in CLAUDE.md, and a small change can be synced file by file with the Artifact tool:
+
+1. `npm run build && node scripts/design-lib.mjs`, then `npx vite build --config scripts/design-bundle.config.mjs`.
+2. `components/bundle.js` = the artifact's first line (`/* @ds-bundle: … */`) + `.design-sync/lib/bundle-out/bundle.js`; `components/bundle.css` = `.design-sync/lib/styles.css` with `url(./<font>)` rewritten to `url(../fonts/<font>)`. The fonts only need re-uploading when their hashed names change.
+3. Update the changed components' `README.md` / `.d.ts`, `components/index.d.ts`, the README's "Synced from" line and `tokens.json` `meta`; never `tokens.css` unless a token changed.
+4. Publish only the changed `project/` files, with `project/design-system.json` (its `lastChange`) in the same, last call.
+
+The previews (`preview.html`) embed their own compiled stories and still come from the converter; they keep working with a new bundle as long as the exports keep their names.
+
 ## Known render warns
 
 - None (as of the 2026-10-13 re-sync).
