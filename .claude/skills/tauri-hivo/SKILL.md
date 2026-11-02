@@ -84,6 +84,7 @@ Use the generic `tauri-v2` skill for the framework; this is what's decided here.
 - `MAX_LEAD_SLUG` in `src/lib/digger.ts` ↔ `leads.rs`.
 - `MAX_CONVERTER_CHARS` in `src/components/SettingsView.tsx` ↔ `settings.rs`.
 - `MAX_CHANGES` in `src/lib/phoneSync.ts` and `MAX_NOTE_CHARS` in `src/lib/notes.ts` ↔ `phone_sync.rs`.
+- Phone protocol 1.2: `PROTOCOL`, the answer AAD (`resp_aad`) and `PAIR_INFO_PREFIX` / `derive_device_key` in `phone_sync.rs` ↔ `mobile/src/lib/envelope.ts` / `handshake.ts`; both test the same key-derivation vector (docs/PHONE-SYNC.md, v1.2).
 
 ## Dev and build
 - `npm run tauri dev` watches `src-tauri/`; a branch switch rebuilds and restarts
