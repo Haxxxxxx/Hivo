@@ -66,6 +66,43 @@ that):
 The privacy policy says the same (`web/src/privacyCopy.ts`, kept true when what
 the app sends changes).
 
+**Data safety and background recording:** recording with the screen off
+changes nothing above. The audio is still written only to the phone, and it
+goes only to the paired computer over the local Wi-Fi (end-to-end encrypted,
+no Hivo server), so the microphone stays undeclared.
+
+### Foreground service (Policy → App content → Foreground service permissions)
+
+Since 0.7.0 the app declares `FOREGROUND_SERVICE` and
+`FOREGROUND_SERVICE_MICROPHONE` (plus `POST_NOTIFICATIONS`): a voice memo
+keeps recording with the screen off or in another app. The service is
+expo-audio's `AudioRecordingService` (`enableBackgroundRecording` in
+`mobile/app.json`). It is the **only** foreground service type in the app:
+`enableBackgroundPlayback` is off, so there's no `mediaPlayback` to declare.
+Play asks for this declaration before it accepts the first bundle that has the
+permission:
+
+| Field | Answer |
+|---|---|
+| Foreground service type | **Microphone** |
+| Use case / task | **User-started voice memo recording.** The user taps Record on the Voice memo screen; the service runs only while that take records and stops on Stop, at the 15-minute cap, on a call, or from the notification's Stop button. An ongoing notification ("Hivo is recording · Tap to return", with Stop) shows the whole time. |
+| Impact if the task is deferred or interrupted | The user's take (a flow, a melody) would be cut when the screen turns off or they switch apps. It can't be resumed later: it's a live recording. |
+| Video | A link to a short screen recording (unlisted YouTube or Drive), filmed as below. |
+
+**Video to film** (about 30 seconds, on a phone with the release build):
+1. Open Hivo → Inbox → Record. On the first take, show the short rationale
+   and Android's notification prompt, tap Allow.
+2. Tap Record; the clock runs.
+3. Press the power button (screen off), wait a few seconds, turn it back on:
+   the ongoing "Hivo is recording" notification is on the shade.
+4. Go to the home screen, open the notification shade, show the
+   notification, tap it: back in Hivo, the clock has kept running.
+5. Tap Stop: the notification disappears; play the take back.
+
+If the user denies notifications, the app doesn't start the service: it
+records with the screen kept on and stops (keeping the take) when it leaves
+the screen, and the Record screen says so.
+
 ## 3. Store listing (once; Grow → Store presence → Main store listing)
 
 - **App name:** Hivo
@@ -109,3 +146,6 @@ website shows the Google Play button, and deploy the website.
   Data safety (only the ML Kit diagnostics above are declared), but Play asks about the microphone permission's use:
   answer "voice memos the user records, kept on the device and sent to the
   user's own computer".
+- The **foreground service** (microphone) for recording with the screen off:
+  fill the declaration in section 2 before uploading the first bundle that
+  has it, or Play rejects the upload.

@@ -139,7 +139,9 @@
         "expo-audio",
         {
           "microphonePermission": "Hivo uses the microphone to record voice memos (a flow, a melody) that you send to the Hivo app on your computer.",
-          "recordAudioAndroid": true
+          "recordAudioAndroid": true,
+          "enableBackgroundRecording": true,
+          "enableBackgroundPlayback": false
         }
       ],
       "expo-secure-store",

@@ -119,3 +119,12 @@ describe("withReleaseSigning", () => {
     expect(() => applyReleaseSigning("android { }")).toThrow(/signingConfigs/);
   });
 });
+
+describe("expo-audio config", () => {
+  const audio = appJson.expo.plugins.find((p) => Array.isArray(p) && p[0] === "expo-audio")[1];
+  it("records in a microphone foreground service, and declares no other service type", () => {
+    // docs/PLAY-CONSOLE.md declares only the microphone type to Play.
+    expect(audio.enableBackgroundRecording).toBe(true);
+    expect(audio.enableBackgroundPlayback).toBe(false);
+  });
+});
