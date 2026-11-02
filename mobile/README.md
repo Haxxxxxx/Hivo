@@ -83,18 +83,21 @@ keystore when these environment variables are set at Gradle time:
 | `HIVO_UPLOAD_KEY_ALIAS` | key alias |
 | `HIVO_UPLOAD_KEY_PASSWORD` | key password (the same as the store password; defaults to it) |
 
-Without them, `release` is signed with the debug keystore
+With `HIVO_UNSIGNED=1` instead, `release` comes out unsigned (the release
+workflow builds that way and signs in a later step that never runs Gradle).
+With neither, `release` is signed with the debug keystore
 (`android/app/debug.keystore`, created by prebuild): fine for test builds you
 sideload, never for the crew, because Android refuses to update an app signed
-with a different key. Gradle reads the variables when it runs, so no path or
-password lands in the generated files.
+with a different key. On CI (`CI` set) that case fails the build instead.
+Gradle reads the variables when it runs, so no path or password lands in the
+generated files.
 
 ```sh
 export HIVO_UPLOAD_STORE_FILE=/path/outside/the/repo/upload.jks
 export HIVO_UPLOAD_STORE_PASSWORD=…  HIVO_UPLOAD_KEY_PASSWORD=…  HIVO_UPLOAD_KEY_ALIAS=…
 cd android
-./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a --no-daemon  # website APK
-HIVO_DISTRIBUTION=play ./gradlew bundleRelease --no-daemon                   # Play AAB
+HIVO_DISTRIBUTION=direct ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a --no-daemon  # website APK
+HIVO_DISTRIBUTION=play ./gradlew bundleRelease --no-daemon                                           # Play AAB
 ```
 
 **Version:** `version` in `app.json` (same as the desktop since 0.6.0);
@@ -107,11 +110,13 @@ on the same tag as the desktop: the APK goes to the public `releases` bucket
 `mobile-latest.json`; the AAB is attached to the draft GitHub Release and
 uploaded to Google Play by hand. See the `release` skill.
 
-**Updates:** website builds (`extra.distribution = "direct"`) read
+**Updates:** website builds (`HIVO_DISTRIBUTION=direct` when Gradle runs,
+`extra.distribution = "direct"`) read
 `mobile-latest.json` at launch, at most once a day (`src/update.ts`, rules in
 `src/lib/update.ts`), and show a banner with Download / Later when it's newer.
 Play builds (`HIVO_DISTRIBUTION=play` when Gradle runs) never check: Play
-updates them.
+updates them. Neither does a build without the flag (`dev`): the check fails
+closed.
 
 Android allows plain HTTP to the computer through
 `expo-build-properties` → `usesCleartextTraffic` (the bodies are encrypted
