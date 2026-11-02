@@ -98,7 +98,7 @@ fn render_one(
     let raw_samples = crate::daws::read_project(crate::daws::Daw::FlStudio, src).map(|m| m.samples).unwrap_or_default();
     let project_dir = src.parent().unwrap_or(Path::new("."));
     let located = resolver.locate_all(&raw_samples, src);
-    let staged = stage_samples(project_dir, &temp_dir, &located, file_name);
+    let staged = stage_samples(project_dir, &temp_dir, &located, file_name, resolver.mapped_roots());
     let staged_flp = staged.dir.join(file_name);
     if let Err(e) = fs::create_dir_all(&staged.dir).and_then(|_| fs::copy(src, &staged_flp)) {
         cleanup(&temp_dir);
@@ -198,11 +198,18 @@ fn stage_file(from: &Path, to: &Path) -> bool {
 ///   file next to the staged .flp under its stored name, where FL looks for
 ///   a sample it can't find at its path.
 ///
-/// `located` is `Resolver::locate_all`'s answer for each stored sample.
+/// `located` is `Resolver::locate_all`'s answer for each stored sample;
+/// `mapped_roots` is `Resolver::mapped_roots` (see `package::refuse_reason`).
 /// Files are hard-linked when the volume allows it, else copied; nothing
 /// outside `temp_root` is written. Samples found where the project says
 /// (absolute, `%FLStudio…%`) need nothing.
-fn stage_samples(project_dir: &Path, temp_root: &Path, located: &[(String, SampleStatus, Option<PathBuf>)], flp_name: &std::ffi::OsStr) -> Staged {
+fn stage_samples(
+    project_dir: &Path,
+    temp_root: &Path,
+    located: &[(String, SampleStatus, Option<PathBuf>)],
+    flp_name: &std::ffi::OsStr,
+    mapped_roots: &[String],
+) -> Staged {
     let mut missing = Vec::new();
     // (stored path, where it was found)
     let mut moved: Vec<(&str, &Path)> = Vec::new();
@@ -264,7 +271,7 @@ fn stage_samples(project_dir: &Path, temp_root: &Path, located: &[(String, Sampl
             // Never over the staged project, never two files under one name
             // (FL would take the first for both), never a refused file
             // (hidden, not audio, a link to something else).
-            name != flp_name && taken.insert(name) && crate::package::refuse_reason(from).is_none() && !to.exists() && stage_file(from, &to)
+            name != flp_name && taken.insert(name) && crate::package::refuse_reason(from, mapped_roots).is_none() && !to.exists() && stage_file(from, &to)
         });
         if ok {
             staged_moved += 1;
@@ -329,8 +336,9 @@ pub async fn render_projects(
     // libraries, this computer's FL folders), so they're staged too.
     let (fl, user_data) = crate::settings::fl_paths(&app);
     let sample_folders = scope.sample_folders().to_vec();
+    let mapped_roots = scope.mapped_roots(user_data.as_deref());
     tauri::async_runtime::spawn_blocking(move || {
-        let mut resolver = crate::resolve::Resolver::new(fl).with_user_data(user_data).with_sample_folders(&sample_folders);
+        let mut resolver = crate::resolve::Resolver::new(fl).with_user_data(user_data).with_sample_folders(&sample_folders).with_mapped_roots(mapped_roots);
         render_all(&app, project_paths, output_folder, &fl_studio_path, &format, output_names, &mut resolver)
     })
     .await
@@ -433,7 +441,7 @@ mod tests {
             "%FLStudioUserData%/Audio/x.wav".to_string(),
         ];
         let located = crate::resolve::Resolver::new(None).locate_all(&raw, &project.join("Envy.flp"));
-        let staged = stage_samples(&project, &temp, &located, std::ffi::OsStr::new("Envy.flp"));
+        let staged = stage_samples(&project, &temp, &located, std::ffi::OsStr::new("Envy.flp"), &[]);
         // One level up is needed, so the copy sits one folder deep.
         assert_eq!(staged.dir, temp.join("p0"));
         assert_eq!(fs::read(staged.dir.join("Audio").join("take.wav")).unwrap(), b"take");
@@ -476,7 +484,7 @@ mod tests {
         ];
         let mut resolver = crate::resolve::Resolver::new(None).with_sample_folders(&[root.join("Packs")]);
         let located = resolver.locate_all(&raw, &project.join("Envy.flp"));
-        let staged = stage_samples(&project, &temp, &located, std::ffi::OsStr::new("Envy.flp"));
+        let staged = stage_samples(&project, &temp, &located, std::ffi::OsStr::new("Envy.flp"), &[]);
         let _cleanup = scopeguard(&root);
         assert_eq!(staged.dir, temp);
         assert_eq!(staged.moved, 2);

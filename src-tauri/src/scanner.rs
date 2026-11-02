@@ -2,7 +2,7 @@ use crate::error::app_err;
 use crate::daws::{self, Daw};
 use crate::flp_metadata::FlpMetadata;
 use crate::models::{FileEntry, ProjectInfo, SampleInfo, ScanResult, StemsInfo};
-use crate::resolve::{fold, Resolver};
+use crate::resolve::{fold, Probe, Resolver};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -358,11 +358,44 @@ fn now_ms() -> i64 {
 }
 
 /// Resolved samples, per project: (project stamp, resolver context, song
-/// folder fingerprint, the samples). Reused while none of them changes; a
-/// sample deleted or restored elsewhere on disk shows at the latest when the
-/// sample-library index is rebuilt (`LIBRARY_TTL` in resolve.rs).
-type SamplesEntry = (daws::Stamp, u64, u64, Vec<SampleInfo>);
+/// folder fingerprint, the samples, the existence checks they rest on).
+/// Reused while none of them changes: the checks are made again on every
+/// scan (metadata only, see `ProbeCheck`), so a sample deleted or restored
+/// outside the song folder shows on the next scan. A sample added to a
+/// library at a new path still waits for the index to be rebuilt
+/// (`LIBRARY_TTL` in resolve.rs).
+type SamplesEntry = (daws::Stamp, u64, u64, Vec<SampleInfo>, Vec<Probe>);
 static RESOLVED_SAMPLES: std::sync::Mutex<Option<HashMap<PathBuf, SamplesEntry>>> = std::sync::Mutex::new(None);
+
+/// Re-checks a cached resolution's probes on this scan. A path in a folder
+/// the walk just listed is answered from the listing when it's there; any
+/// other answer (outside the linked folders, or not listed under that exact
+/// spelling) is a stat. Each path is checked once per scan.
+struct ProbeCheck<'a> {
+    listing: &'a Listing,
+    /// Every listed file, by its path as spelled (built on first use).
+    listed: Option<HashSet<&'a std::ffi::OsStr>>,
+    stats: HashMap<(std::ffi::OsString, bool), bool>,
+}
+
+impl<'a> ProbeCheck<'a> {
+    fn new(listing: &'a Listing) -> Self {
+        Self { listing, listed: None, stats: HashMap::new() }
+    }
+
+    fn now(&mut self, probe: &Probe) -> bool {
+        let listing = self.listing;
+        // Listed files are regular files (or links to one): a hit either way.
+        if self.listed.get_or_insert_with(|| listing.dirs.values().flat_map(|d| d.files.iter().map(|f| f.as_os_str())).collect()).contains(probe.path.as_os_str()) {
+            return true;
+        }
+        *self.stats.entry((probe.path.as_os_str().to_os_string(), probe.file)).or_insert_with(|| if probe.file { probe.path.is_file() } else { probe.path.exists() })
+    }
+
+    fn hold(&mut self, probes: &[Probe]) -> bool {
+        probes.iter().all(|p| self.now(p) == p.hit)
+    }
+}
 
 /// A fingerprint of the file names in a song folder (what the moved-sample
 /// lookup searches).
@@ -544,6 +577,7 @@ fn scan_with(folders: &[String], output_folder: Option<&str>, mut resolver: Reso
     }
 
     let context = resolver.context_key();
+    let mut probe_check = ProbeCheck::new(&listing);
     let mut fingerprints: HashMap<PathBuf, u64> = HashMap::new();
     let mut projects: Vec<ProjectInfo> = Vec::with_capacity(found.len());
     for (f, (flp, read_error, in_cloud)) in found.into_iter().zip(reads) {
@@ -555,7 +589,11 @@ fn scan_with(folders: &[String], output_folder: Option<&str>, mut resolver: Reso
             let fingerprint = *fingerprints.entry(folder.clone()).or_insert_with(|| folder_fingerprint(&listing.song_folder_files(&folder)));
             let cached = f.stamp.and_then(|stamp| {
                 let cache = RESOLVED_SAMPLES.lock().unwrap_or_else(|e| e.into_inner());
-                cache.as_ref()?.get(&f.path).filter(|(s, c, fp, _)| *s == stamp && *c == context && *fp == fingerprint).map(|e| e.3.clone())
+                cache
+                    .as_ref()?
+                    .get(&f.path)
+                    .filter(|(s, c, fp, _, probes)| *s == stamp && *c == context && *fp == fingerprint && probe_check.hold(probes))
+                    .map(|e| e.3.clone())
             });
             cached.unwrap_or_else(|| {
                 resolver.prime_song_folder(&folder, || {
@@ -567,10 +605,10 @@ fn scan_with(folders: &[String], output_folder: Option<&str>, mut resolver: Reso
                     }
                     names
                 });
-                let samples = resolver.samples(&flp.samples, &f.path);
+                let (samples, probes) = resolver.samples_traced(&flp.samples, &f.path);
                 if let Some(stamp) = f.stamp {
                     let mut cache = RESOLVED_SAMPLES.lock().unwrap_or_else(|e| e.into_inner());
-                    cache.get_or_insert_with(HashMap::new).insert(f.path.clone(), (stamp, context, fingerprint, samples.clone()));
+                    cache.get_or_insert_with(HashMap::new).insert(f.path.clone(), (stamp, context, fingerprint, samples.clone(), probes));
                 }
                 samples
             })
@@ -1271,6 +1309,61 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn samples_deleted_or_restored_elsewhere_show_on_the_next_scan() {
+        let (root, w) = fixture("samples-elsewhere");
+        let song = root.join("Projects").join("Envy");
+        fs::create_dir_all(&song).unwrap();
+        let packs = root.join("Packs");
+        w("Packs/Drums/Snare.wav");
+        w("Elsewhere/Kick.wav");
+        let kick = root.join("Elsewhere").join("Kick.wav");
+        let snare = packs.join("Drums").join("Snare.wav");
+        let mut events = Vec::new();
+        // Kick: an absolute path outside the linked folder. Snare: saved on
+        // another computer, found by name in the sample library.
+        for p in [kick.to_string_lossy().to_string(), r"C:\gone\Snare.wav".to_string()] {
+            assert!(p.len() < 0x80, "temp path too long for a one-byte size: {p}");
+            events.push(196u8);
+            events.push(p.len() as u8);
+            events.extend_from_slice(p.as_bytes());
+        }
+        let mut flp = b"FLhd\x06\0\0\0\0\0\x04\0\x60\0FLdt".to_vec();
+        flp.extend_from_slice(&(events.len() as u32).to_le_bytes());
+        flp.extend_from_slice(&events);
+        fs::write(song.join("Envy.flp"), &flp).unwrap();
+        let folders = [root.join("Projects").to_string_lossy().to_string()];
+        let statuses = || -> Vec<SampleStatus> {
+            let resolver = Resolver::new(None).with_sample_folders(std::slice::from_ref(&packs));
+            scan_with(&folders, None, resolver).projects[0].samples.iter().map(|s| s.status).collect()
+        };
+        assert_eq!(statuses(), vec![SampleStatus::Ok, SampleStatus::Relocated]);
+        assert_eq!(statuses(), vec![SampleStatus::Ok, SampleStatus::Relocated], "from the cache");
+        fs::remove_file(&kick).unwrap();
+        fs::remove_file(&snare).unwrap();
+        assert_eq!(statuses(), vec![SampleStatus::Missing, SampleStatus::Missing], "deleted outside the song folder");
+        w("Elsewhere/Kick.wav");
+        w("Packs/Drums/Snare.wav");
+        assert_eq!(statuses(), vec![SampleStatus::Ok, SampleStatus::Relocated], "restored where they were");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn probes_are_answered_from_the_listing_or_a_stat() {
+        let (root, w) = fixture("probe-check");
+        w("Song/kick.wav");
+        w("Outside/snare.wav");
+        let (listing, ..) = walk(&[root.join("Song").to_string_lossy().to_string()]);
+        let mut check = ProbeCheck::new(&listing);
+        let probe = |rel: &str, file: bool, hit: bool| Probe { path: root.join(rel), file, hit };
+        assert!(check.hold(&[probe("Song/kick.wav", false, true), probe("Outside/snare.wav", true, true), probe("Outside/gone.wav", false, false)]));
+        assert!(!check.hold(&[probe("Song/gone.wav", false, true)]));
+        // A folder is there but isn't a file: a library hit must be a file.
+        assert!(!check.hold(&[probe("Outside", true, true)]));
+        assert!(check.hold(&[probe("Outside", false, true)]));
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// `FLSM_BENCH=2000 cargo test bench_flat_folder -- --nocapture`: a flat
     /// folder of N projects, each with a mixdown and two split-mixer stems.
     #[test]
@@ -1343,6 +1436,45 @@ mod tests {
             assert_eq!(projects.len(), n);
             assert!(projects.iter().all(|p| p.renders.len() == 1 && p.backups.len() == 1 && p.recordings_count == 1 && p.stems.is_some()));
             assert!(projects.iter().all(|p| p.samples.len() == 20 && p.samples.iter().all(|s| s.status == SampleStatus::Relocated)));
+        }
+    }
+
+    /// `FLSM_BENCH_SAMPLES=2000 cargo test bench_found_samples -- --nocapture`:
+    /// N song folders whose 20 samples are stored as absolute paths that
+    /// exist (each one different), the case a second scan re-checks most.
+    #[test]
+    fn bench_found_samples() {
+        let Some(n) = std::env::var("FLSM_BENCH_SAMPLES").ok().and_then(|v| v.parse::<usize>().ok()) else { return };
+        let root = std::env::temp_dir().join(format!("flsm-bench-samples-{n}"));
+        if !root.join("done").exists() {
+            let _ = fs::remove_dir_all(&root);
+            for i in 0..n {
+                let d = root.join("Songs").join(format!("Song {i}"));
+                fs::create_dir_all(d.join("Samples")).unwrap();
+                let mut events = Vec::new();
+                for s in 0..20 {
+                    let file = d.join("Samples").join(format!("s{s}.wav"));
+                    fs::write(&file, b"x").unwrap();
+                    let p = file.to_string_lossy().to_string();
+                    assert!(p.len() < 0x80, "temp path too long for a one-byte size: {p}");
+                    events.push(196u8);
+                    events.push(p.len() as u8);
+                    events.extend_from_slice(p.as_bytes());
+                }
+                let mut flp = b"FLhd\x06\0\0\0\0\0\x04\0\x60\0FLdt".to_vec();
+                flp.extend_from_slice(&(events.len() as u32).to_le_bytes());
+                flp.extend_from_slice(&events);
+                fs::write(d.join(format!("Song {i}.flp")), &flp).unwrap();
+            }
+            fs::write(root.join("done"), b"").unwrap();
+        }
+        let folders = [root.join("Songs").to_string_lossy().to_string()];
+        for run in ["first", "second"] {
+            let t = std::time::Instant::now();
+            let projects = scan(&folders, None);
+            println!("bench {n} songs x 20 found samples, {run} scan: {:?}", t.elapsed());
+            assert_eq!(projects.len(), n);
+            assert!(projects.iter().all(|p| p.samples.len() == 20 && p.samples.iter().all(|s| s.status == SampleStatus::Ok)));
         }
     }
 

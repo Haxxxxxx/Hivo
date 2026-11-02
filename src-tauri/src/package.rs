@@ -51,29 +51,61 @@ pub struct PackagePlan {
     pub error: Option<String>,
 }
 
-/// Why a path the project names can't go in a package, if it can't. Checked
-/// on the path as found and on its real location (a `kick.wav` symlink to a
-/// key file is refused for what it points at).
-pub(crate) fn refuse_reason(path: &Path) -> Option<&'static str> {
-    fn check(p: &Path) -> Option<&'static str> {
-        if is_remote_or_device(&p.to_string_lossy()) {
-            return Some("network or device path");
-        }
-        if p.components().any(|c| matches!(c, Component::ParentDir)) {
-            return Some("path climbs out of its folder");
-        }
-        if p.components().any(|c| matches!(c, Component::Normal(n) if n.to_string_lossy().starts_with('.'))) {
-            return Some("hidden file or folder");
-        }
-        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if !SAMPLE_EXTS.iter().any(|x| ext.eq_ignore_ascii_case(x)) {
-            return Some("not an audio or sample file");
-        }
-        None
+/// The shape checks shared by both spellings of a path: no hidden file or
+/// folder on the way, a sample's extension.
+fn shape_reason<'a>(mut names: impl Iterator<Item = &'a str>, file_name: &str) -> Option<&'static str> {
+    if names.any(|n| n.starts_with('.')) {
+        return Some("hidden file or folder");
     }
-    // Re-check where the path really leads. On Windows `canonicalize` gives
-    // `\\?\C:\…`, which would read as a device path and refuse every sample.
-    check(path).or_else(|| fs::canonicalize(path).ok().and_then(|real| check(&crate::paths::plain(real))))
+    let ext = file_name.rsplit_once('.').map_or("", |(_, e)| e);
+    if !SAMPLE_EXTS.iter().any(|x| ext.eq_ignore_ascii_case(x)) {
+        return Some("not an audio or sample file");
+    }
+    None
+}
+
+fn check(p: &Path) -> Option<&'static str> {
+    if is_remote_or_device(&p.to_string_lossy()) {
+        return Some("network or device path");
+    }
+    if p.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Some("path climbs out of its folder");
+    }
+    let names: Vec<String> = p.components().filter_map(|c| match c {
+        Component::Normal(n) => Some(n.to_string_lossy().into_owned()),
+        _ => None,
+    }).collect();
+    let file_name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    shape_reason(names.iter().map(String::as_str), &file_name)
+}
+
+/// The decision on a sample's real location (`canonicalize`'s answer, with
+/// `\\?\C:\` already made plain). A network path is refused unless it's
+/// inside one of `mapped_roots`: a linked folder on a mapped drive, whose
+/// files Windows resolves to `\\?\UNC\server\share\…` (see
+/// `paths::unc_inside`). Pure text, so it's tested on every platform.
+pub(crate) fn real_reason(real: &str, mapped_roots: &[String]) -> Option<&'static str> {
+    if !is_remote_or_device(real) {
+        return check(Path::new(real));
+    }
+    if !crate::paths::unc_inside(real, mapped_roots) {
+        return Some("network or device path");
+    }
+    let key = crate::paths::windows_key(real).unwrap_or_default();
+    // Server and share aren't the user's names; what follows them is.
+    let names: Vec<&str> = key.trim_start_matches('\\').split('\\').skip(2).collect();
+    shape_reason(names.iter().copied(), names.last().copied().unwrap_or(""))
+}
+
+/// Why a path the project names can't go in a package (or a render's
+/// staging folder), if it can't. Checked on the path as found and on its
+/// real location (a `kick.wav` symlink to a key file is refused for what it
+/// points at). `mapped_roots` is `Scope::mapped_roots`, carried by the
+/// resolver.
+pub(crate) fn refuse_reason(path: &Path, mapped_roots: &[String]) -> Option<&'static str> {
+    // On Windows `canonicalize` gives `\\?\C:\…` (made plain, or it would
+    // read as a device path) and `\\?\UNC\…` for a mapped drive.
+    check(path).or_else(|| fs::canonicalize(path).ok().and_then(|real| real_reason(&crate::paths::plain(real).to_string_lossy(), mapped_roots)))
 }
 
 /// The package contents for one project: every sample that is found, is a
@@ -85,7 +117,7 @@ fn plan_one(resolver: &mut Resolver, project: &Path) -> Result<PackagePlan, Stri
     let mut refused = Vec::new();
     for path in found {
         let shown = path.to_string_lossy().to_string();
-        if let Some(reason) = refuse_reason(&path) {
+        if let Some(reason) = refuse_reason(&path, resolver.mapped_roots()) {
             refused.push(RefusedFile { path: shown, reason: reason.to_string() });
             continue;
         }
@@ -107,8 +139,9 @@ pub async fn package_preview(app: AppHandle, project_paths: Vec<String>) -> Resu
     let scope = crate::scope::Scope::load(&app)?;
     let (fl, user_data) = crate::settings::fl_paths(&app);
     let sample_folders = scope.sample_folders().to_vec();
+    let mapped_roots = scope.mapped_roots(user_data.as_deref());
     tauri::async_runtime::spawn_blocking(move || {
-        let mut resolver = Resolver::new(fl).with_user_data(user_data).with_sample_folders(&sample_folders);
+        let mut resolver = Resolver::new(fl).with_user_data(user_data).with_sample_folders(&sample_folders).with_mapped_roots(mapped_roots);
         project_paths
             .iter()
             .map(|p| {
@@ -246,8 +279,9 @@ pub async fn package_projects(
     }
     let (fl, user_data) = crate::settings::fl_paths(&app);
     let sample_folders = scope.sample_folders().to_vec();
+    let mapped_roots = scope.mapped_roots(user_data.as_deref());
     tauri::async_runtime::spawn_blocking(move || {
-        let mut resolver = Resolver::new(fl).with_user_data(user_data).with_sample_folders(&sample_folders);
+        let mut resolver = Resolver::new(fl).with_user_data(user_data).with_sample_folders(&sample_folders).with_mapped_roots(mapped_roots);
         let results: Vec<PackageResult> = project_paths
             .iter()
             .enumerate()
@@ -362,6 +396,28 @@ mod tests {
         let again = package_one(&mut resolver, &project, &out, &all).unwrap();
         assert!(again.zip_path.unwrap().ends_with("Envy (1).zip"));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn samples_on_a_mapped_drive_are_packaged_only_inside_linked_folders() {
+        let roots = vec![r"\\?\UNC\nas\music\Samples".to_string()];
+        // `Z:\Samples\Drums\Kick.wav`, Z: mapped to \\nas\music.
+        assert_eq!(real_reason(r"\\?\UNC\nas\music\Samples\Drums\Kick.wav", &roots), None);
+        assert_eq!(real_reason(r"\\?\UNC\NAS\MUSIC\samples\Kick.WAV", &roots), None);
+        // Inside, but still not a sample, or hidden.
+        assert_eq!(real_reason(r"\\?\UNC\nas\music\Samples\notes.txt", &roots), Some("not an audio or sample file"));
+        assert_eq!(real_reason(r"\\?\UNC\nas\music\Samples\.ssh\key.wav", &roots), Some("hidden file or folder"));
+        // A link out of the folder (another share, another host): refused.
+        for p in [r"\\?\UNC\nas\home\.ssh\id_rsa", r"\\?\UNC\nas\home\secret.wav", r"\\?\UNC\attacker\share\Kick.wav", r"\\?\UNC\nas\music\Samples\..\x.wav"] {
+            assert_eq!(real_reason(p, &roots), Some("network or device path"), "{p}");
+        }
+        // Without a linked folder on a share: every network path is refused.
+        assert_eq!(real_reason(r"\\?\UNC\nas\music\Samples\Kick.wav", &[]), Some("network or device path"));
+        assert_eq!(real_reason(r"\\.\PhysicalDrive0", &roots), Some("network or device path"));
+        // Plain local paths: the usual checks.
+        assert_eq!(real_reason("/music/Samples/Kick.wav", &roots), None);
+        assert_eq!(real_reason("/music/.secret/Kick.wav", &roots), Some("hidden file or folder"));
+        assert_eq!(real_reason("/music/Kick.exe", &[]), Some("not an audio or sample file"));
     }
 
     #[test]

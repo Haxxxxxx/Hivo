@@ -27,6 +27,25 @@ pub struct Resolver {
     sample_generation: u64,
     exists_cache: HashMap<String, bool>,
     folder_files: HashMap<PathBuf, HashMap<String, PathBuf>>,
+    /// While resolving for the scanner's cache: every existence check made
+    /// outside the song folder (see `Probe`).
+    trace: Option<Vec<Probe>>,
+    /// `Scope::mapped_roots`: linked folders on a mapped network drive, for
+    /// the package and render checks (`package::refuse_reason`).
+    mapped_roots: Vec<String>,
+}
+
+/// One existence check a resolution depended on, outside the song folder
+/// (that one is covered by the scanner's folder fingerprint): the path,
+/// whether it had to be a file (a sample-library hit) or only exist, and
+/// the answer then. A cached resolution stays good while every probe gives
+/// the same answer, so a sample deleted or restored elsewhere shows on the
+/// next scan without reading the project or walking a library again.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Probe {
+    pub path: PathBuf,
+    pub file: bool,
+    pub hit: bool,
 }
 
 /// File types FL stores as samples; what the sample-library index keeps.
@@ -228,6 +247,8 @@ impl Resolver {
             sample_generation: 0,
             exists_cache: HashMap::new(),
             folder_files: HashMap::new(),
+            trace: None,
+            mapped_roots: Vec::new(),
         }
     }
 
@@ -263,6 +284,16 @@ impl Resolver {
         self
     }
 
+    /// The linked folders on a mapped network drive (`Scope::mapped_roots`).
+    pub fn with_mapped_roots(mut self, roots: Vec<String>) -> Self {
+        self.mapped_roots = roots;
+        self
+    }
+
+    pub fn mapped_roots(&self) -> &[String] {
+        &self.mapped_roots
+    }
+
     /// What resolved samples depend on besides the project and its folder:
     /// the sample-library index build and this computer's FL folders.
     pub fn context_key(&self) -> u64 {
@@ -293,11 +324,17 @@ impl Resolver {
         if is_remote_or_device(path) {
             return false;
         }
-        if let Some(&hit) = self.exists_cache.get(path) {
-            return hit;
+        let hit = match self.exists_cache.get(path) {
+            Some(&hit) => hit,
+            None => {
+                let hit = Path::new(path).exists();
+                self.exists_cache.insert(path.to_string(), hit);
+                hit
+            }
+        };
+        if let Some(trace) = &mut self.trace {
+            trace.push(Probe { path: PathBuf::from(path), file: false, hit });
         }
-        let hit = Path::new(path).exists();
-        self.exists_cache.insert(path.to_string(), hit);
         hit
     }
 
@@ -355,11 +392,15 @@ impl Resolver {
         // Moved: the same file name in the song's folder, else in one of the
         // user's sample libraries.
         let name = lower_file_name(Path::new(&on_disk));
-        let moved = name
-            .as_ref()
-            .and_then(|n| self.files_in_song_folder(&folder).get(n).cloned())
+        let moved = name.as_ref().and_then(|n| self.files_in_song_folder(&folder).get(n).cloned()).or_else(|| {
             // The index can be a few minutes old: check the file is still there.
-            .or_else(|| name.as_ref().and_then(|n| self.sample_libraries.get(n).cloned()).filter(|p| p.is_file()));
+            let p = name.as_ref().and_then(|n| self.sample_libraries.get(n).cloned())?;
+            let hit = p.is_file();
+            if let Some(trace) = &mut self.trace {
+                trace.push(Probe { path: p.clone(), file: true, hit });
+            }
+            hit.then_some(p)
+        });
         match moved {
             Some(p) => (path, SampleStatus::Relocated, Some(p)),
             None => (path, SampleStatus::Missing, None),
@@ -373,6 +414,17 @@ impl Resolver {
                 SampleInfo { path, status }
             })
             .collect()
+    }
+
+    /// `samples`, plus the existence checks the answer rests on (each
+    /// path once), for the scanner's cache.
+    pub fn samples_traced(&mut self, raw: &[String], project: &Path) -> (Vec<SampleInfo>, Vec<Probe>) {
+        self.trace = Some(Vec::new());
+        let samples = self.samples(raw, project);
+        let mut probes = self.trace.take().unwrap_or_default();
+        let mut seen = HashSet::new();
+        probes.retain(|p| seen.insert((p.path.clone(), p.file)));
+        (samples, probes)
     }
 
     /// Files to put in a package for this project: every sample that can be
