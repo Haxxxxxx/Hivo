@@ -3,6 +3,7 @@ import { Clapperboard, Disc3, FileAudio, History, Image, Layers, Mic, Music2, Pa
 import { useAppStore } from "../store/useAppStore";
 import * as api from "../lib/tauri";
 import { kitTitleFor } from "../lib/launchKit";
+import { kitFolderName } from "../lib/kitState";
 import { formatBytes, formatRelative } from "../lib/format";
 import type { ProjectInfo } from "../types";
 import { FileRow } from "../ui";
@@ -71,8 +72,9 @@ export function FilesPanel({ project }: { project: ProjectInfo }) {
   const demoMode = useAppStore((s) => s.demoMode);
   const openLaunchKit = useAppStore((s) => s.openLaunchKit);
   const [kit, setKit] = useState<api.KitFile[] | null>(null);
-  // The kit folder is named after the kit's title (as the export does).
-  const kitTitle = kitTitleFor(project, meta);
+  // The folder the last export went to (it may be "Title (2)"), else the
+  // kit's title (as the export names it).
+  const kitTitle = kitFolderName(meta, kitTitleFor(project, meta));
 
   useEffect(() => {
     let live = true;

@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { ArrowRight, Check, Download, Minus } from "lucide-react";
 import { LogoLockup, LogoMark } from "./LogoMark";
 import { STATUSES } from "@shared/lib/songs";
@@ -10,7 +10,32 @@ import type { Lang } from "./lang";
 // (landingCopy.ts): /fr and /en pick one, / follows the browser. Every claim
 // has to be true of the shipped app: when a feature changes, change both.
 
-const VERSION = "0.6.2";
+/** The updater manifest the release workflow uploads (`latest.json` at the
+ * root of the public `releases` bucket): the version line shows what's
+ * actually downloadable, never a hardcoded number. */
+const MANIFEST_URL = import.meta.env.VITE_SUPABASE_URL ? `${import.meta.env.VITE_SUPABASE_URL}/storage/v1/object/public/releases/latest.json` : null;
+const MAC_DAMAGED_FIX = 'xattr -cr "/Applications/Hivo.app"';
+
+/** The latest released version, or null (not loaded, unreachable, malformed): then the version line is hidden. */
+function useLatestVersion(): string | null {
+  const [version, setVersion] = useState<string | null>(null);
+  useEffect(() => {
+    if (!MANIFEST_URL) return;
+    const ctrl = new AbortController();
+    fetch(MANIFEST_URL, { signal: ctrl.signal, cache: "no-cache" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((m: unknown) => {
+        const v = m && typeof m === "object" ? (m as { version?: unknown }).version : null;
+        if (typeof v === "string" && /^\d+\.\d+\.\d+$/.test(v)) setVersion(v);
+      })
+      .catch(() => {
+        // Offline or blocked: the page simply shows no version.
+      });
+    return () => ctrl.abort();
+  }, []);
+  return version;
+}
+
 /** The Play Store listing. Empty until the app is published there: the button stays hidden. */
 const PLAY_URL: string = "";
 
@@ -21,6 +46,7 @@ const h2 = "font-display text-4xl uppercase leading-[0.95] text-cream md:text-6x
 
 export function Landing({ signIn, lang }: { signIn: ReactNode; lang: Lang }) {
   const t = LANDING[lang];
+  const version = useLatestVersion();
   useEffect(() => {
     document.documentElement.lang = lang;
     document.title = t.meta.title;
@@ -31,7 +57,7 @@ export function Landing({ signIn, lang }: { signIn: ReactNode; lang: Lang }) {
     <div className="min-h-dvh overflow-x-hidden bg-chassis text-body">
       <Nav t={t} lang={lang} />
       <main>
-        <Hero t={t} />
+        <Hero t={t} version={version} />
         <Daws t={t} />
         <Stages t={t} />
         <div id="features" className="scroll-mt-20">
@@ -41,7 +67,7 @@ export function Landing({ signIn, lang }: { signIn: ReactNode; lang: Lang }) {
         <LaunchKit t={t} />
         <Crew t={t} />
         <Privacy t={t} />
-        <Status t={t} />
+        <Status t={t} version={version} />
         <Faq t={t} />
         <section id="signin" className="scroll-mt-20 border-t border-rule px-6 py-24">
           <div className="mx-auto grid max-w-5xl gap-12 md:grid-cols-[1.1fr_1fr] md:items-center">
@@ -57,7 +83,14 @@ export function Landing({ signIn, lang }: { signIn: ReactNode; lang: Lang }) {
                   <Download size={16} strokeWidth={2.5} /> {t.signin.windows}
                 </a>
               </div>
-              <p className="mt-3 max-w-md font-mono text-xs text-engrave">{t.signin.firstRun}</p>
+              <ul className="mt-3 max-w-md space-y-1.5 font-mono text-xs text-engrave">
+                <li>{t.signin.firstRun.mac}</li>
+                <li>
+                  {t.signin.firstRun.damaged}{" "}
+                  <code className="select-all rounded bg-panel px-1 py-0.5 text-body">{MAC_DAMAGED_FIX}</code>
+                </li>
+                <li>{t.signin.firstRun.windows}</li>
+              </ul>
               <p className="mt-6 max-w-md text-sm text-body">{t.signin.phone}</p>
               <div className="mt-4 flex flex-wrap gap-3">
                 <a href="/download/android" className={ghost}>
@@ -75,7 +108,7 @@ export function Landing({ signIn, lang }: { signIn: ReactNode; lang: Lang }) {
           </div>
         </section>
       </main>
-      <Footer t={t} lang={lang} />
+      <Footer t={t} lang={lang} version={version} />
     </div>
   );
 }
@@ -121,7 +154,7 @@ function Nav({ t, lang }: { t: LandingCopy; lang: Lang }) {
         <a href="#top" aria-label={t.nav.home}>
           <LogoLockup size={32} />
         </a>
-        <nav aria-label="Sections" className="hidden gap-6 text-sm text-body lg:flex">
+        <nav aria-label={t.nav.sections} className="hidden gap-6 text-sm text-body lg:flex">
           {links.map(([href, label]) => (
             <a key={href} href={href} className="hover:text-cream">
               {label}
@@ -139,7 +172,7 @@ function Nav({ t, lang }: { t: LandingCopy; lang: Lang }) {
   );
 }
 
-function Hero({ t }: { t: LandingCopy }) {
+function Hero({ t, version }: { t: LandingCopy; version: string | null }) {
   return (
     <section id="top" className="scroll-mt-20 px-6 pt-16 md:pt-24">
       <div className="mx-auto max-w-6xl">
@@ -160,7 +193,7 @@ function Hero({ t }: { t: LandingCopy }) {
           </a>
         </div>
         <ul className="mt-8 flex flex-wrap gap-x-5 gap-y-2 font-mono text-xs text-body" aria-label={t.hero.glance}>
-          {[...t.hero.facts, `v${VERSION}`].map((f) => (
+          {[...t.hero.facts, ...(version ? [`v${version}`] : [])].map((f) => (
             <li key={f} className="flex items-center gap-2">
               <span className="h-1.5 w-1.5 rounded-full bg-ok" aria-hidden /> {f}
             </li>
@@ -393,7 +426,7 @@ function Privacy({ t }: { t: LandingCopy }) {
   );
 }
 
-function Status({ t }: { t: LandingCopy }) {
+function Status({ t, version }: { t: LandingCopy; version: string | null }) {
   const s = t.status;
   const col = (title: string, items: string[], icon: ReactNode) => (
     <div className="rounded-md border border-rule bg-panel p-6">
@@ -411,7 +444,7 @@ function Status({ t }: { t: LandingCopy }) {
   return (
     <section id="status" className="scroll-mt-20 px-6 py-20" aria-labelledby="status-title">
       <div className="mx-auto max-w-6xl">
-        <p className={kicker}>{s.kicker.replace("{version}", VERSION)}</p>
+        <p className={kicker}>{version ? `${s.version.replace("{version}", version)} · ${s.date}` : s.date}</p>
         <h2 id="status-title" className={`mt-4 ${h2}`}>
           {s.title}
         </h2>
@@ -451,12 +484,12 @@ function Faq({ t }: { t: LandingCopy }) {
   );
 }
 
-function Footer({ t, lang }: { t: LandingCopy; lang: Lang }) {
+function Footer({ t, lang, version }: { t: LandingCopy; lang: Lang; version: string | null }) {
   return (
     <footer className="border-t border-rule px-6 py-10 text-xs text-body">
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4">
         <span className="flex items-center gap-2">
-          <LogoMark size={20} /> Hivo {VERSION} · {t.footer.tagline}
+          <LogoMark size={20} /> {version ? `Hivo ${version}` : "Hivo"} · {t.footer.tagline}
         </span>
         <nav aria-label={t.footer.nav} className="flex gap-4">
           <a href="#privacy" className="hover:text-cream">

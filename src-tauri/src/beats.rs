@@ -230,10 +230,8 @@ pub async fn analyze_beats(app: AppHandle, paths: Vec<String>) -> Result<Vec<Bea
             .collect::<Vec<_>>();
         if changed {
             if let Ok(raw) = serde_json::to_vec(&*cache) {
-                let tmp = file.with_extension("json.tmp");
-                if std::fs::write(&tmp, raw).is_ok() {
-                    let _ = std::fs::rename(&tmp, &file);
-                }
+                // Owner-only and atomic: it lists the beats' paths.
+                let _ = crate::workspace::write_atomic(&file, &raw);
             }
         }
         out

@@ -8,7 +8,7 @@ type Pair = [title: string, body: string];
 
 export interface LandingCopy {
   meta: { title: string; description: string };
-  nav: { features: string; launchKit: string; privacy: string; status: string; faq: string; signIn: string; home: string; switchTo: string };
+  nav: { features: string; launchKit: string; privacy: string; status: string; faq: string; signIn: string; home: string; switchTo: string; sections: string };
   hero: { q1: string; q2: string; q3: string; lead: string; cta: string; secondary: string; facts: string[]; glance: string; shotCaption: string; shotAlt: string };
   shot: { fullSize: string };
   daws: { kicker: string; title: string; lead: string; insideTitle: string; insideBody: string; trackedTitle: string; trackedBody: string };
@@ -18,9 +18,9 @@ export interface LandingCopy {
   kit: { name: string; title: string; lead: string; caption: string; alt: string; parts: Pair[]; aiTitle: string; aiBody: string };
   crew: { name: string; title: string; items: Pair[] };
   privacy: { title: string; lead: string; travels: string; travelItems: string[]; stays: string; stayItems: string[]; note: string };
-  status: { kicker: string; title: string; lead: string; ready: string; readyItems: string[]; limits: string; limitItems: string[]; next: string; nextItems: string[]; labels: [string, string, string] };
+  status: { version: string; date: string; title: string; lead: string; ready: string; readyItems: string[]; limits: string; limitItems: string[]; next: string; nextItems: string[]; labels: [string, string, string] };
   faq: { title: string; items: Pair[] };
-  signin: { title: string; lead: string; app: string; mac: string; windows: string; firstRun: string; phone: string; android: string; play: string; androidTip: string };
+  signin: { title: string; lead: string; app: string; mac: string; windows: string; firstRun: { mac: string; damaged: string; windows: string }; phone: string; android: string; play: string; androidTip: string };
   footer: { tagline: string; data: string; nav: string; privacyPolicy: string };
 }
 
@@ -29,7 +29,7 @@ const en: LandingCopy = {
     title: "Hivo · The crew's studio app",
     description: "Hivo reads your DAW project folders and gives the crew one board: every song's stage, where its files live, and a release kit for your distributor.",
   },
-  nav: { features: "Features", launchKit: "Launch Kit", privacy: "Privacy", status: "Status", faq: "FAQ", signIn: "Sign in", home: "Hivo, back to top", switchTo: "Language" },
+  nav: { features: "Features", launchKit: "Launch Kit", privacy: "Privacy", status: "Status", faq: "FAQ", signIn: "Sign in", home: "Hivo, back to top", switchTo: "Language", sections: "Sections" },
   hero: {
     q1: "Who's got the hook?",
     q2: "Where's the mixdown?",
@@ -37,7 +37,7 @@ const en: LandingCopy = {
     lead: "Hivo is the crew's studio app. It reads the project folders you already have (FL Studio, Ableton Live, REAPER, Studio One and more) and answers all three: every song's stage, where its files live, and a release kit ready for your distributor.",
     cta: "Sign in to your crew",
     secondary: "See what it does",
-    facts: ["Mac + Windows", "works offline", "free", "your audio stays on your laptop", "crew data in the EU"],
+    facts: ["Mac + Windows", "works offline", "free", "audio stays on your computer unless you opt in", "crew data in the EU"],
     glance: "At a glance",
     shotCaption: "fig. 00 · the crew's studio · sample data",
     shotAlt: "Hivo's dashboard: songs, stalled tracks, next release, crew activity and a year of studio sessions",
@@ -80,7 +80,7 @@ const en: LandingCopy = {
   },
   board: {
     name: "Board",
-    title: "Know what everyone's cooking.",
+    title: "One board, nobody has to ask.",
     body: "Every song sits in one stage. Drag it from Creation to Prep and the whole crew sees it, on the desktop app or from a phone between sessions.",
     points: [
       "A shared crew board: moves sync live",
@@ -114,21 +114,22 @@ const en: LandingCopy = {
     items: [
       ["One board, every screen", "The desktop app and the crew website show the same board (in the crew's columns), releases, calendar and crew. The website works on a phone."],
       ["Share song by song, or a whole release", "Nothing is shared until you tick it. Choose the title the crew sees, so it doesn't have to be the file name. A release shares in one click, with its tracks."],
-      ["Invite only", "Your crew lead adds you and sends an invite code. Owners can revoke codes and remove members."],
+      ["Invite only", "Hivo's admin adds your email, then your crew's owner sends you an invite code. Owners can revoke codes and remove members."],
       ["No passwords", "Sign in with a 6-digit code from your email, on the app or the website."],
     ],
   },
   privacy: {
     title: "Share titles, not tracks.",
-    lead: "Your beats don't leave your laptop. The crew sees the facts you choose to share. That's it.",
+    lead: "Your beats stay on your computer unless you opt in. The crew sees the facts you choose to share. That's it.",
     travels: "What travels (songs you share)",
     travelItems: ["title", "stage", "bpm · key · tags", "credits · splits", "release date", "mixdown: yes / no", "kit accepted · last saved", "shared releases: title, date, tracklist"],
-    stays: "What stays on your machine",
-    stayItems: ["audio", "project files and paths", "samples", "notes", "track names"],
-    note: "Crew data is stored in the EU (Ireland). Optional AI, with your own free Gemini key: the song name, tags, tempo, key, credits and Launch Kit text go to Google, and on the free tier Google may use them. Your notes only if you turn that on. Never audio, files or track names.",
+    stays: "What stays on your computer",
+    stayItems: ["audio (unless you turn on Digger excerpts)", "project files and paths", "samples", "notes", "track names"],
+    note: "Crew data is stored in the EU (Ireland). Optional AI, with your own free Gemini key: the song name, tags, tempo, key, credits and Launch Kit text go to Google, and on the free tier Google may use them. Your notes only if you turn that on. Never audio, files or track names. In the Digger, 30-second excerpts of the beats you pick go to Gemini only if you turn that on.",
   },
   status: {
-    kicker: "Version {version} · October 2026",
+    version: "Version {version}",
+    date: "November 2026",
     title: "Where it's at.",
     lead: "Built with and for one crew. Here's what works, what doesn't yet, and what's next.",
     ready: "Ready",
@@ -143,7 +144,7 @@ const en: LandingCopy = {
       "Pro Tools, Cubase and Bitwig projects are tracked, not read inside",
       "Rendering and packaging from the app work with FL Studio only",
       "The missing-plugin check is most complete for FL Studio projects",
-      "The app isn't code-signed yet: a one-time security prompt on first launch",
+      "The Mac app isn't notarized by Apple and the Windows app isn't signed yet: a one-time security prompt on first launch",
     ],
     next: "On the list",
     nextItems: ["Plugin checks for every DAW", "The release calendar in Google or Apple Calendar", "Posting snippets and captions to socials from the Launch Kit"],
@@ -153,27 +154,31 @@ const en: LandingCopy = {
     title: "Questions.",
     items: [
       ["Is it free?", "Yes. The optional AI and cover concepts use free tiers with your own keys, and everything works without them."],
-      ["Does my audio go anywhere?", "No. Audio, project files, samples, notes and track names stay on your computer. Only the facts of songs you choose to share reach the crew."],
+      ["Does my audio go anywhere?", "Not unless you opt in. Audio, project files, samples, notes and track names stay on your computer. The one exception is yours to turn on: the Digger can send 30-second excerpts of the beats you pick to Google Gemini (off by default). Only the facts of songs you choose to share reach the crew."],
       ["Do I need internet?", "No. The app works fully offline; crew sharing catches up the next time you're online."],
       ["Mac or Windows?", "Both: Mac (Apple Silicon and Intel) and Windows 10/11, and crew members can mix the two."],
-      ["How do I get the app?", "Download it below, for Mac or Windows. It's crew-only for now: your crew lead adds your email and sends you an invite code."],
+      ["How do I get the app?", "Download it below, for Mac or Windows. It's crew-only for now: ask Hivo's admin to add your email, then your crew's owner sends you an invite code."],
       ["Is it in French?", "Yes: the app, this website and the crew dashboard are in French and English (pick in the app's Settings, or FR | EN here). Captions and the kit README can be either, per kit."],
       ["Can I use it on my own?", "Yes. The library, pipeline and Launch Kit work without a crew; sharing is optional."],
     ],
   },
   signin: {
     title: "Crew only.",
-    lead: "Hivo is invite-only for now. Your crew lead adds your email, then you sign in here with a 6-digit code (no password) and enter your crew's invite code.",
+    lead: "Hivo is invite-only for now. Ask Hivo's admin to add your email, then sign in here with a 6-digit code (no password) and enter your crew's invite code.",
     app: "The desktop app is free, for Mac and Windows. It updates itself.",
     mac: "Download for Mac",
     windows: "Download for Windows",
-    firstRun: "Mac: if it says it can't verify the developer, go to System Settings → Privacy & Security and click Open Anyway. Windows: More info → Run anyway.",
+    firstRun: {
+      mac: "Mac: open the .dmg, drag Hivo to Applications and open it from there (updates need it there). If it says it can't verify the developer, click Done, then go to System Settings → Privacy & Security and click Open Anyway.",
+      damaged: "If macOS ever says Hivo is “damaged”, run this once in Terminal:",
+      windows: "Windows: if it says Windows protected your PC, click More info → Run anyway.",
+    },
     phone: "The phone app (Android) keeps your notes and lyrics on your prods, beats and songs, and syncs them with the desktop app over your Wi-Fi.",
     android: "Download for Android",
     play: "Get it on Google Play",
     androidTip: "Android: allow installs from your browser when Android asks.",
   },
-  footer: { tagline: "made with and for the crew", data: "crew data: EU (Ireland) · audio: never leaves your machine", nav: "Footer", privacyPolicy: "Privacy policy" },
+  footer: { tagline: "made with and for the crew", data: "crew data: EU (Ireland) · audio: stays on your computer unless you opt in", nav: "Footer", privacyPolicy: "Privacy policy" },
 };
 
 const fr: LandingCopy = {
@@ -181,7 +186,7 @@ const fr: LandingCopy = {
     title: "Hivo · L'appli studio du crew",
     description: "Hivo lit les dossiers de projets de ton DAW et donne au crew un seul tableau : l'étape de chaque son, où sont ses fichiers, et un kit de sortie prêt pour ton distributeur.",
   },
-  nav: { features: "Fonctions", launchKit: "Launch Kit", privacy: "Confidentialité", status: "État", faq: "FAQ", signIn: "Connexion", home: "Hivo, retour en haut", switchTo: "Langue" },
+  nav: { features: "Fonctions", launchKit: "Launch Kit", privacy: "Confidentialité", status: "État", faq: "FAQ", signIn: "Connexion", home: "Hivo, retour en haut", switchTo: "Langue", sections: "Sections" },
   hero: {
     q1: "Qui a le refrain ?",
     q2: "Où est le mixdown ?",
@@ -189,7 +194,7 @@ const fr: LandingCopy = {
     lead: "Hivo, c'est l'appli studio du crew. Elle lit les dossiers de projets que tu as déjà (FL Studio, Ableton Live, REAPER, Studio One et d'autres) et répond aux trois : l'étape de chaque son, où sont ses fichiers, et un kit de sortie prêt pour ton distributeur.",
     cta: "Rejoindre ton crew",
     secondary: "Voir ce que ça fait",
-    facts: ["Mac + Windows", "marche hors ligne", "gratuit", "ton audio reste sur ton ordi", "données du crew dans l'UE"],
+    facts: ["Mac + Windows", "marche hors ligne", "gratuit", "ton audio reste sur ton ordi, sauf si tu l'actives", "données du crew dans l'UE"],
     glance: "En bref",
     shotCaption: "fig. 00 · le studio du crew · données d'exemple",
     shotAlt: "Le tableau de bord de Hivo : les sons, les morceaux à l'arrêt, la prochaine sortie, l'activité du crew et une année de sessions",
@@ -232,7 +237,7 @@ const fr: LandingCopy = {
   },
   board: {
     name: "Tableau",
-    title: "Sache ce que chacun prépare.",
+    title: "Un seul tableau, plus besoin de demander.",
     body: "Chaque son est à une étape. Fais-le glisser de Création à Prépa et tout le crew le voit, sur l'appli ou sur un téléphone entre deux sessions.",
     points: [
       "Un tableau partagé par le crew : les déplacements se synchronisent en direct",
@@ -246,7 +251,7 @@ const fr: LandingCopy = {
   kit: {
     name: "Launch Kit",
     title: "Tu bounces. On emballe.",
-    lead: "Tout ce qu'il faut pour une sortie, construit à partir du son lui-même. Relis, corrige ce que Hivo signale (« N need you » t'y emmène), puis exporte un seul dossier : la fiche distributeur, les métadonnées, les extraits, les textes des posts, le brief de cover, et un README qui explique chaque fichier.",
+    lead: "Tout ce qu'il faut pour une sortie, construit à partir du son lui-même. Relis, corrige ce que Hivo signale (« N à compléter » t'y emmène), puis exporte un seul dossier : la fiche distributeur, les métadonnées, les extraits, les textes des posts, le brief de cover, et un README qui explique chaque fichier.",
     caption: "fig. 03 · launch kit · données d'exemple",
     alt: "Le Launch Kit : métadonnées avec leur source, extraits sur la forme d'onde, et une vidéo 9:16",
     parts: [
@@ -266,21 +271,22 @@ const fr: LandingCopy = {
     items: [
       ["Un tableau, tous les écrans", "L'appli et le site du crew montrent le même tableau (dans les colonnes du crew), les mêmes sorties, le même calendrier et le même crew. Le site marche sur téléphone."],
       ["Partage son par son, ou une sortie entière", "Rien n'est partagé tant que tu ne coches pas. Choisis le titre que voit le crew, pas forcément le nom du fichier. Une sortie se partage en un clic, avec ses morceaux."],
-      ["Sur invitation", "Le responsable du crew t'ajoute et t'envoie un code d'invitation. Les propriétaires peuvent révoquer les codes et retirer des membres."],
+      ["Sur invitation", "L'admin de Hivo ajoute ton email, puis le propriétaire du crew t'envoie un code d'invitation. Les propriétaires peuvent révoquer les codes et retirer des membres."],
       ["Pas de mot de passe", "Tu te connectes avec un code à 6 chiffres reçu par email, sur l'appli ou sur le site."],
     ],
   },
   privacy: {
     title: "Partage les titres, pas les sons.",
-    lead: "Tes prods ne quittent pas ton ordi. Le crew voit les infos que tu choisis de partager. C'est tout.",
+    lead: "Tes prods restent sur ton ordi, sauf si tu choisis d'en envoyer. Le crew voit les infos que tu choisis de partager. C'est tout.",
     travels: "Ce qui est partagé (les sons que tu partages)",
     travelItems: ["titre", "étape", "bpm · tonalité · tags", "crédits · répartitions", "date de sortie", "mixdown : oui / non", "kit validé · dernière sauvegarde", "sorties partagées : titre, date, morceaux"],
     stays: "Ce qui reste sur ton ordi",
-    stayItems: ["audio", "fichiers et chemins de projet", "samples", "notes", "noms de pistes"],
-    note: "Les données du crew sont stockées dans l'UE (Irlande). IA optionnelle, avec ta propre clé Gemini gratuite : le nom du son, les tags, le tempo, la tonalité, les crédits et les textes du Launch Kit partent chez Google, qui peut les utiliser sur l'offre gratuite. Tes notes seulement si tu l'actives. Jamais l'audio, les fichiers ni les noms de pistes.",
+    stayItems: ["audio (sauf si tu actives les extraits du Digger)", "fichiers et chemins de projet", "samples", "notes", "noms de pistes"],
+    note: "Les données du crew sont stockées dans l'UE (Irlande). IA optionnelle, avec ta propre clé Gemini gratuite : le nom du son, les tags, le tempo, la tonalité, les crédits et les textes du Launch Kit partent chez Google, qui peut les utiliser sur l'offre gratuite. Tes notes seulement si tu l'actives. Jamais l'audio, les fichiers ni les noms de pistes. Dans le Digger, des extraits de 30 secondes des beats choisis partent chez Gemini seulement si tu l'actives.",
   },
   status: {
-    kicker: "Version {version} · octobre 2026",
+    version: "Version {version}",
+    date: "novembre 2026",
     title: "Où on en est.",
     lead: "Fait avec et pour un crew. Voici ce qui marche, ce qui ne marche pas encore, et la suite.",
     ready: "Prêt",
@@ -295,7 +301,7 @@ const fr: LandingCopy = {
       "Les projets Pro Tools, Cubase et Bitwig sont suivis, pas lus à l'intérieur",
       "Le rendu et l'emballage depuis l'appli marchent seulement avec FL Studio",
       "La vérification des plugins manquants est la plus complète pour FL Studio",
-      "L'appli n'est pas encore signée : un avertissement de sécurité la première fois",
+      "L'appli Mac n'est pas encore notariée par Apple et l'appli Windows pas encore signée : un avertissement de sécurité la première fois",
     ],
     next: "Prévu",
     nextItems: ["Vérifier les plugins pour tous les DAWs", "Le calendrier des sorties dans Google ou Apple Calendar", "Publier les extraits et les textes sur les réseaux depuis le Launch Kit"],
@@ -305,33 +311,37 @@ const fr: LandingCopy = {
     title: "Questions.",
     items: [
       ["C'est gratuit ?", "Oui. L'IA et les idées de cover, optionnelles, utilisent des offres gratuites avec tes propres clés, et tout marche sans."],
-      ["Mon audio part quelque part ?", "Non. L'audio, les fichiers de projet, les samples, les notes et les noms de pistes restent sur ton ordi. Seules les infos des sons que tu choisis de partager arrivent au crew."],
+      ["Mon audio part quelque part ?", "Pas sans ton accord. L'audio, les fichiers de projet, les samples, les notes et les noms de pistes restent sur ton ordi. La seule exception, c'est toi qui l'actives : le Digger peut envoyer des extraits de 30 secondes des beats que tu choisis à Google Gemini (désactivé par défaut). Seules les infos des sons que tu choisis de partager arrivent au crew."],
       ["Il faut internet ?", "Non. L'appli marche entièrement hors ligne ; le partage avec le crew se rattrape à ta prochaine connexion."],
       ["Mac ou Windows ?", "Les deux : Mac (Apple Silicon et Intel) et Windows 10/11, et le crew peut mélanger les deux."],
-      ["Comment j'ai l'appli ?", "Télécharge-la plus bas, pour Mac ou Windows. Pour l'instant c'est réservé au crew : le responsable ajoute ton email et t'envoie un code d'invitation."],
+      ["Comment j'ai l'appli ?", "Télécharge-la plus bas, pour Mac ou Windows. Pour l'instant c'est réservé au crew : demande à l'admin de Hivo d'ajouter ton email, puis le propriétaire du crew t'envoie un code d'invitation."],
       ["C'est en français ?", "Oui : l'appli, ce site et le tableau du crew sont en français et en anglais (au choix dans les Réglages de l'appli, ou FR | EN ici). Les textes des posts et le README du kit, l'un ou l'autre, kit par kit."],
       ["Je peux l'utiliser seul ?", "Oui. La bibliothèque, le pipeline et le Launch Kit marchent sans crew ; le partage est optionnel."],
     ],
   },
   signin: {
     title: "Réservé au crew.",
-    lead: "Hivo fonctionne sur invitation pour l'instant. Le responsable du crew ajoute ton email, puis tu te connectes ici avec un code à 6 chiffres (sans mot de passe) et tu entres le code d'invitation du crew.",
+    lead: "Hivo fonctionne sur invitation pour l'instant. Demande à l'admin de Hivo d'ajouter ton email, puis connecte-toi ici avec un code à 6 chiffres (sans mot de passe) et entre le code d'invitation du crew.",
     app: "L'appli est gratuite, pour Mac et Windows. Elle se met à jour toute seule.",
     mac: "Télécharger pour Mac",
     windows: "Télécharger pour Windows",
-    firstRun: "Mac : s'il dit ne pas pouvoir vérifier le développeur, va dans Réglages Système → Confidentialité et sécurité et clique Ouvrir quand même. Windows : Informations complémentaires → Exécuter quand même.",
+    firstRun: {
+      mac: "Mac : ouvre le .dmg, fais glisser Hivo dans Applications et ouvre-le de là (les mises à jour en ont besoin). S'il dit ne pas pouvoir vérifier le développeur, clique OK, puis va dans Réglages Système → Confidentialité et sécurité et clique Ouvrir quand même.",
+      damaged: "Si macOS dit un jour que Hivo est « endommagé », lance ceci une fois dans le Terminal :",
+      windows: "Windows : s'il dit que Windows a protégé ton ordinateur, clique Informations complémentaires → Exécuter quand même.",
+    },
     phone: "L'appli téléphone (Android) garde tes notes et tes textes sur tes prods, tes beats et tes sons, et les synchronise avec l'appli de l'ordi par ton Wi-Fi.",
     android: "Télécharger pour Android",
     play: "Disponible sur Google Play",
     androidTip: "Android : autorise les installations depuis ton navigateur quand Android le demande.",
   },
-  footer: { tagline: "fait avec et pour le crew", data: "données du crew : UE (Irlande) · audio : ne quitte jamais ton ordi", nav: "Pied de page", privacyPolicy: "Politique de confidentialité" },
+  footer: { tagline: "fait avec et pour le crew", data: "données du crew : UE (Irlande) · audio : reste sur ton ordi, sauf si tu l'actives", nav: "Pied de page", privacyPolicy: "Politique de confidentialité" },
 };
 
 export const LANDING: Record<Lang, LandingCopy> = { en, fr };
 
 /** The sign-in card's own words (the card lives in App.tsx). */
-export const SIGN_IN: Record<Lang, { title: string; email: string; send: string; sending: string; enterCode: string; code: string; signIn: string; checking: string; other: string }> = {
+export const SIGN_IN: Record<Lang, { title: string; email: string; send: string; sending: string; enterCode: string; code: string; signIn: string; checking: string; other: string; haveCode: string }> = {
   en: {
     title: "Sign in to your crew",
     email: "Your email",
@@ -342,6 +352,7 @@ export const SIGN_IN: Record<Lang, { title: string; email: string; send: string;
     signIn: "Sign in",
     checking: "Checking…",
     other: "Use another email",
+    haveCode: "Have a code? Enter it",
   },
   fr: {
     title: "Connexion au crew",
@@ -353,5 +364,6 @@ export const SIGN_IN: Record<Lang, { title: string; email: string; send: string;
     signIn: "Se connecter",
     checking: "Vérification…",
     other: "Utiliser un autre email",
+    haveCode: "Tu as déjà un code\u202f? Entre-le",
   },
 };

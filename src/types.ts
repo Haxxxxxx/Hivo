@@ -180,6 +180,9 @@ export interface SongMeta {
   stagePending?: boolean;
   /** A crewmate moved the song while this computer's move was waiting. */
   stageConflict?: StageConflict;
+  /** The crewmate (user id) whose move on the crew board set the current
+   * stage (its time is `stageUpdatedAtMs`). Cleared by a move of mine. */
+  stageMovedBy?: string;
   /** Every stage the song entered, oldest first (`src/lib/stageLog.ts`).
    * Starts empty: nothing before the log existed is guessed. Local only. */
   stageLog?: StageLogEntry[];
@@ -593,6 +596,9 @@ export interface CrewSongRow {
   credits: CrewCredit[];
   release_date: string | null;
   has_mixdown: boolean;
+  /** The newest mixdown is at least as new as the last save. Null: no
+   * mixdown, or sent by a Hivo from before this column (freshness unknown). */
+  mixdown_fresh?: boolean | null;
   kit_accepted: boolean;
   last_saved_at: string | null;
   stage_updated_at: string;

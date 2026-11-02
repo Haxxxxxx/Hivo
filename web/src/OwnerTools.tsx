@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useWeb } from "./store";
 import { W } from "./dashboardCopy";
 import { locale, tr } from "@shared/i18n";
+import { inviteMessage } from "@shared/lib/crewMessages";
 
 // The crew owner's tools on the website (the same calls as the desktop app;
 // the server checks the owner again): invite codes, rename, delete. Leave
@@ -89,6 +90,7 @@ export function LeaveCrew() {
 
 function InviteCodes() {
   const { invites, loadInvites, createInvite, revokeInvite, activeCrewId } = useWeb();
+  const crewName = useWeb((s) => s.crews.find((c) => c.id === s.activeCrewId)?.name ?? "");
   const { busy, error, run } = useRun();
   const [copied, setCopied] = useState<string | null>(null);
   useEffect(() => {
@@ -96,11 +98,12 @@ function InviteCodes() {
     // Reload when the crew changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeCrewId]);
-  const copy = async (code: string) => {
+  /** `key`: the code, or "msg:" + the code for the whole message. */
+  const copy = async (key: string, text: string) => {
     try {
-      await navigator.clipboard.writeText(code);
-      setCopied(code);
-      setTimeout(() => setCopied((c) => (c === code ? null : c)), 2000);
+      await navigator.clipboard.writeText(text);
+      setCopied(key);
+      setTimeout(() => setCopied((c) => (c === key ? null : c)), 2000);
     } catch {
       /* the code is on screen to copy by hand */
     }
@@ -119,8 +122,11 @@ function InviteCodes() {
               <span className="font-mono text-base tracking-[0.2em] text-cream">{i.code}</span>
               <span className="text-xs text-engrave">{tr(W).inviteLine(i.uses, i.max_uses, until(i.expires_at))}</span>
               <span className="ml-auto flex items-center gap-3">
-                <button onClick={() => void copy(i.code)} className="text-xs text-body hover:text-cream">
+                <button onClick={() => void copy(i.code, i.code)} className="text-xs text-body hover:text-cream">
                   {copied === i.code ? tr(W).copied : tr(W).copy}
+                </button>
+                <button onClick={() => void copy(`msg:${i.code}`, inviteMessage(i.code, crewName))} className="text-xs text-body hover:text-cream">
+                  {copied === `msg:${i.code}` ? tr(W).messageCopied : tr(W).copyMessage}
                 </button>
                 <button onClick={() => void run(() => revokeInvite(i.code))} disabled={busy} className="text-xs text-engrave hover:text-cream disabled:opacity-40">
                   {tr(W).revoke}
