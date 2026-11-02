@@ -1294,7 +1294,9 @@ function UpdatesSection() {
         : status === "ready"
           ? t.restarting
           : status === "error"
-            ? { readOnly: t.readOnly, network: t.offline, other: t.failed }[updateErrorKind(update.error)]
+            ? update.blockedBySave && update.error
+              ? update.error
+              : { readOnly: t.readOnly, network: t.offline, other: t.failed }[updateErrorKind(update.error)]
             : checked && status === "idle"
               ? t.upToDate
               : null;

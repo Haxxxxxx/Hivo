@@ -138,11 +138,14 @@ export async function saveWorkspace(workspace: Workspace): Promise<void> {
 export interface WorkspaceFiles {
   hasBackup: boolean;
   backupSavedAtMs: number | null;
+  /** workspace.json reads but doesn't parse: Start fresh / Restore may set
+   * it aside. False when it can't be read at all (it may be fine). */
+  canReset: boolean;
 }
 export const workspaceFiles = (): Promise<WorkspaceFiles> => invoke("workspace_files");
-/** Puts `workspace.json.bak` back (the unreadable file is kept as `.bad`). */
+/** Puts `workspace.json.bak` back (the unreadable file is kept as `.bad-<ms>`). */
 export const restoreWorkspaceBackup = (): Promise<Workspace> => invoke("restore_workspace_backup");
-/** "Start fresh": the unreadable workspace is kept as `workspace.json.bad`. */
+/** "Start fresh": the unreadable workspace is kept as `workspace.json.bad-<ms>`. */
 export const setAsideWorkspace = (): Promise<void> => invoke("set_aside_workspace");
 /** Shows the app's config folder (workspace.json, settings.json) in Finder / Explorer. */
 export const showConfigFolder = (): Promise<void> => invoke("show_config_folder");

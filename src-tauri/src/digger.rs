@@ -880,11 +880,8 @@ pub fn save_last_dig(app: AppHandle, state: Value) -> Result<(), String> {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("could not forget the dig: {e}")),
             _ => Ok(()),
         },
-        Some(raw) => {
-            let tmp = path.with_extension("json.tmp");
-            std::fs::write(&tmp, raw).map_err(|e| format!("could not keep the dig: {e}"))?;
-            std::fs::rename(&tmp, &path).map_err(|e| format!("could not keep the dig: {e}"))
-        }
+        // Owner-only and atomic: it holds notes and paths.
+        Some(raw) => crate::workspace::write_atomic(&path, &raw).map_err(|e| format!("could not keep the dig: {e}")),
     }
 }
 

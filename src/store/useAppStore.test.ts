@@ -15,10 +15,12 @@ vi.mock("../lib/tauri", () => ({
   scanProjects: vi.fn(),
   removeWatchedFolder: vi.fn(),
   detectDawFolders: vi.fn(),
+  repointWatchedFolder: vi.fn(),
 }));
 vi.mock("../lib/updater", () => ({ UPDATES_ENABLED: false, checkForUpdate: vi.fn(), installUpdate: vi.fn(), discardUpdate: vi.fn() }));
 
 import * as api from "../lib/tauri";
+import * as updater from "../lib/updater";
 import { applyLang } from "../i18n";
 import { EMPTY_WORKSPACE } from "../lib/songs";
 import { flushWorkspace, fromStored, useAppStore } from "./useAppStore";
@@ -43,7 +45,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   applyLang("en");
   mocked.saveWorkspace.mockResolvedValue(undefined);
-  mocked.workspaceFiles.mockResolvedValue({ hasBackup: false, backupSavedAtMs: null });
+  mocked.workspaceFiles.mockResolvedValue({ hasBackup: false, backupSavedAtMs: null, canReset: true });
   mocked.scanProjects.mockResolvedValue({ projects: [], unreachable: [] });
   useAppStore.setState(initial, true);
 });
@@ -55,11 +57,11 @@ afterEach(async () => {
 describe("loading the workspace (B2)", () => {
   it("an unreadable workspace is read-only, with the backup offered, and never saved over", async () => {
     mocked.getWorkspace.mockRejectedValue("could not parse workspace: EOF");
-    mocked.workspaceFiles.mockResolvedValue({ hasBackup: true, backupSavedAtMs: 1 });
+    mocked.workspaceFiles.mockResolvedValue({ hasBackup: true, backupSavedAtMs: 1, canReset: true });
     await useAppStore.getState().retrySave();
     const s = useAppStore.getState();
     expect(s.workspaceWritable).toBe(false);
-    expect(s.workspaceIssue).toEqual({ kind: "unreadable", detail: "could not parse workspace: EOF", hasBackup: true });
+    expect(s.workspaceIssue).toEqual({ kind: "unreadable", detail: "could not parse workspace: EOF", hasBackup: true, canReset: true });
 
     s.createAlbum("While broken");
     await flushWorkspace();
@@ -207,5 +209,88 @@ describe("saving", () => {
     await useAppStore.getState().detectFolders();
     expect(useAppStore.getState().detectedFolders).toEqual([]);
     expect(useAppStore.getState().detectError).toMatch(/permission denied/);
+  });
+});
+
+describe("round 2: nothing unsaved slips through", () => {
+  it("Dismiss hides the message but the close guard and the strip still hold (#1)", async () => {
+    useAppStore.setState({ workspace: REAL, workspaceWritable: true });
+    mocked.saveWorkspace.mockRejectedValue("disk full");
+    useAppStore.getState().createAlbum("x");
+    expect(await flushWorkspace()).toBe(false);
+    useAppStore.getState().dismissErrors();
+    expect(useAppStore.getState().saveError).toBeNull();
+    expect(useAppStore.getState().unsavedChanges).toMatch(/disk full/);
+    // Closing now still refuses to quit silently.
+    expect(await flushWorkspace()).toBe(false);
+    mocked.saveWorkspace.mockResolvedValue(undefined);
+    await useAppStore.getState().retrySave();
+    expect(useAppStore.getState().unsavedChanges).toBeNull();
+    expect(await flushWorkspace()).toBe(true);
+  });
+
+  it("an update never installs over edits that didn't save (#2)", async () => {
+    const installed = vi.fn();
+    vi.mocked(updater.installUpdate).mockImplementation(async (_onProgress, beforeRelaunch) => {
+      await beforeRelaunch?.();
+      installed();
+    });
+    useAppStore.setState({ workspace: REAL, workspaceWritable: true, update: { status: "available", version: "9.9.9" } });
+    mocked.saveWorkspace.mockRejectedValue("disk full");
+    useAppStore.getState().createAlbum("x");
+    await useAppStore.getState().installUpdate();
+    const { update } = useAppStore.getState();
+    expect(installed).not.toHaveBeenCalled();
+    expect(update.status).toBe("error");
+    expect(update.blockedBySave).toBe(true);
+    expect(update.error).toMatch(/stopped[\s\S]*disk full/);
+
+    // Once the save works, the update goes through.
+    mocked.saveWorkspace.mockResolvedValue(undefined);
+    await useAppStore.getState().retrySave();
+    useAppStore.setState({ update: { status: "available", version: "9.9.9" } });
+    await useAppStore.getState().installUpdate();
+    expect(installed).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().update.blockedBySave).toBeUndefined();
+  });
+
+  it("Start fresh and Restore are refused for a file that can't be read at all (#3)", async () => {
+    mocked.getWorkspace.mockRejectedValue("could not read workspace: Permission denied");
+    mocked.workspaceFiles.mockResolvedValue({ hasBackup: true, backupSavedAtMs: 1, canReset: false });
+    await useAppStore.getState().retrySave();
+    expect(useAppStore.getState().workspaceIssue).toMatchObject({ kind: "unreadable", canReset: false });
+    await useAppStore.getState().startFreshWorkspace();
+    await useAppStore.getState().restoreWorkspaceBackup();
+    expect(mocked.setAsideWorkspace).not.toHaveBeenCalled();
+    expect(mocked.restoreWorkspaceBackup).not.toHaveBeenCalled();
+    expect(useAppStore.getState().workspaceWritable).toBe(false);
+  });
+
+  it("re-pointing a folder is refused while the workspace can't be saved, before anything moves (#4)", async () => {
+    mocked.getWorkspace.mockRejectedValue("unreadable");
+    await useAppStore.getState().retrySave();
+    await expect(useAppStore.getState().repointFolder("/old")).rejects.toThrow(/can't be saved/);
+    expect(mocked.repointWatchedFolder).not.toHaveBeenCalled();
+  });
+
+  it("re-pointing a folder moves every record under it (#4)", async () => {
+    const ws: Workspace = { ...EMPTY_WORKSPACE, songs: { "/old/A/A.flp": { status: "prep" } } };
+    useAppStore.setState({ workspace: ws, workspaceWritable: true });
+    mocked.repointWatchedFolder.mockResolvedValue({ settings: { ...initial.settings, watchedFolders: ["/new"] }, from: "/old", to: "/new" });
+    await useAppStore.getState().repointFolder("/old");
+    await flushWorkspace();
+    expect(Object.keys(last()?.songs ?? {})).toEqual(["/new/A/A.flp"]);
+  });
+
+  it("a workspace from a newer Hivo refuses edits and says so (#6)", async () => {
+    mocked.getWorkspace.mockResolvedValue({ ...REAL, version: 3 } as unknown as Workspace);
+    await useAppStore.getState().retrySave();
+    const before = useAppStore.getState().workspace;
+    useAppStore.getState().createAlbum("Nope");
+    const s = useAppStore.getState();
+    expect(s.workspace).toBe(before);
+    expect(s.actionError).toMatch(/newer Hivo: update Hivo to edit it/);
+    await flushWorkspace();
+    expect(mocked.saveWorkspace).not.toHaveBeenCalled();
   });
 });

@@ -47,16 +47,22 @@ export function hashString(s: string): string {
 
 const masterKey = (m: FileEntry | undefined) => (m ? `${m.path}|${m.modifiedAtMs}` : "");
 
+/** The master as "Accept all" saw it: its file name and time, not its
+ * folder, so a song whose folder moved (a relink, a re-pointed linked
+ * folder) stays accepted. */
+const acceptedMasterKey = (m: FileEntry | undefined) => (m ? `${m.path.split(/[\\/]/).pop()}|${m.modifiedAtMs}` : "");
+
 /** What "Accept all" vouches for that lives outside the kit's edits (edits
  * clear the acceptance on their own), limited to what the kit exports: the
- * master file, the credits and the release date. Renaming the release or
- * reordering its tracks doesn't undo "Accepted". */
+ * master file (by name and time), the credits and the release date.
+ * Renaming the release, reordering its tracks or moving the song's folder
+ * doesn't undo "Accepted". */
 export function acceptFingerprint(project: ProjectInfo, meta: SongMeta | undefined, albums: Album[]): string {
   const release = releaseOf(albums, project.path);
   return hashString(
     JSON.stringify([
       "v2",
-      masterKey(kitMaster(project, meta)),
+      acceptedMasterKey(kitMaster(project, meta)),
       (meta?.credits ?? []).map((c) => [c.personId, c.role, c.split ?? null]),
       release?.releaseDate ?? null,
     ]),
@@ -64,12 +70,13 @@ export function acceptFingerprint(project: ProjectInfo, meta: SongMeta | undefin
 }
 
 /** The first fingerprint (it also covered the release's id, title, type
- * and track index): kits accepted with it stay accepted while it matches. */
-function legacyAcceptFingerprint(project: ProjectInfo, meta: SongMeta | undefined, albums: Album[]): string {
+ * and track index), with the master keyed by full path or by name: kits
+ * accepted with either stay accepted while it matches. */
+function legacyAcceptFingerprint(project: ProjectInfo, meta: SongMeta | undefined, albums: Album[], key: (m: FileEntry | undefined) => string): string {
   const release = releaseOf(albums, project.path);
   return hashString(
     JSON.stringify([
-      masterKey(kitMaster(project, meta)),
+      key(kitMaster(project, meta)),
       (meta?.credits ?? []).map((c) => [c.personId, c.role, c.split ?? null]),
       release ? [release.id, release.title, release.kind, release.releaseDate, release.trackPaths.indexOf(project.path)] : null,
     ]),
@@ -77,12 +84,18 @@ function legacyAcceptFingerprint(project: ProjectInfo, meta: SongMeta | undefine
 }
 
 /** "Accepted", unless the master, credits or release date changed since.
- * Kits accepted before the fingerprint existed stay accepted. */
+ * Kits accepted before the fingerprint existed stay accepted, and so do kits
+ * accepted with an older fingerprint while it still matches. */
 export function isKitAccepted(project: ProjectInfo, meta: SongMeta | undefined, albums: Album[]): boolean {
   const kit = meta?.launchKit;
   if (!kit?.acceptedAtMs) return false;
   const fp = kit.acceptedFingerprint;
-  return !fp || fp === acceptFingerprint(project, meta, albums) || fp === legacyAcceptFingerprint(project, meta, albums);
+  return (
+    !fp ||
+    fp === acceptFingerprint(project, meta, albums) ||
+    fp === legacyAcceptFingerprint(project, meta, albums, masterKey) ||
+    fp === legacyAcceptFingerprint(project, meta, albums, acceptedMasterKey)
+  );
 }
 
 const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? null;
