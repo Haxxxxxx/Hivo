@@ -257,9 +257,7 @@ impl Inbox {
     fn save(&self, items: &[InboxItem]) -> Result<(), String> {
         fs::create_dir_all(&self.root).map_err(|e| io_error(&e, "could not create the phone inbox"))?;
         let raw = serde_json::to_vec(&IndexFile { items: items.to_vec() }).map_err(|e| e.to_string())?;
-        let tmp = self.root.join("index.json.tmp");
-        crate::cover::write_private(&tmp, &raw).map_err(|e| io_error(&e, "could not save the phone inbox"))?;
-        fs::rename(&tmp, self.root.join("index.json")).map_err(|e| io_error(&e, "could not save the phone inbox"))
+        crate::cover::write_private(&self.root.join("index.json"), &raw).map_err(|e| io_error(&e, "could not save the phone inbox"))
     }
 
     /// Drops uploads that haven't moved for `PARTIAL_TTL_MS` (at start and

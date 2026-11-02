@@ -6,6 +6,7 @@ import { drawShortLayout } from "../lib/shorts";
 import { artistLine, type KitField } from "../lib/launchKit";
 import type { FileEntry, ProjectInfo, Snippet } from "../types";
 import { usePickedConcept } from "./CoverConcepts";
+import { kitFolderName, previousKitFolder } from "../lib/kitState";
 import { btn, btnPrimary } from "./ui";
 import { dict, tr } from "../i18n";
 
@@ -20,6 +21,8 @@ const T = dict(
     chooseFolder: "Choose export folder",
     needFfmpeg: "ffmpeg is needed (free, one install). See the steps below.",
     checkAgain: "Check again",
+    confirmFound: (path: string) => `ffmpeg found at ${path}. Confirm it once in Settings before it's used.`,
+    openSettings: "Open Settings",
     heading: "Shorts for Reels, TikTok and YouTube Shorts",
     previewAlt: "9:16 layout preview",
     waveformHint: "The waveform animates in the dark band",
@@ -45,6 +48,8 @@ const T = dict(
     chooseFolder: "Choisir le dossier d'export",
     needFfmpeg: "Il faut ffmpeg (gratuit, une seule install). Les étapes sont juste en dessous.",
     checkAgain: "Revérifier",
+    confirmFound: (path: string) => `ffmpeg trouvé ici : ${path}. Confirme-le une fois dans les Réglages avant qu'il serve.`,
+    openSettings: "Ouvrir les Réglages",
     heading: "Shorts pour Reels, TikTok et YouTube Shorts",
     previewAlt: "Aperçu de la mise en page 9:16",
     waveformHint: "La forme d'onde s'anime dans la bande sombre",
@@ -80,6 +85,7 @@ export function ShortsPanel({
   analysisError: string | null;
 }) {
   const settings = useAppStore((s) => s.settings);
+  const meta = useAppStore((s) => s.workspace.songs[project.path]);
   const pickOutputFolder = useAppStore((s) => s.pickOutputFolder);
   const [checkCount, setCheckCount] = useState(0);
   const recheck = () => setCheckCount((n) => n + 1);
@@ -95,7 +101,7 @@ export function ShortsPanel({
     api
       .shortsStatus()
       .then((s) => live && setStatus(s))
-      .catch(() => live && setStatus({ path: null, encoder: null, error: null }));
+      .catch(() => live && setStatus({ path: null, found: null, encoder: null, error: null }));
     return () => {
       live = false;
     };
@@ -110,7 +116,7 @@ export function ShortsPanel({
     releaseDate: value("releaseDate"),
   };
   const layoutKey = JSON.stringify(layoutInput);
-  const art = useCoverArt(project.path, layoutInput.title);
+  const art = useCoverArt(project.path, kitFolderName(meta, layoutInput.title));
   const preview = useMemo(() => drawShortLayout(layoutInput, art), [layoutKey, art]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function chooseExportFolder() {
@@ -132,15 +138,19 @@ export function ShortsPanel({
             ? { message: t.tooShort }
             : !settings.outputFolder
               ? { message: t.chooseFolderHint, action: { label: t.chooseFolder, run: chooseExportFolder } }
-              : status && !status.encoder
-                ? { message: t.needFfmpeg, action: { label: t.checkAgain, run: recheck } }
-                : null;
+              : status && !status.path && status.found
+                ? { message: t.confirmFound(status.found), action: { label: t.openSettings, run: () => setView("settings", "ffmpeg") } }
+                : status && !status.encoder
+                  ? { message: t.needFfmpeg, action: { label: t.checkAgain, run: recheck } }
+                  : null;
 
   async function render() {
     if (!settings.outputFolder || !master) return;
     setState({ kind: "running" });
     try {
       const results = await api.renderShorts({
+        song: project.path,
+        previousFolder: previousKitFolder(meta),
         master: master.path,
         clips: snippets.map((s) => ({ label: s.label, startSec: s.startSec, lengthSec: s.lengthSec, layoutPng: preview })),
         folderName: layoutInput.title,
@@ -168,7 +178,7 @@ export function ShortsPanel({
           ) : status ? (
             <div className="rounded-md border border-amber-400/20 bg-amber-500/[0.06] p-2.5 text-amber-100/80">
               <div className="flex items-center gap-1.5 font-medium">
-                <AlertTriangle size={12} /> {status.error ?? t.notFound}
+                <AlertTriangle size={12} /> {status.error ?? (status.found ? t.confirmFound(status.found) : t.notFound)}
               </div>
               <div className="mt-1 text-engrave">
                 {t.installOnce}
@@ -230,8 +240,9 @@ export function ShortsPanel({
 }
 
 /** The cover concept as the shorts' art: the one picked in this session,
- * else the one saved to the kit folder. Null: the generated art is used. */
-function useCoverArt(path: string, title: string): HTMLImageElement | null {
+ * else the saved one (where it was saved, which a title change doesn't
+ * move; else in the kit's folder). Null: the generated art is used. */
+function useCoverArt(path: string, folder: string): HTMLImageElement | null {
   const picked = usePickedConcept(path);
   const cover = useAppStore((s) => s.workspace.songs[path]?.launchKit?.cover);
   const demoMode = useAppStore((s) => s.demoMode);
@@ -243,13 +254,13 @@ function useCoverArt(path: string, title: string): HTMLImageElement | null {
     if (picked || demoMode || !cover?.savedPath) return;
     let live = true;
     api
-      .readKitCover(title)
+      .readKitCover(cover?.savedPath ?? null, folder)
       .then((b64) => live && setSaved(b64))
       .catch(() => live && setSaved(null));
     return () => {
       live = false;
     };
-  }, [picked, demoMode, cover?.savedPath, cover?.savedAtMs, title]);
+  }, [picked, demoMode, cover?.savedPath, cover?.savedAtMs, folder]);
 
   const b64 = picked ?? saved;
   useEffect(() => {

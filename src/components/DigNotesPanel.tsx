@@ -1,4 +1,4 @@
-import { ArrowLeft, ExternalLink, MonitorPlay, Pause, Play, X } from "lucide-react";
+import { ArrowLeft, ExternalLink, MonitorPlay, Pause, Play, Plus, X } from "lucide-react";
 import { useAppStore } from "../store/useAppStore";
 import { useDigger } from "../store/useDigger";
 import * as api from "../lib/tauri";
@@ -10,6 +10,7 @@ import { PhoneMemos } from "./PhoneMemos";
 import { openSession } from "../store/sessionBridge";
 import { usePhoneInbox } from "../store/usePhoneInbox";
 import { memosFor } from "../lib/phoneInbox";
+import { beatProducer, beatSongName } from "../lib/beatSong";
 import { label, secondary } from "./DigResults";
 
 // The Digger's right column while a beat or a saved prod is selected: what
@@ -35,6 +36,8 @@ const T = dict(
     bpm: (n: number) => `${Math.round(n)} BPM`,
     session: "Session view",
     sessionTitle: "The notes large, in a window kept on top of FL Studio",
+    startSong: "Start a song",
+    startSongTitle: "A new song from this beat: its notes and phone memos move to the song; the beat file stays where it is",
   },
   {
     title: "Notes",
@@ -53,6 +56,8 @@ const T = dict(
     bpm: (n: number) => `${Math.round(n)} BPM`,
     session: "Vue session",
     sessionTitle: "Les notes en grand, dans une fenêtre gardée devant FL Studio",
+    startSong: "Démarrer un son",
+    startSongTitle: "Un nouveau son à partir de cette prod : ses notes et ses mémos du téléphone passent au son ; le fichier de la prod reste où il est",
   },
 );
 
@@ -86,6 +91,15 @@ export function DigNotesPanel({ target, player, onClose }: { target: NotesTarget
   const setLeadNote = useAppStore((s) => s.setLeadNote);
   const inboxItems = usePhoneInbox((s) => s.items);
   const measured = useDigger((s) => (target.kind === "beat" ? s.facts[target.beat.path] : undefined));
+  const openNewProject = useAppStore((s) => s.openNewProject);
+  const demoMode = useAppStore((s) => s.demoMode);
+
+  /** "Start a song from this beat": the New song modal, prefilled. */
+  function startSong(b: BeatFile) {
+    const app = useAppStore.getState();
+    const producer = beatProducer(b, useDigger.getState().leads, app.workspace.leadBeats, app.workspace.people);
+    openNewProject({ status: "creation", name: beatSongName(b.name), fromBeat: { path: b.path, name: b.name, producer } });
+  }
 
   let title: string;
   let facts: string[];
@@ -142,7 +156,12 @@ export function DigNotesPanel({ target, player, onClose }: { target: NotesTarget
         </div>
       )}
 
-      <div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {localBeat && !demoMode && (
+          <button type="button" title={t.startSongTitle} onClick={() => startSong(localBeat)} className={`${secondary} flex items-center gap-1`}>
+            <Plus size={11} aria-hidden /> {t.startSong}
+          </button>
+        )}
         <button
           type="button"
           title={t.sessionTitle}

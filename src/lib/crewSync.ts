@@ -1,8 +1,8 @@
-import type { Album, AlbumKind, CrewCredit, CrewReleaseRow, CrewSongRow, ProjectInfo, SongMeta, SongStatus, StageConflict, Workspace } from "../types";
+import type { Album, AlbumKind, CrewCredit, CrewMemberRow, CrewReleaseRow, CrewSongRow, CrewSummary, ProjectInfo, SongMeta, SongStatus, StageConflict, Workspace } from "../types";
 import { cleanTitle } from "./launchKit";
 import { datedRelease } from "./releaseDates";
 import { isKitAccepted } from "./kitState";
-import { lastSaveMs } from "./songs";
+import { lastSaveMs, renderFreshness } from "./songs";
 import { dict, tr } from "../i18n";
 
 // Sync between the local workspace and the crew database (docs/ARCHITECTURE.md).
@@ -139,6 +139,7 @@ export function sharedSongPayload(project: ProjectInfo, meta: SongMeta, ws: Work
     ),
     release_date: releaseDateFor(project.path, meta, ws),
     has_mixdown: project.renders.length > 0,
+    mixdown_fresh: project.renders.length > 0 ? renderFreshness(project) === "fresh" : null,
     kit_accepted: isKitAccepted(project, meta, ws.albums),
     last_saved_at: lastSaveMs(project) > 0 ? iso(lastSaveMs(project)) : null,
   };
@@ -170,10 +171,11 @@ export function pathsByShareId(ws: Workspace): Map<string, string> {
 
 /** What to do about one of my shared songs' stage. */
 export type StageSync =
-  /** The crew moved it (on the board, or my other computer): take that. */
-  | { kind: "adopt"; path: string; stage: SongStatus | undefined; at: string }
-  /** Both sides agree: just remember the row's version. */
-  | { kind: "settle"; path: string; at: string }
+  /** The crew moved it (on the board, or my other computer): take that.
+   * `by`: who made the move (user id), when known. */
+  | { kind: "adopt"; path: string; stage: SongStatus | undefined; at: string; by: string | null }
+  /** Both sides agree: just remember the row's version (and who moved it). */
+  | { kind: "settle"; path: string; at: string; by: string | null }
   /** My move, made on version `base`: send it (the server refuses it if
    * someone moved the song since). */
   | { kind: "push"; path: string; id: string; stage: SongStatus | null; base: string }
@@ -195,9 +197,10 @@ export function stageSync(rows: CrewSongRow[], ws: Workspace, scope: ShareScope)
     const local = meta.status ?? null;
     const remote = row.stage ?? null;
     const at = row.stage_updated_at;
+    const by = row.stage_updated_by ?? null;
     const sameVersion = meta.stageBaseAt !== undefined && Date.parse(meta.stageBaseAt) === Date.parse(at);
     if (remote === local) {
-      if (!sameVersion || meta.stagePending || meta.stageConflict) out.push({ kind: "settle", path, at });
+      if (!sameVersion || meta.stagePending || meta.stageConflict) out.push({ kind: "settle", path, at, by });
       continue;
     }
     if (meta.stageConflict) {
@@ -210,7 +213,7 @@ export function stageSync(rows: CrewSongRow[], ws: Workspace, scope: ShareScope)
     if (meta.stageBaseAt === undefined) {
       // Shared before stage versions: one last time, the newer stamp wins.
       if ((meta.stageUpdatedAtMs ?? 0) > (Date.parse(at) || 0)) out.push({ kind: "push", path, id: row.id, stage: local, base: at });
-      else out.push({ kind: "adopt", path, stage: remote ?? undefined, at });
+      else out.push({ kind: "adopt", path, stage: remote ?? undefined, at, by });
       continue;
     }
     if (meta.stagePending) {
@@ -218,7 +221,7 @@ export function stageSync(rows: CrewSongRow[], ws: Workspace, scope: ShareScope)
       else out.push({ kind: "conflict", path, conflict: { mine: local, theirs: remote, by: row.stage_updated_by ?? null, at } });
       continue;
     }
-    if (!sameVersion) out.push({ kind: "adopt", path, stage: remote ?? undefined, at });
+    if (!sameVersion) out.push({ kind: "adopt", path, stage: remote ?? undefined, at, by });
   }
   return out;
 }
@@ -391,6 +394,8 @@ export function songRowMatches(p: Omit<SharedSongPayload, "stage">, row: CrewSon
     sameCredits(p.credits, row.credits ?? []) &&
     (p.release_date ?? null) === (row.release_date ?? null) &&
     p.has_mixdown === row.has_mixdown &&
+    // A server without the column (before its migration) never reports it.
+    (!("mixdown_fresh" in row) || (p.mixdown_fresh ?? null) === (row.mixdown_fresh ?? null)) &&
     p.kit_accepted === row.kit_accepted &&
     sameTime(p.last_saved_at, row.last_saved_at)
   );
@@ -431,9 +436,11 @@ export function goneCrewIds(ws: Workspace, userId: string, myCrewIds: string[]):
 }
 
 /** One of my rows on the crew server. `local`: this computer knows it (a
- * song here carries its id). `duplicate`: not known here, but a song with
- * the same title that is known here is also on the board (the same song
- * shared from two computers, or before a reinstall). */
+ * song here carries its id). `duplicate`: not known here, and another of my
+ * rows in this crew that this computer doesn't know either has the same
+ * title (the same song shared twice before a reinstall). A row with the
+ * same title as a song shared from here is not flagged: my other computer
+ * may share a different song under that title. Never removed by itself. */
 export interface MyServerShare {
   id: string;
   title: string;
@@ -448,11 +455,12 @@ const titleKey = (t: string) => t.trim().toLocaleLowerCase();
 export function myServerShares(rows: CrewSongRow[], ws: Workspace, scope: ShareScope): MyServerShare[] {
   const known = pathsByShareId(ws);
   const mine = rows.filter((r) => r.owner_id === scope.userId && r.crew_id === scope.crewId);
-  const knownTitles = new Set(mine.filter((r) => known.has(r.id)).map((r) => titleKey(r.title)));
+  const unknownTitles = new Map<string, number>();
+  for (const r of mine) if (!known.has(r.id)) unknownTitles.set(titleKey(r.title), (unknownTitles.get(titleKey(r.title)) ?? 0) + 1);
   return mine
     .map((r) => {
       const local = known.has(r.id);
-      return { id: r.id, title: r.title, stage: r.stage ?? null, local, duplicate: !local && knownTitles.has(titleKey(r.title)) };
+      return { id: r.id, title: r.title, stage: r.stage ?? null, local, duplicate: !local && (unknownTitles.get(titleKey(r.title)) ?? 0) > 1 };
     })
     .sort((a, b) => Number(a.local) - Number(b.local) || a.title.localeCompare(b.title));
 }
@@ -491,4 +499,88 @@ export function shareLimitNote(overLimit: number): string | null {
 export function pushLimitNote(songs: number, releases: number): string {
   const t = tr(T_LIMIT);
   return (songs > 0 ? t.pushSongs(songs) : "") + (releases > 0 ? t.pushReleases(releases) : "");
+}
+
+
+// ---- Round 2 (crew review): freshness, moved-by, names, credits, owner, share moves ----
+
+/** What a crew card says about the mixdown. `unknown`: there is one, sent
+ * by a Hivo from before freshness was shared. */
+export type CrewMixdown = "fresh" | "stale" | "none" | "unknown";
+
+export function crewMixdown(row: Pick<CrewSongRow, "has_mixdown" | "mixdown_fresh">): CrewMixdown {
+  if (!row.has_mixdown) return "none";
+  if (row.mixdown_fresh === true) return "fresh";
+  if (row.mixdown_fresh === false) return "stale";
+  return "unknown";
+}
+
+/** Crew credits as the crew surfaces show them: names and roles, never splits. */
+export function crewCreditsText(credits: CrewCredit[] | null | undefined): string {
+  return (credits ?? [])
+    .filter((c) => c.name?.trim())
+    .map((c) => (c.role?.trim() ? `${c.name.trim()} (${c.role.trim()})` : c.name.trim()))
+    .join(" · ");
+}
+
+/** Last known display name per user id, kept on this device so a former
+ * member's moves and releases still show a name. */
+export type KnownNames = Record<string, string>;
+
+/** The cache with these members' current names in it (null: nothing new). */
+export function rememberNames(known: KnownNames, members: Pick<CrewMemberRow, "user_id" | "display_name">[]): KnownNames | null {
+  let next: KnownNames | null = null;
+  for (const m of members) {
+    const name = m.display_name?.trim();
+    if (!m.user_id || !name || known[m.user_id] === name) continue;
+    next ??= { ...known };
+    next[m.user_id] = name;
+  }
+  return next;
+}
+
+/** A user's name: the current member's, else the last one seen here. */
+export function nameOf(userId: string | null | undefined, members: Pick<CrewMemberRow, "user_id" | "display_name">[], known: KnownNames): string | undefined {
+  if (!userId) return undefined;
+  return members.find((m) => m.user_id === userId)?.display_name ?? known[userId];
+}
+
+/** The crews I just became the owner of (a handover, or the owner left),
+ * comparing the crew list before and after. */
+export function newlyOwned(before: CrewSummary[], after: CrewSummary[]): CrewSummary[] {
+  return after.filter((c) => c.role === "owner" && before.some((b) => b.id === c.id && b.role !== "owner"));
+}
+
+/** The crew list with my role in one crew updated from my member row. */
+export function withMyRole(crews: CrewSummary[], crewId: string, role: CrewSummary["role"] | undefined): CrewSummary[] {
+  if (!role || !crews.some((c) => c.id === crewId && c.role !== role)) return crews;
+  return crews.map((c) => (c.id === crewId ? { ...c, role } : c));
+}
+
+/** The share fields that move with a crew card. */
+const SHARE_FIELDS = ["shared", "shareId", "shareCrewId", "shareUserId", "shareTitle", "stageBaseAt", "stagePending", "stageConflict", "stageMovedBy"] as const;
+
+/** Whether `to` can take over `from`'s share in this crew: `from` is shared
+ * here and `to` is another song with no share of its own (any crew). */
+export function canMoveShare(ws: Workspace, from: string, to: string, scope: ShareScope): boolean {
+  return from !== to && sharedHere(ws.songs[from], scope) && !ws.songs[to]?.shareId;
+}
+
+/** Move a crew card to another song (FL "Save As", a new version): the new
+ * song takes the share id, so the card keeps its column, order and history;
+ * the old song is no longer shared (and nothing is deleted on the server).
+ * The stage follows the card. Null when the move isn't allowed. */
+export function moveShare(ws: Workspace, from: string, to: string, scope: ShareScope): { from: Partial<SongMeta>; to: Partial<SongMeta> } | null {
+  if (!canMoveShare(ws, from, to, scope)) return null;
+  const old = ws.songs[from]!;
+  const next: Partial<SongMeta> = { status: old.status, stageUpdatedAtMs: old.stageUpdatedAtMs };
+  const cleared: Partial<SongMeta> = {};
+  for (const k of SHARE_FIELDS) {
+    (next as Record<string, unknown>)[k] = old[k];
+    (cleared as Record<string, unknown>)[k] = undefined;
+  }
+  // Explicit, so the store doesn't mark the stage as a new local move.
+  next.stagePending = old.stagePending ?? false;
+  cleared.stagePending = false;
+  return { from: cleared, to: next };
 }

@@ -221,8 +221,53 @@ pub struct SyncFile {
     pub devices: Vec<StoredDevice>,
 }
 
+/// Something wrong with `phone-sync.json` at launch, shown in Settings →
+/// Phone sync until a save works.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoreProblem {
+    pub message: String,
+    /// The file couldn't be read (it may be fine) or moved aside: nothing is
+    /// saved over it while this app runs.
+    pub blocks_saving: bool,
+}
+
+/// The paired phones, or defaults when there's no file. A file that can't
+/// be read is left alone and blocks saving (it may be fine: a permission,
+/// a locked disk); one that doesn't parse is kept as
+/// `phone-sync.json.bad-<ms>` (never over an older one) and phones pair again.
+pub fn load_store(path: &Path) -> (SyncFile, Option<StoreProblem>) {
+    let raw = match fs::read(path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (SyncFile::default(), None),
+        Err(e) => {
+            let message = format!("The paired phones (phone-sync.json) can't be read right now ({e}). Nothing is saved over them: fix that and restart Hivo.");
+            return (SyncFile::default(), Some(StoreProblem { message, blocks_saving: true }));
+        }
+    };
+    let parse = match serde_json::from_slice(&raw) {
+        Ok(file) => return (file, None),
+        Err(e) => e,
+    };
+    let bad = crate::workspace::bad_path(path);
+    let problem = match fs::rename(path, &bad) {
+        Ok(()) => {
+            let kept = bad.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            StoreProblem {
+                message: format!("The paired phones couldn't be read ({parse}), so every phone needs pairing again. The old file is kept as {kept} in Hivo's settings folder."),
+                blocks_saving: false,
+            }
+        }
+        Err(e) => StoreProblem {
+            message: format!("The paired phones couldn't be read ({parse}) or moved aside ({e}). Nothing is saved over them: fix that and restart Hivo."),
+            blocks_saving: true,
+        },
+    };
+    (SyncFile::default(), Some(problem))
+}
+
+#[cfg(test)]
 pub fn read_store(path: &Path) -> SyncFile {
-    fs::read_to_string(path).ok().and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_default()
+    load_store(path).0
 }
 
 pub fn write_store(path: &Path, file: &SyncFile) -> Result<(), String> {
@@ -467,6 +512,8 @@ pub struct Inner {
     in_flight: AtomicUsize,
     next_id: AtomicU64,
     error: Mutex<Option<String>>,
+    /// What went wrong reading phone-sync.json at launch (`load_store`).
+    store_problem: Mutex<Option<StoreProblem>>,
     pub inbox: Arc<crate::phone_inbox::Inbox>,
     /// The webview says so when it shows sample data: uploads are refused.
     demo: AtomicBool,
@@ -494,9 +541,13 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl Inner {
     pub fn new(path: PathBuf) -> Arc<Inner> {
-        let store = read_store(&path);
+        let (store, problem) = load_store(&path);
+        if let Some(p) = &problem {
+            eprintln!("phone sync: {}", p.message);
+        }
         let inbox = Arc::new(crate::phone_inbox::Inbox::open(inbox_root(&path)));
         Arc::new(Inner {
+            store_problem: Mutex::new(problem),
             inbox,
             demo: AtomicBool::new(false),
             path,
@@ -533,7 +584,14 @@ impl Inner {
     }
 
     fn save(&self, file: &SyncFile) -> Result<(), String> {
-        write_store(&self.path, file)
+        let mut problem = lock(&self.store_problem);
+        if let Some(p) = problem.as_ref().filter(|p| p.blocks_saving) {
+            return Err(p.message.clone());
+        }
+        write_store(&self.path, file)?;
+        // Paired again since the reset: the note has done its job.
+        *problem = None;
+        Ok(())
     }
 
     /// A paired device, unless it never said hello within `UNSEEN_TTL_MS`
@@ -1067,7 +1125,8 @@ fn status_of(inner: &Inner, desktop_version: &str) -> PhoneSyncStatus {
                 last_seen_ms: d.last_seen_ms,
             })
             .collect(),
-        error: lock(&inner.error).clone(),
+        // A file problem first: it outlasts a listener error.
+        error: lock(&inner.store_problem).as_ref().map(|p| p.message.clone()).or_else(|| lock(&inner.error).clone()),
     }
 }
 
@@ -1473,9 +1532,44 @@ mod tests {
         assert!(!forget_device(&mut f2, &d.id));
         write_store(&path, &f2).unwrap();
         assert_eq!(read_store(&path).devices.len(), 1);
-        // Missing or broken file = defaults.
+        assert!(!dir.join("phone-sync.json.tmp").exists(), "written atomically");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_broken_store_is_kept_aside_and_reported() {
+        let dir = std::env::temp_dir().join(format!("hivo-phone-sync-bad-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("phone-sync.json");
+        // Missing: defaults, nothing to say.
+        assert_eq!(load_store(&path), (SyncFile::default(), None));
+        // Broken: kept as .bad-<ms>, reported, and saving works again.
         fs::write(&path, "not json").unwrap();
-        assert_eq!(read_store(&path), SyncFile::default());
+        let (file, problem) = load_store(&path);
+        assert_eq!(file, SyncFile::default());
+        let problem = problem.expect("reported");
+        assert!(!problem.blocks_saving && problem.message.contains("pairing again"), "{}", problem.message);
+        let kept: Vec<_> = fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().starts_with("phone-sync.json.bad-")).collect();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(fs::read(kept[0].path()).unwrap(), b"not json", "the broken file is kept");
+        assert!(!path.exists());
+        // Shown in the status until a save works.
+        fs::write(&path, "still not json").unwrap();
+        let inner = Inner::new(path.clone());
+        assert!(status_of(&inner).error.is_some_and(|e| e.contains("pairing again")));
+        inner.save(&SyncFile::default()).unwrap();
+        assert_eq!(status_of(&inner).error, None);
+        let bads = fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().starts_with("phone-sync.json.bad-")).count();
+        assert_eq!(bads, 2, "a second broken file never replaces the first");
+        // Can't be read at all (here: a folder in its place): left alone, saving refused.
+        let blocked = dir.join("blocked").join("phone-sync.json");
+        fs::create_dir_all(&blocked).unwrap();
+        let (_, problem) = load_store(&blocked);
+        assert!(problem.is_some_and(|p| p.blocks_saving));
+        let inner = Inner::new(blocked.clone());
+        assert!(inner.save(&SyncFile::default()).is_err());
+        assert!(blocked.is_dir(), "nothing written over it");
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -5,6 +5,7 @@ import type { RealtimeChannel } from "@supabase/supabase-js";
 import type { CrewColumnRow, CrewInvite, CrewMemberRow, CrewReleaseRow, CrewSongRow, CrewSummary, SongStatus } from "@shared/types";
 import { applyCardMove, crewMove, crewPipeline, restoreSongs } from "@shared/lib/crewBoard";
 import { applyPlaced, fetchAllPages, isMissingOnServer, placeCards } from "@shared/lib/crewFetch";
+import { newlyOwned, rememberNames, withMyRole, type KnownNames } from "@shared/lib/crewSync";
 import { errorMessage, supabase } from "./supabase";
 import { tr } from "@shared/i18n";
 import { W } from "./dashboardCopy";
@@ -13,6 +14,8 @@ import { W } from "./dashboardCopy";
 // and members, live updates. Same rules as the desktop app; no local files.
 
 const ACTIVE_CREW_KEY = "flm-crew-web-active";
+/** Last known display name per user id (a former member keeps a name). */
+const NAMES_KEY = "flm-crew-web-names";
 const SAFETY_REFRESH_MS = 5 * 60_000;
 
 interface WebState {
@@ -32,6 +35,11 @@ interface WebState {
   error: string | null;
   /** Realtime is connected; false after a channel error or timeout, until it reconnects. */
   live: boolean;
+  /** Crews I became the owner of while the page was open (shown once). */
+  nowOwnerOf: string[];
+  dismissOwnerNotice: () => void;
+  /** Last known display names by user id, kept in this browser. */
+  knownNames: KnownNames;
 
   init: () => Promise<void>;
   sendCode: (email: string) => Promise<void>;
@@ -72,6 +80,29 @@ const remember = (id: string | null) => {
     /* convenience only */
   }
 };
+const readNames = (): KnownNames => {
+  try {
+    const v = JSON.parse(localStorage.getItem(NAMES_KEY) ?? "{}") as unknown;
+    return v && typeof v === "object" ? (v as KnownNames) : {};
+  } catch {
+    return {};
+  }
+};
+const writeNames = (names: KnownNames) => {
+  try {
+    localStorage.setItem(NAMES_KEY, JSON.stringify(names));
+  } catch {
+    /* display convenience only */
+  }
+};
+const toSummaries = (rows: Record<string, unknown>[]): CrewSummary[] =>
+  rows.map((r) => ({
+    id: r.crew_id as string,
+    name: (r.crews as { name: string } | null)?.name ?? "Crew",
+    role: r.role as CrewSummary["role"],
+    displayName: r.display_name as string,
+  }));
+
 const remembered = () => {
   try {
     return localStorage.getItem(ACTIVE_CREW_KEY);
@@ -81,6 +112,21 @@ const remembered = () => {
 };
 
 export const useWeb = create<WebState>((set, get) => {
+  /** A new crew list; says once which crews I now own. */
+  function setCrews(crews: CrewSummary[]) {
+    const before = get().crews;
+    if (crews === before) return;
+    const owned = newlyOwned(before, crews).map((c) => c.name);
+    set({ crews, ...(owned.length ? { nowOwnerOf: [...new Set([...get().nowOwnerOf, ...owned])] } : {}) });
+  }
+
+  /** My role changed (a handover, or the owner left): reload the list in place. */
+  async function refreshCrews() {
+    if (!supabase || !get().userId) return;
+    const { data, error } = await supabase.from("crew_members").select("crew_id, role, display_name, crews(name)").eq("user_id", get().userId!);
+    if (!error) setCrews(toSummaries(data ?? []));
+  }
+
   async function loadCrewData() {
     const id = get().activeCrewId;
     const db = supabase;
@@ -103,13 +149,18 @@ export const useWeb = create<WebState>((set, get) => {
     // Only a crew server without these tables means "none"; anything else is an error.
     if (columns.error && !isMissingOnServer(columns.error)) throw columns.error;
     if (releases.error && !isMissingOnServer(releases.error)) throw releases.error;
+    const names = rememberNames(get().knownNames, memberRows);
+    if (names) writeNames(names);
     set({
       songs: [...songs.data].sort((a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? "") || a.id.localeCompare(b.id)),
       members: memberRows,
       columns: columns.error ? [] : (columns.data as CrewColumnRow[]),
       releases: releases.error ? [] : releases.data,
       error: null,
+      ...(names ? { knownNames: names } : {}),
     });
+    // My role here changed: owner tools follow without a reload.
+    setCrews(withMyRole(get().crews, id, memberRows.find((m) => m.user_id === get().userId)?.role));
   }
 
   function upsertRelease(row: CrewReleaseRow) {
@@ -169,7 +220,11 @@ export const useWeb = create<WebState>((set, get) => {
         if (old && get().columns.some((c) => c.id === old)) void reloadColumns(id);
       })
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "crew_members", filter: `crew_id=eq.${id}` }, reloadMembers)
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "crew_members", filter: `crew_id=eq.${id}` }, reloadMembers)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "crew_members", filter: `crew_id=eq.${id}` }, (p) => {
+        // My own row: my role may have changed, so the crew list too.
+        if ((p.new as Partial<CrewMemberRow>)?.user_id === get().userId) void refreshCrews().catch(() => {});
+        reloadMembers();
+      })
       .on("postgres_changes", { event: "DELETE", schema: "public", table: "crew_members" }, (p) => {
         const old = p.old as Partial<CrewMemberRow>;
         if (get().activeCrewId !== id || old.crew_id !== id) return;
@@ -203,6 +258,9 @@ export const useWeb = create<WebState>((set, get) => {
     error: null,
     live: true,
     invites: [],
+    nowOwnerOf: [],
+    knownNames: readNames(),
+    dismissOwnerNotice: () => set({ nowOwnerOf: [] }),
 
     init: async () => {
       if (initialized) return;
@@ -258,13 +316,9 @@ export const useWeb = create<WebState>((set, get) => {
         set({ loadError: errorMessage(error) });
         throw new Error(errorMessage(error));
       }
-      const crews: CrewSummary[] = (data ?? []).map((r) => ({
-        id: r.crew_id as string,
-        name: (r.crews as unknown as { name: string } | null)?.name ?? "Crew",
-        role: r.role as CrewSummary["role"],
-        displayName: r.display_name as string,
-      }));
-      set({ crews, loadError: null });
+      set({ loadError: null });
+      setCrews(toSummaries(data ?? []));
+      const crews = get().crews;
       const pick = crews.find((c) => c.id === remembered())?.id ?? crews[0]?.id ?? null;
       await get().selectCrew(pick);
     },

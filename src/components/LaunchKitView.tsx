@@ -28,7 +28,7 @@ import {
   parseDate,
 } from "../lib/launchKit";
 import { busyDates, daysUntil, releaseOf } from "../lib/releaseDates";
-import { acceptFingerprint, exportFingerprint, exportStatus, isKitAccepted, isLossless, kitMaster, lastLyricsLanguage } from "../lib/kitState";
+import { acceptFingerprint, exportedFolderName, exportFingerprint, exportStatus, isKitAccepted, isLossless, kitMaster, lastLyricsLanguage, previousKitFolder } from "../lib/kitState";
 import { dict, tr } from "../i18n";
 import { aiDisclosure, draftCopy, reviewKit } from "../lib/ai";
 import { formatRelative } from "../lib/format";
@@ -487,9 +487,10 @@ export function LaunchKitView() {
         master: master?.path ?? null,
         masterName: masterBaseName(fields, project.name),
         clips: snippets,
-        previousFolder: meta.launchKit?.exported?.folder ?? null,
+        song: project.path,
+        previousFolder: previousKitFolder(meta),
       });
-      patchKit(project.path, { exported: { atMs: Date.now(), fingerprint, folder: title } });
+      patchKit(project.path, { exported: { atMs: Date.now(), fingerprint, folder: exportedFolderName(dir, title) } });
       setExportState({ status: "done", dir });
       setGuide({ guide: kitGuide(lang, { title, master: masterExt ? `${masterBaseName(fields, project.name)}.${masterExt}` : null, snippets: snippets.map((s) => s.label) }), lang, dir });
     } catch (e) {

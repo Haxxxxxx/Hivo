@@ -7,6 +7,9 @@ import {
   chunks,
   goneCrewIds,
   isQuotaError,
+  moveShare,
+  newlyOwned,
+  rememberNames,
   RELEASES_PER_CREW,
   releasePayloads,
   releaseRowMatches,
@@ -22,6 +25,8 @@ import {
   staleReleaseIds,
   staleShareIds,
   syncFingerprint,
+  withMyRole,
+  type KnownNames,
   type ShareScope,
   type StageSync,
 } from "../lib/crewSync";
@@ -42,6 +47,8 @@ import { useAppStore } from "./useAppStore";
 const ACTIVE_CREW_KEY = "flm-active-crew";
 /** Names of the crews I've been in (id → name), to say which one I'm no longer in. */
 const CREW_NAMES_KEY = "flm-crew-names";
+/** Last known display name per user id (crewmates, former ones too). */
+const MEMBER_NAMES_KEY = "flm-crew-member-names";
 const PUSH_DELAY_MS = 1500;
 const RETRY_MS = 30_000;
 const FOCUS_MIN_GAP_MS = 20_000;
@@ -87,9 +94,19 @@ interface CrewState {
   /** Crews I found I'm no longer in (removed, or the crew was deleted), by
    * name ("" when unknown): my shares there were forgotten. Shown once. */
   removedFrom: string[];
+  /** Crews I became the owner of while the app ran (a handover, or the
+   * owner left), by name. Shown once. */
+  nowOwnerOf: string[];
+  /** Last known display names by user id, from this device's earlier loads
+   * (so a former member still has a name). */
+  knownNames: KnownNames;
 
   init: () => Promise<void>;
   dismissRemoved: () => void;
+  dismissOwnerNotice: () => void;
+  /** Move a song's crew card to another song (Save As, a new version): same
+   * card, column and order; the old song is no longer shared. */
+  moveShareTo: (from: string, to: string) => void;
   /** Owner: rename the active crew. */
   renameCrew: (name: string) => Promise<void>;
   /** My name in the active crew. */
@@ -157,6 +174,8 @@ let forceNextSync = false;
 let selfWriting = 0;
 /** Someone else changed the workspace while a cycle ran. */
 let changedDuringCycle = false;
+/** The crew server has no songs.mixdown_fresh column yet (see send()). */
+let noFreshColumn = false;
 /** Crews I'm no longer in, found while the real workspace wasn't loaded
  * (sample data, read-only): forgotten once it is. */
 const pendingForget = new Set<string>();
@@ -178,6 +197,23 @@ function readCrewNames(): Record<string, string> {
   }
 }
 
+function readMemberNames(): KnownNames {
+  try {
+    const v = JSON.parse(localStorage.getItem(MEMBER_NAMES_KEY) ?? "{}") as unknown;
+    return v && typeof v === "object" ? (v as KnownNames) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeMemberNames(names: KnownNames) {
+  try {
+    localStorage.setItem(MEMBER_NAMES_KEY, JSON.stringify(names));
+  } catch {
+    /* names are a display convenience */
+  }
+}
+
 function rememberCrewNames(crews: CrewSummary[]) {
   try {
     const names = readCrewNames();
@@ -186,6 +222,16 @@ function rememberCrewNames(crews: CrewSummary[]) {
   } catch {
     /* only used to name a crew in a notice */
   }
+}
+
+/** crew_members rows (with the crew's name) as my crew list. */
+function toSummaries(rows: Record<string, unknown>[]): CrewSummary[] {
+  return rows.map((r) => ({
+    id: r.crew_id as string,
+    name: ((r.crews as { name: string } | null)?.name ?? "Crew") as string,
+    role: r.role as CrewSummary["role"],
+    displayName: r.display_name as string,
+  }));
 }
 
 /** Upsert results: rows that went through, and new rows the limit refused. */
@@ -334,13 +380,36 @@ export const useCrewStore = create<CrewState>((set, get) => {
     // Only a crew server without these tables means "none"; anything else is an error.
     if (columns.error && !isMissingOnServer(columns.error)) throw columns.error;
     if (releases.error && !isMissingOnServer(releases.error)) throw releases.error;
+    const names = rememberNames(get().knownNames, memberRows);
+    if (names) writeMemberNames(names);
     set({
       songs: [...songs.data].sort(byUpdatedDesc),
       members: memberRows,
       columns: columns.error ? [] : (columns.data as CrewColumnRow[]),
       releases: releases.error ? [] : [...releases.data].sort(byReleaseDate),
+      ...(names ? { knownNames: names } : {}),
     });
+    // My role here changed (a handover, or the owner left): owner controls
+    // follow without a restart.
+    setCrews(withMyRole(get().crews, crewId, memberRows.find((m) => m.user_id === userId)?.role));
     return true;
+  }
+
+  /** A new crew list: remember the names, and say once which crews I now own. */
+  function setCrews(crews: CrewSummary[]) {
+    const before = get().crews;
+    if (crews === before) return;
+    const owned = newlyOwned(before, crews).map((c) => c.name);
+    set({ crews, ...(owned.length ? { nowOwnerOf: [...new Set([...get().nowOwnerOf, ...owned])] } : {}) });
+    rememberCrewNames(crews);
+  }
+
+  /** Reload the crew list in place (my role changed), keeping the active crew. */
+  async function refreshCrews() {
+    if (!supabase || !get().userId) return;
+    const { data, error } = await supabase.from("crew_members").select("crew_id, role, display_name, crews(name)").eq("user_id", get().userId!);
+    if (error) return;
+    setCrews(toSummaries(data ?? []));
   }
 
   /** A realtime insert/update of one of the active crew's songs. */
@@ -363,10 +432,15 @@ export const useCrewStore = create<CrewState>((set, get) => {
   function applyStage(a: Exclude<StageSync, { kind: "push" }>) {
     const app = useAppStore.getState();
     own(() => {
+      // Who set the stage, when it was a crewmate (my own moves say nothing).
+      const movedBy = (by: string | null) => (by && by !== get().userId ? by : undefined);
       if (a.kind === "adopt") {
-        app.updateSong(a.path, { status: a.stage, stageBaseAt: a.at, stagePending: false, stageConflict: undefined, stageUpdatedAtMs: Date.parse(a.at) });
+        app.updateSong(a.path, { status: a.stage, stageBaseAt: a.at, stagePending: false, stageConflict: undefined, stageUpdatedAtMs: Date.parse(a.at), stageMovedBy: movedBy(a.by) });
       } else if (a.kind === "settle") {
-        app.updateSong(a.path, { stageBaseAt: a.at, stagePending: false, stageConflict: undefined });
+        const meta = app.workspace.songs[a.path];
+        // Only a settle on a new version says who moved it (the same version keeps what it had).
+        const sameVersion = meta?.stageBaseAt !== undefined && Date.parse(meta.stageBaseAt) === Date.parse(a.at);
+        app.updateSong(a.path, { stageBaseAt: a.at, stagePending: false, stageConflict: undefined, ...(sameVersion ? {} : { stageMovedBy: movedBy(a.by) }) });
       } else {
         app.updateSong(a.path, { stageConflict: a.conflict });
       }
@@ -429,7 +503,9 @@ export const useCrewStore = create<CrewState>((set, get) => {
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "crew_members", filter: `crew_id=eq.${crewId}` }, () => {
         if (get().activeCrewId === crewId) void loadCrewData().catch(() => {});
       })
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "crew_members", filter: `crew_id=eq.${crewId}` }, () => {
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "crew_members", filter: `crew_id=eq.${crewId}` }, (p) => {
+        // My own row: my role may have changed (handover), so the crew list too.
+        if ((p.new as Partial<CrewMemberRow>)?.user_id === get().userId) void refreshCrews().catch(() => {});
         if (get().activeCrewId === crewId) void loadCrewData().catch(() => {});
       })
       .on("postgres_changes", { event: "DELETE", schema: "public", table: "crew_members" }, (p) => {
@@ -463,7 +539,7 @@ export const useCrewStore = create<CrewState>((set, get) => {
     const batches = chunks(rows);
     for (let i = 0; i < batches.length; i++) {
       const batch = batches[i];
-      const { error } = await supabase.from(table).upsert(batch, opts);
+      const { error } = await send(table, batch, opts);
       if (!error) {
         batch.forEach((r) => rejected.delete(r.id));
         out.ok.push(...batch);
@@ -476,7 +552,7 @@ export const useCrewStore = create<CrewState>((set, get) => {
           out.overLimit++;
           continue;
         }
-        const res = await supabase.from(table).upsert([r], opts);
+        const res = await send(table, [r], opts);
         if (!res.error) {
           rejected.delete(r.id);
           out.ok.push(r);
@@ -492,6 +568,25 @@ export const useCrewStore = create<CrewState>((set, get) => {
       }
     }
     return out;
+  }
+
+  /** One upsert. A crew server from before the mixdown_fresh column
+   * (its migration not pushed yet) refuses the unknown column: send
+   * without it from then on, so sharing never stops over it. */
+  async function send<T extends { id: string }>(table: "songs" | "releases", rows: T[], opts: { onConflict: string; ignoreDuplicates?: boolean }) {
+    const strip = (list: T[]): T[] =>
+      table === "songs" && noFreshColumn
+        ? list.map((r) => {
+            const { mixdown_fresh: _f, ...rest } = r as T & { mixdown_fresh?: unknown };
+            return rest as T;
+          })
+        : list;
+    const res = await supabase!.from(table).upsert(strip(rows), opts);
+    if (res.error && table === "songs" && !noFreshColumn && /mixdown_fresh/.test(res.error.message ?? "")) {
+      noFreshColumn = true;
+      return supabase!.from(table).upsert(strip(rows), opts);
+    }
+    return res;
   }
 
   /** Delete my rows by id, a chunk per request. */
@@ -553,7 +648,7 @@ export const useCrewStore = create<CrewState>((set, get) => {
         continue;
       }
       const r = await moveStage(a.id, a.stage, a.base);
-      if (r.applied) applyStage({ kind: "settle", path: a.path, at: r.stage_updated_at });
+      if (r.applied) applyStage({ kind: "settle", path: a.path, at: r.stage_updated_at, by: r.stage_updated_by });
       else applyStage({ kind: "conflict", path: a.path, conflict: { mine: a.stage, theirs: r.stage, by: r.stage_updated_by, at: r.stage_updated_at } });
     }
 
@@ -715,8 +810,24 @@ export const useCrewStore = create<CrewState>((set, get) => {
     invites: [],
     sync: { kind: "idle" },
     removedFrom: [],
+    nowOwnerOf: [],
+    knownNames: readMemberNames(),
 
     dismissRemoved: () => set({ removedFrom: [] }),
+    dismissOwnerNotice: () => set({ nowOwnerOf: [] }),
+
+    moveShareTo: (from, to) => {
+      const sc = scope();
+      if (!sc) return;
+      const app = useAppStore.getState();
+      const patch = moveShare(app.workspace, from, to, sc);
+      if (!patch) return;
+      // Both in one go before the debounced sync: the row is updated, never deleted.
+      app.updateSong(to, patch.to);
+      app.updateSong(from, patch.from);
+      const id = patch.to.shareId;
+      if (id) (lastPushed.delete(id), rejected.delete(id));
+    },
 
     init: async () => {
       // Once per app run (React runs startup effects twice in development).
@@ -788,14 +899,9 @@ export const useCrewStore = create<CrewState>((set, get) => {
         set({ loadError: crewErrorMessage(error) });
         throw new Error(crewErrorMessage(error));
       }
-      const crews: CrewSummary[] = (data ?? []).map((r) => ({
-        id: r.crew_id as string,
-        name: ((r.crews as unknown as { name: string } | null)?.name ?? "Crew") as string,
-        role: r.role as CrewSummary["role"],
-        displayName: r.display_name as string,
-      }));
-      set({ crews, loadError: null });
-      rememberCrewNames(crews);
+      set({ loadError: null });
+      setCrews(toSummaries(data ?? []));
+      const crews = get().crews;
       // Shares here with a crew I'm no longer in: forget them (never republished on a rejoin).
       forgetGoneCrews();
       const remembered = readActiveCrew();
