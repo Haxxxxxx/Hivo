@@ -16,6 +16,14 @@
 //! here; `/v1/snapshot` and `/v1/notes` are forwarded to the webview (the
 //! single writer of workspace.json) with the `phone-sync-request` event and
 //! answered through `phone_sync_reply`, or "busy" after 10 s.
+//!
+//! Protocol 1.2 (2026-11): replies are bound to the request they answer
+//! (AAD `hivo-sync-v1|<device>|<path>|resp|<request nonce>`), pairing is a
+//! one-time X25519 exchange (the QR holds a 5-minute token and this
+//! computer's public key, never the device key: `/v1/pair`), and the replay
+//! set survives a restart (`<store>.replay`, an append-only log). Phones
+//! paired before 1.2 keep their key and get unbound replies only while they
+//! don't say 1.2 (`StoredDevice::derived` = false: "Re-pair to upgrade").
 
 use crate::error::app_err;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
@@ -62,6 +70,16 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 /// The webview's last-seen time is written at most this often per device.
 const SEEN_WRITE_EVERY_MS: i64 = 60_000;
 const AAD_PREFIX: &str = "hivo-sync-v1|";
+/// What `/v1/hello` reports and what a phone says it speaks (`v` in the request).
+pub const PROTOCOL: &str = "1.2";
+/// v1.2 pairing: the phone's first request, sealed with the derived key.
+pub const PAIR_PATH: &str = "/v1/pair";
+/// A pairing QR works once, for this long.
+pub const PAIR_TTL_MS: i64 = 300_000;
+/// HKDF info prefix for the device key (then `<device>|<desktop pub>|<phone pub>`).
+const PAIR_INFO_PREFIX: &str = "hivo-sync-v1.2|pair|";
+/// The replay log is rewritten (live entries only) after this many appends.
+const REPLAY_COMPACT_EVERY: usize = 10_000;
 pub const REQUEST_EVENT: &str = "phone-sync-request";
 const FORWARDED: [&str; 2] = ["/v1/snapshot", "/v1/notes"];
 /// v1.1 (step 4): answered here from the phone inbox (crate::phone_inbox).
@@ -109,6 +127,22 @@ fn resp_path(path: &str) -> String {
     format!("{path}|resp")
 }
 
+/// The answer's AAD. v1.2: bound to the request's nonce
+/// (`…|<path>|resp|<nonce>`), so an old sealed answer can't be replayed as
+/// the answer to a new request. None: the 1.1 form (`…|<path>|resp`), only
+/// for phones paired before 1.2 that don't say 1.2.
+pub fn resp_aad(device_id: &str, path: &str, request_nonce: Option<&str>) -> String {
+    match request_nonce {
+        Some(n) => format!("{AAD_PREFIX}{device_id}|{path}|resp|{n}"),
+        None => aad(device_id, &resp_path(path)),
+    }
+}
+
+/// True when a phone's `v` is 1.2 or later (it checks the answer's binding).
+pub fn speaks_bound(v: Option<&str>) -> bool {
+    v.and_then(major_minor).is_some_and(|mm| mm >= (1, 2))
+}
+
 pub fn random_bytes<const N: usize>() -> Result<[u8; N], String> {
     <[u8; N]>::try_generate().map_err(|e| format!("no system randomness: {e}"))
 }
@@ -137,6 +171,65 @@ pub struct SealedRequest {
     pub nonce: String,
     #[serde(default)]
     pub body: Value,
+    /// The protocol the phone speaks ("1.2"); absent from 1.1 phones.
+    #[serde(default)]
+    pub v: Option<String>,
+}
+
+// ---- v1.2 pairing: X25519 + HKDF-SHA256 ----
+
+/// The device key both sides derive at pairing:
+/// `HKDF-SHA256(salt = token, ikm = X25519(shared), info = "hivo-sync-v1.2|pair|" + deviceId + "|" + b64(desktop pub) + "|" + b64(phone pub))`.
+/// The token (a pre-shared secret from the QR) is mixed in as the salt, like
+/// a PSK in Noise / WireGuard: knowing the token alone gives nothing, and the
+/// DH alone (an attacker on the LAN without the QR) gives nothing either.
+pub fn derive_device_key(shared: &[u8; 32], token: &[u8; 32], device_id: &str, desktop_pub: &[u8; 32], phone_pub: &[u8; 32]) -> [u8; 32] {
+    let info = format!("{PAIR_INFO_PREFIX}{device_id}|{}|{}", B64.encode(desktop_pub), B64.encode(phone_pub));
+    let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(token), shared);
+    let mut out = [0u8; 32];
+    hk.expand(info.as_bytes(), &mut out).expect("32 bytes is a valid HKDF-SHA256 length");
+    out
+}
+
+/// The desktop's side: the device key for a phone's public key, or None for
+/// a low-order point (an all-zero shared secret).
+pub fn desktop_derive(secret: &x25519_dalek::StaticSecret, token: &[u8; 32], device_id: &str, phone_pub: &[u8; 32]) -> Option<[u8; 32]> {
+    let desktop_pub = x25519_dalek::PublicKey::from(secret).to_bytes();
+    let shared = secret.diffie_hellman(&x25519_dalek::PublicKey::from(*phone_pub));
+    if !shared.was_contributory() {
+        return None;
+    }
+    Some(derive_device_key(shared.as_bytes(), token, device_id, &desktop_pub, phone_pub))
+}
+
+/// A QR shown and not used yet (memory only: a restart voids it).
+pub struct PendingPair {
+    pub token: [u8; 32],
+    pub secret: x25519_dalek::StaticSecret,
+    pub created_ms: i64,
+    /// Re-pair of a phone already in the store (replaced in place on success).
+    pub repair: bool,
+    pub port: u16,
+}
+
+impl PendingPair {
+    pub fn new(repair: bool, port: u16, now: i64) -> Result<PendingPair, String> {
+        Ok(PendingPair { token: random_bytes::<32>()?, secret: x25519_dalek::StaticSecret::from(random_bytes::<32>()?), created_ms: now, repair, port })
+    }
+    pub fn expired(&self, now: i64) -> bool {
+        now - self.created_ms > PAIR_TTL_MS
+    }
+    pub fn desktop_pub(&self) -> [u8; 32] {
+        x25519_dalek::PublicKey::from(&self.secret).to_bytes()
+    }
+}
+
+/// The body of a `/v1/pair` request: an envelope plus the phone's public key.
+#[derive(Debug, Deserialize)]
+struct PairEnvelope {
+    n: String,
+    c: String,
+    x: String,
 }
 
 // ---- Replay protection ----
@@ -153,12 +246,71 @@ pub enum Reject {
 pub struct ReplayGuard {
     seen: HashMap<String, i64>,
     order: VecDeque<(i64, String)>,
+    /// Append-only log of accepted nonces (`<seen ms>\t<device>|<nonce>`), so
+    /// a request replayed right after a restart is still refused. None in
+    /// tests that don't need it.
+    log: Option<PathBuf>,
+    appended: usize,
 }
 
 impl ReplayGuard {
+    /// The guard, with what the log at `log` remembers from the last
+    /// `NONCE_TTL_MS` (the log is then rewritten with those only).
+    pub fn load(log: PathBuf, now: i64) -> ReplayGuard {
+        let mut g = ReplayGuard { log: Some(log.clone()), ..ReplayGuard::default() };
+        if let Ok(raw) = fs::read_to_string(&log) {
+            let mut rows: Vec<(i64, String)> = raw
+                .lines()
+                .filter_map(|l| {
+                    let (at, key) = l.split_once('\t')?;
+                    Some((at.parse::<i64>().ok()?, key.to_string()))
+                })
+                .filter(|(at, key)| *at >= now - NONCE_TTL_MS && *at <= now + TS_WINDOW_MS && !key.is_empty())
+                .collect();
+            rows.sort_by_key(|(at, _)| *at);
+            let skip = rows.len().saturating_sub(MAX_SEEN_NONCES);
+            for (at, key) in rows.into_iter().skip(skip) {
+                if g.seen.insert(key.clone(), at).is_none() {
+                    g.order.push_back((at, key));
+                }
+            }
+        }
+        if let Err(e) = g.compact() {
+            eprintln!("phone sync: could not rewrite the replay log: {e}");
+        }
+        g
+    }
+
+    fn compact(&mut self) -> std::io::Result<()> {
+        let Some(log) = &self.log else { return Ok(()) };
+        let body: String = self.order.iter().map(|(at, key)| format!("{at}\t{key}\n")).collect();
+        crate::cover::write_private(log, body.as_bytes())?;
+        self.appended = 0;
+        Ok(())
+    }
+
+    fn append(&mut self, at: i64, key: &str) -> std::io::Result<()> {
+        let Some(log) = &self.log else { return Ok(()) };
+        let mut options = fs::OpenOptions::new();
+        options.append(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut f = options.open(log)?;
+        std::io::Write::write_all(&mut f, format!("{at}\t{key}\n").as_bytes())?;
+        self.appended += 1;
+        if self.appended >= REPLAY_COMPACT_EVERY {
+            self.compact()?;
+        }
+        Ok(())
+    }
+
     /// Accepts a (device, nonce, ts) once inside the window.
     pub fn check(&mut self, device_id: &str, nonce: &str, ts: i64, now: i64) -> Result<(), Reject> {
-        if nonce.is_empty() || nonce.len() > 64 {
+        // Printable ASCII only: it goes in the log, one per line.
+        if nonce.is_empty() || nonce.len() > 64 || !nonce.bytes().all(|b| b.is_ascii_graphic()) {
             return Err(Reject::BadNonce);
         }
         if (now - ts).abs() > TS_WINDOW_MS {
@@ -176,6 +328,12 @@ impl ReplayGuard {
             return Err(Reject::Replayed);
         }
         if self.seen.len() >= MAX_SEEN_NONCES {
+            return Err(Reject::Full);
+        }
+        // Written down before it's answered: a nonce that can't be logged
+        // would be accepted again after a restart (refused as "busy").
+        if let Err(e) = self.append(now, &key) {
+            eprintln!("phone sync: could not write the replay log: {e}");
             return Err(Reject::Full);
         }
         self.seen.insert(key.clone(), now);
@@ -203,6 +361,10 @@ pub struct StoredDevice {
     /// this phone needs a new QR (Settings → Phone sync → Re-pair).
     #[serde(default)]
     pub paired_port: Option<u16>,
+    /// Paired with v1.2 (key derived with X25519, never in a QR): its answers
+    /// are always bound to the request. False for phones paired before.
+    #[serde(default)]
+    pub derived: bool,
 }
 
 impl StoredDevice {
@@ -276,8 +438,10 @@ pub fn write_store(path: &Path, file: &SyncFile) -> Result<(), String> {
     crate::cover::write_private(path, raw.as_bytes()).map_err(|e| format!("could not save phone sync settings: {e}"))
 }
 
-/// A new device: 16-byte id and 32-byte key. Devices that were paired but
-/// never said hello (an abandoned QR) are dropped first.
+/// A device paired the 1.1 way (16-byte id, 32-byte key that was in the QR),
+/// as phones paired before 1.2 are in `phone-sync.json`. Devices that were
+/// paired but never said hello (an abandoned QR) are dropped first.
+#[cfg(test)]
 pub fn add_device(file: &mut SyncFile, now: i64) -> Result<StoredDevice, String> {
     file.devices.retain(|d| d.last_seen_ms.is_some());
     if file.devices.len() >= MAX_DEVICES {
@@ -291,21 +455,42 @@ pub fn add_device(file: &mut SyncFile, now: i64) -> Result<StoredDevice, String>
         paired_at_ms: now,
         last_seen_ms: None,
         paired_port: None,
+        derived: false,
     };
     file.devices.push(device.clone());
     Ok(device)
 }
 
-/// "Re-pair this phone": a new key for the same device id, in place (its
-/// name and what it sent stay; the old key stops working). Until the phone
-/// scans the new QR it counts as never seen.
-pub fn repair_device(file: &mut SyncFile, id: &str, port: u16, now: i64) -> Result<StoredDevice, String> {
-    let d = file.devices.iter_mut().find(|d| d.id == id).ok_or("That phone isn't paired any more.")?;
-    d.key = B64.encode(random_bytes::<32>()?);
-    d.paired_at_ms = now;
-    d.last_seen_ms = None;
-    d.paired_port = Some(port);
-    Ok(d.clone())
+/// A v1.2 pairing went through: the device with its derived key. A re-pair
+/// replaces the key in place (its name and what it sent stay; the old key
+/// stops working only now, so an abandoned re-pair QR breaks nothing).
+pub fn complete_pairing(file: &mut SyncFile, id: &str, key: &[u8; 32], repair: bool, port: u16, now: i64) -> Result<(), String> {
+    let key = B64.encode(key);
+    if let Some(d) = file.devices.iter_mut().find(|d| d.id == id) {
+        d.key = key;
+        d.derived = true;
+        d.paired_at_ms = now;
+        d.last_seen_ms = Some(now);
+        d.paired_port = Some(port);
+        return Ok(());
+    }
+    if repair {
+        return Err("That phone isn't paired any more.".to_string());
+    }
+    if file.devices.len() >= MAX_DEVICES {
+        return Err(format!("{MAX_DEVICES} phones are paired already. Forget one first."));
+    }
+    file.devices.push(StoredDevice {
+        id: id.to_string(),
+        key,
+        name: None,
+        app_version: None,
+        paired_at_ms: now,
+        last_seen_ms: Some(now),
+        paired_port: Some(port),
+        derived: true,
+    });
+    Ok(())
 }
 
 /// The listener took `port` while another one was saved (the one phones
@@ -344,11 +529,12 @@ fn uri_encode(s: &str) -> String {
     out
 }
 
-/// `hivo://pair?v=1&d=<id>&k=<key>&h=<ip1>,<ip2>&p=<port>&n=<name>`.
-/// Only private IPv4 addresses go in `h`.
-pub fn pairing_url(device_id: &str, key: &str, hosts: &[Ipv4Addr], port: u16, desktop_name: &str) -> String {
+/// v1.2 (QR format 2): `hivo://pair?v=2&d=<id>&t=<token>&x=<desktop X25519 pub>&h=<ip1>,<ip2>&p=<port>&n=<name>`.
+/// No key: the token works once, for `PAIR_TTL_MS`. Only private IPv4
+/// addresses go in `h`. (1.1 QRs were `v=1&…&k=<device key>`.)
+pub fn pairing_url(device_id: &str, token: &[u8; 32], desktop_pub: &[u8; 32], hosts: &[Ipv4Addr], port: u16, desktop_name: &str) -> String {
     let h = hosts.iter().filter(|ip| ip.is_private()).map(|ip| ip.to_string()).collect::<Vec<_>>().join(",");
-    format!("hivo://pair?v=1&d={device_id}&k={key}&h={h}&p={port}&n={}", uri_encode(desktop_name))
+    format!("hivo://pair?v=2&d={device_id}&t={}&x={}&h={h}&p={port}&n={}", B64.encode(token), B64.encode(desktop_pub), uri_encode(desktop_name))
 }
 
 /// Interfaces that are usually virtual (VPN, VM, container bridges) go last.
@@ -525,6 +711,13 @@ pub struct Inner {
     per_ip: Arc<Mutex<HashMap<IpAddr, usize>>>,
     /// `BODY_DEADLINE` (shorter in tests).
     pub body_deadline_ms: AtomicU64,
+    /// QRs shown and not used yet, by device id (v1.2 pairing, memory only).
+    pairs: Mutex<HashMap<String, PendingPair>>,
+}
+
+/// `<store>.replay` next to `phone-sync.json`: the replay log.
+fn replay_log(path: &Path) -> PathBuf {
+    path.with_extension("replay")
 }
 
 /// `<config dir>/phone-inbox` next to `phone-sync.json` (tests: `<file>.inbox`).
@@ -547,6 +740,7 @@ impl Inner {
             eprintln!("phone sync: {}", p.message);
         }
         let inbox = Arc::new(crate::phone_inbox::Inbox::open(inbox_root(&path)));
+        let replay = ReplayGuard::load(replay_log(&path), now_ms());
         Arc::new(Inner {
             store_problem: Mutex::new(problem),
             inbox,
@@ -555,7 +749,8 @@ impl Inner {
             store: Mutex::new(store),
             listener: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
-            replay: Mutex::new(ReplayGuard::default()),
+            replay: Mutex::new(replay),
+            pairs: Mutex::new(HashMap::new()),
             rate: Mutex::new(HashMap::new()),
             in_flight: AtomicUsize::new(0),
             next_id: AtomicU64::new(1),
@@ -669,6 +864,66 @@ impl Inner {
 
     pub fn port(&self) -> Option<u16> {
         lock(&self.listener).as_ref().map(|l| l.port)
+    }
+
+    /// A v1.2 pairing QR: a new device (`repair` None; a QR shown before and
+    /// not used is dropped) or a new key for a paired one (`repair` = its id).
+    /// Returns the device id, the token and this computer's public key.
+    pub fn begin_pair(&self, repair: Option<&str>, port: u16, now: i64) -> Result<(String, [u8; 32], [u8; 32]), String> {
+        let id = match repair {
+            Some(id) => {
+                if !lock(&self.store).devices.iter().any(|d| d.id == id) {
+                    return Err("That phone isn't paired any more.".to_string());
+                }
+                id.to_string()
+            }
+            None => {
+                if lock(&self.store).devices.len() >= MAX_DEVICES {
+                    return Err(format!("{MAX_DEVICES} phones are paired already. Forget one first."));
+                }
+                B64.encode(random_bytes::<16>()?)
+            }
+        };
+        let pending = PendingPair::new(repair.is_some(), port, now)?;
+        let out = (id.clone(), pending.token, pending.desktop_pub());
+        let mut pairs = lock(&self.pairs);
+        pairs.retain(|_, p| !p.expired(now) && (repair.is_some() || p.repair));
+        pairs.insert(id, pending);
+        Ok(out)
+    }
+
+    /// A QR for this device id is up and still valid (expired ones go).
+    fn pair_pending(&self, id: &str, now: i64) -> bool {
+        let mut pairs = lock(&self.pairs);
+        pairs.retain(|_, p| !p.expired(now));
+        pairs.contains_key(id)
+    }
+
+    /// The device key a phone's `/v1/pair` would be sealed with, from the
+    /// pending QR for `id` (None: no QR, or a low-order public key).
+    /// Also returns the QR's token, which `finish_pair` checks.
+    fn pair_key(&self, id: &str, phone_pub: &[u8; 32], now: i64) -> Option<([u8; 32], [u8; 32])> {
+        let pairs = lock(&self.pairs);
+        let p = pairs.get(id).filter(|p| !p.expired(now))?;
+        Some((desktop_derive(&p.secret, &p.token, id, phone_pub)?, p.token))
+    }
+
+    /// Burns the QR and stores the device with its key. Err when that QR was
+    /// used meanwhile (a second phone racing with the same code), replaced
+    /// by a new one, or expired.
+    fn finish_pair(&self, id: &str, token: &[u8; 32], key: &[u8; 32], now: i64) -> Result<(), String> {
+        let p = {
+            let mut pairs = lock(&self.pairs);
+            if !pairs.get(id).is_some_and(|p| &p.token == token && !p.expired(now)) {
+                return Err("used".to_string());
+            }
+            pairs.remove(id).expect("checked above")
+        };
+        let mut store = lock(&self.store);
+        complete_pairing(&mut store, id, key, p.repair, p.port, now)?;
+        let snapshot = store.clone();
+        drop(store);
+        self.save(&snapshot)
     }
 }
 
@@ -831,11 +1086,14 @@ fn handle(inner: &Arc<Inner>, host: &dyn Host, req: tiny_http::Request, slot: Ip
             let _ = req.respond(json_response(200, &json!({ "app": "hivo", "v": 1 })));
             return;
         }
-        (tiny_http::Method::Post, p) if p == "/v1/hello" || FORWARDED.contains(&p) || INBOX_PATHS.contains(&p) => {
+        (tiny_http::Method::Post, p) if p == "/v1/hello" || p == PAIR_PATH || FORWARDED.contains(&p) || INBOX_PATHS.contains(&p) => {
             let device = header(&req, "X-Hivo-Device").map(str::to_string);
             let too_big = req.body_length().is_some_and(|n| n > MAX_BODY_BYTES);
-            // An unknown device is refused before its body is read.
-            let known = device.as_deref().is_some_and(|d| !d.is_empty() && d.len() <= 64 && inner.device(d).is_some());
+            // An unknown device is refused before its body is read (for
+            // `/v1/pair`: one whose QR is up counts as known).
+            let known = device.as_deref().is_some_and(|d| {
+                !d.is_empty() && d.len() <= 64 && (inner.device(d).is_some() || (path == PAIR_PATH && inner.pair_pending(d, now_ms())))
+            });
             if !known || too_big {
                 // Answered without reading the body: tiny_http drains what's
                 // left when the request drops, so that happens off this slot
@@ -883,31 +1141,48 @@ pub fn handle_sealed(inner: &Arc<Inner>, host: &dyn Host, path: &str, device_id:
     let Some(device_id) = device_id.filter(|d| !d.is_empty() && d.len() <= 64) else {
         return Outcome::Status(401);
     };
-    let Some(device) = inner.device(device_id) else { return Outcome::Status(401) };
-    let Some(key) = device.key_bytes() else { return Outcome::Status(401) };
-    let Ok(env) = serde_json::from_slice::<Envelope>(body) else { return Outcome::Status(401) };
-    let Some(plain) = open(&key, &aad(device_id, path), &env) else { return Outcome::Status(401) };
+    let now = now_ms();
+    let Some(Opened { key, plain, device, pair_token }) = open_request(inner, path, device_id, body, now) else {
+        return Outcome::Status(401);
+    };
     // Authenticated from here on: errors are answered sealed, never as a
     // bare 401 (which the phone reads as "this computer forgot me").
     let Ok(sealed) = serde_json::from_slice::<SealedRequest>(&plain) else {
-        return sealed_answer(&key, device_id, path, Err("bad request".to_string()));
+        // No nonce to bind to: a 1.2 phone refuses this answer, which is
+        // right (it never sends such a request).
+        let bind = (path == PAIR_PATH || device.as_ref().is_some_and(|d| d.derived)).then_some("");
+        return sealed_answer(&key, device_id, path, bind, Err("bad request".to_string()));
     };
-    let checked = lock(&inner.replay).check(device_id, &sealed.nonce, sealed.ts, now_ms());
+    // v1.2: the answer is bound to this request's nonce. Unbound only for a
+    // phone paired before 1.2 that doesn't say 1.2 (it can't check it).
+    let bound = path == PAIR_PATH || device.as_ref().is_some_and(|d| d.derived) || speaks_bound(sealed.v.as_deref());
+    let bind = bound.then_some(sealed.nonce.as_str());
+    let checked = lock(&inner.replay).check(device_id, &sealed.nonce, sealed.ts, now);
     match checked {
         Ok(()) => {}
         // Replays stay refused without a word.
         Err(Reject::Replayed) => return Outcome::Status(401),
-        // The phone's clock is more than TS_WINDOW_MS off this computer's.
-        Err(Reject::Stale) => return sealed_answer(&key, device_id, path, Err("clock".to_string())),
-        Err(Reject::BadNonce) => return sealed_answer(&key, device_id, path, Err("bad request".to_string())),
-        Err(Reject::Full) => return sealed_answer(&key, device_id, path, Err("busy".to_string())),
+        // The phone's clock is more than TS_WINDOW_MS off this computer's
+        // (a pairing isn't finished then: the same QR works once it's fixed).
+        Err(Reject::Stale) => return sealed_answer(&key, device_id, path, bind, Err("clock".to_string())),
+        Err(Reject::BadNonce) => return sealed_answer(&key, device_id, path, bind, Err("bad request".to_string())),
+        Err(Reject::Full) => return sealed_answer(&key, device_id, path, bind, Err("busy".to_string())),
     }
     if !inner.allow_rate(device_id) {
         return Outcome::Status(429);
     }
+    // A first `/v1/pair`: the QR is burnt and the device stored with its key.
+    if let Some(token) = pair_token {
+        match inner.finish_pair(device_id, &token, &key, now) {
+            Ok(()) => {}
+            // Used by someone else a moment ago, or replaced: as if unknown.
+            Err(e) if e == "used" => return Outcome::Status(401),
+            Err(e) => return sealed_answer(&key, device_id, path, bind, Err(e)),
+        }
+    }
 
     let answer: Reply = match path {
-        "/v1/hello" => {
+        "/v1/hello" | PAIR_PATH => {
             let name = sealed.body.get("phoneName").and_then(Value::as_str).map(|s| clip(s, MAX_PHONE_NAME)).filter(|s| !s.is_empty());
             let version = sealed.body.get("appVersion").and_then(Value::as_str).map(|s| clip(s, 20)).filter(|s| !s.is_empty());
             let desktop_version = host.hivo_version();
@@ -916,11 +1191,11 @@ pub fn handle_sealed(inner: &Arc<Inner>, host: &dyn Host, path: &str, device_id:
                 host.phone_newer();
             }
             inner.touch(device_id, Some(name.unwrap_or_else(|| "Phone".to_string())), version);
-            Ok(json!({ "desktopName": host.desktop_name(), "hivoVersion": desktop_version }))
+            Ok(json!({ "desktopName": host.desktop_name(), "hivoVersion": desktop_version, "protocol": PROTOCOL }))
         }
         p if INBOX_PATHS.contains(&p) => {
             inner.touch(device_id, None, None);
-            let phone = device.name.clone().unwrap_or_else(|| "Phone".to_string());
+            let phone = device.as_ref().and_then(|d| d.name.clone()).unwrap_or_else(|| "Phone".to_string());
             answer_inbox(inner, host, p, device_id, &phone, &sealed.body)
         }
         p if FORWARDED.contains(&p) => {
@@ -928,24 +1203,63 @@ pub fn handle_sealed(inner: &Arc<Inner>, host: &dyn Host, path: &str, device_id:
             match check_payload(p, &sealed.body) {
                 Err(e) => Err(e),
                 Ok(()) => {
-                    let phone = device.name.clone().unwrap_or_else(|| "Phone".to_string());
+                    let phone = device.as_ref().and_then(|d| d.name.clone()).unwrap_or_else(|| "Phone".to_string());
                     inner.forward(host, p, sealed.body, phone)
                 }
             }
         }
         _ => return Outcome::Status(404),
     };
-    sealed_answer(&key, device_id, path, answer)
+    sealed_answer(&key, device_id, path, bind, answer)
 }
 
-/// `{"ok": true, "body"}` or `{"ok": false, "error"}`, sealed for the device.
-fn sealed_answer(key: &[u8; 32], device_id: &str, path: &str, answer: Reply) -> Outcome {
+/// A request that authenticated: the key that opened it, its plaintext, the
+/// stored device (None for a first pairing), and the QR's token when it is a
+/// first `/v1/pair`.
+struct Opened {
+    key: [u8; 32],
+    plain: Vec<u8>,
+    device: Option<StoredDevice>,
+    pair_token: Option<[u8; 32]>,
+}
+
+/// Which key opens the request. `/v1/pair`: the one derived from the QR the
+/// phone scanned (its public key comes with the envelope), else, for a
+/// phone already paired with v1.2 retrying a pairing whose answer was lost,
+/// its stored key. Every other path: the device's key.
+fn open_request(inner: &Inner, path: &str, device_id: &str, body: &[u8], now: i64) -> Option<Opened> {
+    let device = inner.device(device_id);
+    if path == PAIR_PATH {
+        let env = serde_json::from_slice::<PairEnvelope>(body).ok()?;
+        let phone_pub: [u8; 32] = B64.decode(env.x.as_bytes()).ok()?.try_into().ok()?;
+        let env = Envelope { n: env.n, c: env.c };
+        let a = aad(device_id, PAIR_PATH);
+        if let Some((key, token)) = inner.pair_key(device_id, &phone_pub, now) {
+            if let Some(plain) = open(&key, &a, &env) {
+                return Some(Opened { key, plain, device, pair_token: Some(token) });
+            }
+        }
+        let d = device.filter(|d| d.derived)?;
+        let key = d.key_bytes()?;
+        let plain = open(&key, &a, &env)?;
+        return Some(Opened { key, plain, device: Some(d), pair_token: None });
+    }
+    let d = device?;
+    let key = d.key_bytes()?;
+    let env = serde_json::from_slice::<Envelope>(body).ok()?;
+    let plain = open(&key, &aad(device_id, path), &env)?;
+    Some(Opened { key, plain, device: Some(d), pair_token: None })
+}
+
+/// `{"ok": true, "body"}` or `{"ok": false, "error"}`, sealed for the device
+/// (bound to `bind`, the request's nonce, see `resp_aad`).
+fn sealed_answer(key: &[u8; 32], device_id: &str, path: &str, bind: Option<&str>, answer: Reply) -> Outcome {
     let plaintext = match answer {
         Ok(body) => json!({ "ok": true, "body": body }),
         Err(e) => json!({ "ok": false, "error": clip(&e, MAX_ERROR_CHARS) }),
     };
     let bytes = serde_json::to_vec(&plaintext).unwrap_or_default();
-    match seal(key, &aad(device_id, &resp_path(path)), &bytes) {
+    match seal(key, &resp_aad(device_id, path, bind), &bytes) {
         Ok(env) => Outcome::Sealed(env),
         Err(_) => Outcome::Status(500),
     }
@@ -1093,6 +1407,8 @@ pub struct DeviceInfo {
     pub needs_new_qr: bool,
     /// Its Hivo is older (major.minor) than this computer's: "Update Hivo on this phone".
     pub phone_outdated: bool,
+    /// Paired before 1.2 (its key was in the QR): "Re-pair to upgrade security".
+    pub legacy_pairing: bool,
 }
 
 #[derive(Serialize)]
@@ -1119,6 +1435,7 @@ fn status_of(inner: &Inner, desktop_version: &str) -> PhoneSyncStatus {
             .map(|d| DeviceInfo {
                 needs_new_qr: port.is_some() && d.paired_port.is_some_and(|p| Some(p) != port),
                 phone_outdated: d.app_version.as_deref().and_then(|v| compare_versions(v, desktop_version)) == Some(std::cmp::Ordering::Less),
+                legacy_pairing: !d.derived,
                 id: d.id,
                 name: d.name,
                 app_version: d.app_version,
@@ -1233,8 +1550,18 @@ pub async fn phone_sync_enable(app: AppHandle, on: bool, lang: Option<String>) -
 #[serde(rename_all = "camelCase")]
 pub struct Pairing {
     pub device_id: String,
-    /// The QR payload. Holds the key: shown once, never returned again.
+    /// The QR payload: a one-time token and this computer's public key (v1.2),
+    /// never the device key. Works once, until `expires_at_ms`.
     pub url: String,
+    pub issued_at_ms: i64,
+    pub expires_at_ms: i64,
+}
+
+/// A v1.2 pairing QR for a new phone or (`repair`) a paired one.
+fn new_pairing(inner: &Inner, repair: Option<&str>, port: u16, hosts: &[Ipv4Addr]) -> Result<Pairing, String> {
+    let now = now_ms();
+    let (id, token, desktop_pub) = inner.begin_pair(repair, port, now)?;
+    Ok(Pairing { url: pairing_url(&id, &token, &desktop_pub, hosts, port, &desktop_name()), device_id: id, issued_at_ms: now, expires_at_ms: now + PAIR_TTL_MS })
 }
 
 #[tauri::command]
@@ -1251,19 +1578,12 @@ pub async fn phone_sync_pair(app: AppHandle, lang: Option<String>) -> Result<Pai
     if !confirm(&app, Confirm::Pair, lang.as_deref()).await {
         return Err(CANCELLED.to_string());
     }
-    let mut store = lock(&inner.store);
-    let device = add_device(&mut store, now_ms())?;
-    if let Some(d) = store.devices.iter_mut().find(|d| d.id == device.id) {
-        d.paired_port = Some(port);
-    }
-    let snapshot = store.clone();
-    drop(store);
-    inner.save(&snapshot)?;
-    Ok(Pairing { url: pairing_url(&device.id, &device.key, &hosts, port, &desktop_name()), device_id: device.id })
+    new_pairing(&inner, None, port, &hosts)
 }
 
-/// "Re-pair this phone" (the port or the address changed): a new QR for the
-/// same device, which replaces it in place.
+/// "Re-pair this phone" (the port or the address changed, or a phone paired
+/// before 1.2): a new v1.2 QR for the same device, which replaces its key in
+/// place once the phone used it (the old key works until then).
 #[tauri::command]
 pub fn phone_sync_repair(app: AppHandle, device_id: String) -> Result<Pairing, String> {
     let inner = state_inner(&app)?;
@@ -1274,12 +1594,7 @@ pub fn phone_sync_repair(app: AppHandle, device_id: String) -> Result<Pairing, S
     if hosts.is_empty() {
         return Err(app_err("phone.noLan", "No local network address found. Connect this computer to Wi-Fi (or a local network) first.").into());
     }
-    let mut store = lock(&inner.store);
-    let device = repair_device(&mut store, &device_id, port, now_ms())?;
-    let snapshot = store.clone();
-    drop(store);
-    inner.save(&snapshot)?;
-    Ok(Pairing { url: pairing_url(&device.id, &device.key, &hosts, port, &desktop_name()), device_id: device.id })
+    new_pairing(&inner, Some(&device_id), port, &hosts)
 }
 
 #[tauri::command]
@@ -1291,6 +1606,8 @@ pub fn phone_sync_forget(app: AppHandle, device_id: String) -> Result<PhoneSyncS
         drop(store);
         inner.save(&snapshot)?;
     }
+    // A QR still up for it stops working too.
+    lock(&inner.pairs).remove(&device_id);
     Ok(status_of(&inner, &app.package_info().version.to_string()))
 }
 
@@ -1586,13 +1903,14 @@ mod tests {
         // The saved port was taken: phones paired before keep the old one.
         assert!(note_port(&mut f, 52000));
         assert_eq!((f.port, f.devices[0].paired_port), (Some(52000), Some(41000)));
-        // Re-pair: same id and name, a new key, the new port, not seen yet.
+        // Re-pair (v1.2): same id and name, the derived key, the new port.
         let before = f.devices[0].clone();
-        let r = repair_device(&mut f, &a.id, 52000, 9).unwrap();
-        assert_eq!((r.id.as_str(), r.name.as_deref(), r.paired_port, r.last_seen_ms), (a.id.as_str(), Some("Pixel"), Some(52000), None));
+        complete_pairing(&mut f, &a.id, &[3u8; 32], true, 52000, 9).unwrap();
+        let r = f.devices[0].clone();
+        assert_eq!((r.id.as_str(), r.name.as_deref(), r.paired_port, r.last_seen_ms, r.derived), (a.id.as_str(), Some("Pixel"), Some(52000), Some(9), true));
         assert_ne!(r.key, before.key);
         assert_eq!(f.devices.len(), 1);
-        assert!(repair_device(&mut f, "nobody", 1, 1).is_err());
+        assert!(complete_pairing(&mut f, "nobody", &[3u8; 32], true, 1, 1).is_err(), "a re-pair of a forgotten phone");
         // A new port again: an already-recorded port isn't overwritten.
         assert!(note_port(&mut f, 53000));
         assert_eq!(f.devices[0].paired_port, Some(52000));
@@ -1601,13 +1919,12 @@ mod tests {
     #[test]
     fn pairing_url_format() {
         let hosts = [Ipv4Addr::new(192, 168, 1, 20), Ipv4Addr::new(8, 8, 8, 8), Ipv4Addr::new(10, 0, 0, 5)];
-        let url = pairing_url("AAAAAAAAAAAAAAAAAAAAAA", "a-b_c", &hosts, 51234, "Studio Mac é");
-        assert_eq!(url, "hivo://pair?v=1&d=AAAAAAAAAAAAAAAAAAAAAA&k=a-b_c&h=192.168.1.20,10.0.0.5&p=51234&n=Studio%20Mac%20%C3%A9");
-        let mut f = SyncFile::default();
-        let d = add_device(&mut f, 1).unwrap();
-        let url = pairing_url(&d.id, &d.key, &hosts[..1], 1, "x");
-        assert!(!url.contains('=') || url.matches('=').count() == 6, "no padding: {url}");
-        assert!(!d.key.contains(['=', '+', '/']));
+        let url = pairing_url("AAAAAAAAAAAAAAAAAAAAAA", &[0xfb; 32], &[0; 32], &hosts, 51234, "Studio Mac é");
+        let t = B64.encode([0xfb; 32]);
+        assert!(t.contains('-') || t.contains('_'), "url-safe alphabet: {t}");
+        assert_eq!(url, format!("hivo://pair?v=2&d=AAAAAAAAAAAAAAAAAAAAAA&t={t}&x={}&h=192.168.1.20,10.0.0.5&p=51234&n=Studio%20Mac%20%C3%A9", B64.encode([0; 32])));
+        assert_eq!(url.matches('=').count(), 7, "no padding: {url}");
+        assert!(!url.contains("k="), "never a key in the QR");
     }
 
     #[test]
@@ -1814,7 +2131,7 @@ mod tests {
         let hello = sealed_request(&dev, "/v1/hello", now_ms(), "n-hello", json!({ "phoneName": "Pixel\u{7} 9", "appVersion": "0.1.0" }));
         let (s, b) = http(port, "POST", "/v1/hello", &hdr, &hello);
         assert_eq!(s, 200);
-        assert_eq!(open_reply(&dev, "/v1/hello", &b), json!({ "ok": true, "body": { "desktopName": "Test desk", "hivoVersion": "0.5.5" } }));
+        assert_eq!(open_reply(&dev, "/v1/hello", &b), json!({ "ok": true, "body": { "desktopName": "Test desk", "hivoVersion": "0.5.5", "protocol": "1.2" } }));
         let saved = read_store(&path);
         assert_eq!(saved.devices[0].name.as_deref(), Some("Pixel 9"));
         assert!(saved.devices[0].last_seen_ms.is_some());
@@ -1898,6 +2215,8 @@ mod tests {
     /// Cross-language check with the phone's real client (mobile/src/lib/
     /// e2e.test.ts): run with HIVO_E2E_DIR set, then the phone test, which
     /// writes `stop` when done. `cargo test e2e_server -- --ignored`.
+    /// The phone pairs with the v1.2 QR in `pair-url` and syncs; a phone
+    /// paired before 1.2 (key `[9; 32]`) still works too.
     #[test]
     #[ignore]
     fn e2e_server_for_the_phone_client() {
@@ -1916,8 +2235,13 @@ mod tests {
                 paired_at_ms: now_ms(),
                 last_seen_ms: Some(now_ms()),
                 paired_port: None,
+                derived: false,
             }];
         }
+        // A v1.2 QR (loopback in `h`: the phone test runs on this computer).
+        let (id, token, desk_pub) = inner.begin_pair(None, port, now_ms()).unwrap();
+        let url = format!("hivo://pair?v=2&d={id}&t={}&x={}&h=127.0.0.1&p={port}&n=Test%20desk", B64.encode(token), B64.encode(desk_pub));
+        fs::write(dir.join("pair-url"), url).unwrap();
         // Answers like an empty library, so a real phone app can sync against it.
         struct E2eHost {
             inner: Mutex<Option<Arc<Inner>>>,
@@ -1947,8 +2271,226 @@ mod tests {
         }
         let list = inner.inbox.list();
         fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&list).unwrap()).unwrap();
+        let devices: Vec<Value> = lock(&inner.store).devices.iter().map(|d| json!({ "id": d.id, "derived": d.derived, "name": d.name })).collect();
+        fs::write(dir.join("devices.json"), serde_json::to_vec_pretty(&devices).unwrap()).unwrap();
         stop(&inner);
         assert!(dir.join("stop").exists(), "the phone test never finished");
+    }
+
+    // ---- v1.2: bound answers, one-time pairing, replay log ----
+
+    /// The phone's half of the pairing: its device key and public key.
+    fn phone_side(secret: [u8; 32], desktop_pub: &[u8; 32], token: &[u8; 32], id: &str) -> ([u8; 32], [u8; 32]) {
+        let s = x25519_dalek::StaticSecret::from(secret);
+        let phone_pub = x25519_dalek::PublicKey::from(&s).to_bytes();
+        let shared = s.diffie_hellman(&x25519_dalek::PublicKey::from(*desktop_pub));
+        (derive_device_key(shared.as_bytes(), token, id, desktop_pub, &phone_pub), phone_pub)
+    }
+
+    fn plain_v(nonce: &str, body: Value, v: Option<&str>) -> Vec<u8> {
+        let mut p = json!({ "ts": now_ms(), "nonce": nonce, "body": body });
+        if let Some(v) = v {
+            p["v"] = json!(v);
+        }
+        serde_json::to_vec(&p).unwrap()
+    }
+
+    fn request_with(key: &[u8; 32], id: &str, path: &str, nonce: &str, body: Value, v: Option<&str>) -> Vec<u8> {
+        serde_json::to_vec(&seal(key, &aad(id, path), &plain_v(nonce, body, v)).unwrap()).unwrap()
+    }
+
+    fn pair_request(key: &[u8; 32], id: &str, phone_pub: &[u8; 32], nonce: &str, body: Value) -> Vec<u8> {
+        let env = seal(key, &aad(id, PAIR_PATH), &plain_v(nonce, body, Some(PROTOCOL))).unwrap();
+        serde_json::to_vec(&json!({ "n": env.n, "c": env.c, "x": B64.encode(phone_pub) })).unwrap()
+    }
+
+    /// The answer, opened as bound to `nonce` (None: the 1.1 form).
+    fn answer(key: &[u8; 32], id: &str, path: &str, nonce: Option<&str>, outcome: &Outcome) -> Option<Value> {
+        let Outcome::Sealed(env) = outcome else { return None };
+        serde_json::from_slice(&open(key, &resp_aad(id, path, nonce), env)?).ok()
+    }
+
+    fn quiet() -> FakeHost {
+        FakeHost { inner: Mutex::new(None) }
+    }
+
+    fn temp_inner(tag: &str) -> (Arc<Inner>, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("hivo-v12-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        (Inner::new(dir.join("phone-sync.json")), dir)
+    }
+
+    fn derived_device(inner: &Inner, key: [u8; 32]) -> String {
+        let id = B64.encode(random_bytes::<16>().unwrap());
+        complete_pairing(&mut lock(&inner.store), &id, &key, false, 1, now_ms()).unwrap();
+        id
+    }
+
+    #[test]
+    fn key_derivation_test_vector() {
+        let desk: [u8; 32] = std::array::from_fn(|i| i as u8 + 1);
+        let phone: [u8; 32] = std::array::from_fn(|i| i as u8 + 0x21);
+        let token = [0x55u8; 32];
+        let id = B64.encode([7u8; 16]);
+        let desk_s = x25519_dalek::StaticSecret::from(desk);
+        let desk_pub = x25519_dalek::PublicKey::from(&desk_s).to_bytes();
+        let (phone_key, phone_pub) = phone_side(phone, &desk_pub, &token, &id);
+        let desk_key = desktop_derive(&desk_s, &token, &id, &phone_pub).unwrap();
+        assert_eq!(desk_key, phone_key, "both sides derive the same key");
+        // The same vector is in mobile/src/lib/handshake.test.ts.
+        assert_eq!(B64.encode(desk_pub), "B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHw");
+        assert_eq!(B64.encode(phone_pub), "WGmv9FBUlzLLqu1eXfmzCm2jHLDldCutWtShp2jxpns");
+        assert_eq!(B64.encode(desk_key), "nuf6rptKkMpoSSsZ3ooSuRlVMKdcr0uHlFRRwqLz8bQ");
+        // Another token, device or phone key: another key.
+        assert_ne!(desktop_derive(&desk_s, &[0x56; 32], &id, &phone_pub).unwrap(), desk_key);
+        assert_ne!(desktop_derive(&desk_s, &token, "other", &phone_pub).unwrap(), desk_key);
+        let (_, other_pub) = phone_side([0x77; 32], &desk_pub, &token, &id);
+        assert_ne!(desktop_derive(&desk_s, &token, &id, &other_pub).unwrap(), desk_key);
+        // A low-order point (all zeros) gives no key.
+        assert!(desktop_derive(&desk_s, &token, &id, &[0u8; 32]).is_none());
+    }
+
+    #[test]
+    fn pairing_is_one_time_and_expires() {
+        let (inner, dir) = temp_inner("pair");
+        let host = quiet();
+        let (id, token, desk_pub) = inner.begin_pair(None, 41000, now_ms()).unwrap();
+        assert!(inner.device(&id).is_none(), "nothing stored before the phone pairs");
+        // Someone who knows the device id but not the QR's token: refused, the QR still works.
+        let (bad_key, mallory) = phone_side([0x99; 32], &desk_pub, &[0u8; 32], &id);
+        let o = handle_sealed(&inner, &host, PAIR_PATH, Some(&id), &pair_request(&bad_key, &id, &mallory, "m1", json!({})));
+        assert!(matches!(o, Outcome::Status(401)));
+        assert!(inner.pair_pending(&id, now_ms()));
+        // The phone: paired, the answer bound to its nonce, its name kept.
+        let (key, phone_pub) = phone_side([0x42; 32], &desk_pub, &token, &id);
+        let o = handle_sealed(&inner, &host, PAIR_PATH, Some(&id), &pair_request(&key, &id, &phone_pub, "p1", json!({ "phoneName": "Pixel", "appVersion": "0.7.0" })));
+        assert!(answer(&key, &id, PAIR_PATH, None, &o).is_none(), "never unbound");
+        let reply = answer(&key, &id, PAIR_PATH, Some("p1"), &o).expect("bound to p1");
+        assert_eq!((reply["ok"].clone(), reply["body"]["protocol"].clone()), (json!(true), json!("1.2")));
+        let d = inner.device(&id).unwrap();
+        assert!(d.derived && d.name.as_deref() == Some("Pixel") && d.key_bytes() == Some(key) && d.paired_port == Some(41000));
+        assert_eq!(read_store(&inner.path).devices[0].key, B64.encode(key), "saved");
+        assert!(!inner.pair_pending(&id, now_ms()), "burnt");
+        // The QR again (a photo of it), with another phone key: refused.
+        let (k2, pub2) = phone_side([0x43; 32], &desk_pub, &token, &id);
+        assert!(matches!(handle_sealed(&inner, &host, PAIR_PATH, Some(&id), &pair_request(&k2, &id, &pub2, "p2", json!({}))), Outcome::Status(401)));
+        assert_eq!(inner.device(&id).unwrap().key_bytes(), Some(key), "the photo changed nothing");
+        // The phone retrying (its answer was lost): answered again, with its key.
+        let o = handle_sealed(&inner, &host, PAIR_PATH, Some(&id), &pair_request(&key, &id, &phone_pub, "p3", json!({})));
+        assert_eq!(answer(&key, &id, PAIR_PATH, Some("p3"), &o).unwrap()["ok"], true);
+        // Then it syncs like any phone.
+        let o = handle_sealed(&inner, &host, "/v1/hello", Some(&id), &request_with(&key, &id, "/v1/hello", "h1", json!({}), Some("1.2")));
+        assert_eq!(answer(&key, &id, "/v1/hello", Some("h1"), &o).unwrap()["ok"], true);
+
+        // An expired QR: refused, nothing stored.
+        let (id2, token2, desk2) = inner.begin_pair(None, 41000, now_ms() - PAIR_TTL_MS - 1).unwrap();
+        let (k3, pub3) = phone_side([0x44; 32], &desk2, &token2, &id2);
+        assert!(matches!(handle_sealed(&inner, &host, PAIR_PATH, Some(&id2), &pair_request(&k3, &id2, &pub3, "e1", json!({}))), Outcome::Status(401)));
+        assert!(inner.device(&id2).is_none());
+        // A new QR replaces one not used yet; Forget drops a re-pair QR.
+        let (a, ..) = inner.begin_pair(None, 41000, now_ms()).unwrap();
+        let (b, ..) = inner.begin_pair(None, 41000, now_ms()).unwrap();
+        assert!(!inner.pair_pending(&a, now_ms()) && inner.pair_pending(&b, now_ms()));
+        assert!(inner.begin_pair(Some("nobody"), 41000, now_ms()).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn answers_are_bound_to_the_request() {
+        let (inner, dir) = temp_inner("bind");
+        let host = quiet();
+        let key = [5u8; 32];
+        let id = derived_device(&inner, key);
+        let o = handle_sealed(&inner, &host, "/v1/hello", Some(&id), &request_with(&key, &id, "/v1/hello", "n-a", json!({}), Some("1.2")));
+        assert!(answer(&key, &id, "/v1/hello", Some("n-a"), &o).is_some());
+        assert!(answer(&key, &id, "/v1/hello", Some("n-b"), &o).is_none(), "the answer to another request");
+        assert!(answer(&key, &id, "/v1/hello", None, &o).is_none(), "never unbound for a 1.2 pairing");
+        assert!(answer(&key, &id, "/v1/inbox", Some("n-a"), &o).is_none(), "another path");
+        // A 1.2 pairing is bound even if a request says nothing.
+        let o = handle_sealed(&inner, &host, "/v1/inbox", Some(&id), &request_with(&key, &id, "/v1/inbox", "n-c", json!({}), None));
+        assert_eq!(answer(&key, &id, "/v1/inbox", Some("n-c"), &o).unwrap()["ok"], true);
+        // Errors too: a stale ts gets a bound "clock".
+        let mut stale = json!({ "ts": now_ms() - TS_WINDOW_MS - 5_000, "nonce": "n-d", "body": {}, "v": "1.2" });
+        let req = serde_json::to_vec(&seal(&key, &aad(&id, "/v1/inbox"), &serde_json::to_vec(&stale).unwrap()).unwrap()).unwrap();
+        let o = handle_sealed(&inner, &host, "/v1/inbox", Some(&id), &req);
+        assert_eq!(answer(&key, &id, "/v1/inbox", Some("n-d"), &o).unwrap()["error"], "clock");
+        assert!(answer(&key, &id, "/v1/inbox", Some("n-e"), &o).is_none());
+        stale["nonce"] = json!("bad nonce with spaces");
+        let req = serde_json::to_vec(&seal(&key, &aad(&id, "/v1/inbox"), &serde_json::to_vec(&stale).unwrap()).unwrap()).unwrap();
+        let o = handle_sealed(&inner, &host, "/v1/inbox", Some(&id), &req);
+        assert_eq!(answer(&key, &id, "/v1/inbox", Some("bad nonce with spaces"), &o).unwrap()["error"], "bad request");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_phone_paired_before_1_2_still_works_and_can_upgrade() {
+        let (inner, dir) = temp_inner("legacy");
+        let host = quiet();
+        let dev = add_device(&mut lock(&inner.store), now_ms()).unwrap();
+        let old_key = dev.key_bytes().unwrap();
+        // A 1.1 phone: unbound answers, as before.
+        let o = handle_sealed(&inner, &host, "/v1/hello", Some(&dev.id), &request_with(&old_key, &dev.id, "/v1/hello", "l1", json!({ "phoneName": "Old" }), None));
+        assert_eq!(answer(&old_key, &dev.id, "/v1/hello", None, &o).unwrap()["ok"], true);
+        // The same pairing on a 1.2 phone: bound.
+        let o = handle_sealed(&inner, &host, "/v1/inbox", Some(&dev.id), &request_with(&old_key, &dev.id, "/v1/inbox", "l2", json!({}), Some("1.2")));
+        assert!(answer(&old_key, &dev.id, "/v1/inbox", None, &o).is_none());
+        assert_eq!(answer(&old_key, &dev.id, "/v1/inbox", Some("l2"), &o).unwrap()["ok"], true);
+        assert!(status_of(&inner, "0.7.0").devices[0].legacy_pairing, "Re-pair to upgrade security");
+        // The old key can't pair (only a QR can).
+        let o = handle_sealed(&inner, &host, PAIR_PATH, Some(&dev.id), &pair_request(&old_key, &dev.id, &[9; 32], "l3", json!({})));
+        assert!(matches!(o, Outcome::Status(401)));
+
+        // Re-pair: the old key works until the phone used the new QR…
+        let (id, token, desk_pub) = inner.begin_pair(Some(&dev.id), 41000, now_ms()).unwrap();
+        assert_eq!(id, dev.id);
+        let o = handle_sealed(&inner, &host, "/v1/inbox", Some(&id), &request_with(&old_key, &id, "/v1/inbox", "l4", json!({}), None));
+        assert_eq!(answer(&old_key, &id, "/v1/inbox", None, &o).unwrap()["ok"], true);
+        let (key, phone_pub) = phone_side([0x61; 32], &desk_pub, &token, &id);
+        let o = handle_sealed(&inner, &host, PAIR_PATH, Some(&id), &pair_request(&key, &id, &phone_pub, "l5", json!({ "phoneName": "Old" })));
+        assert_eq!(answer(&key, &id, PAIR_PATH, Some("l5"), &o).unwrap()["ok"], true);
+        // …then it's a 1.2 pairing: same device and name, the old key refused.
+        let d = inner.device(&id).unwrap();
+        assert!(d.derived && d.name.as_deref() == Some("Old"));
+        assert_eq!(lock(&inner.store).devices.len(), 1);
+        assert!(!status_of(&inner, "0.7.0").devices[0].legacy_pairing);
+        let o = handle_sealed(&inner, &host, "/v1/inbox", Some(&id), &request_with(&old_key, &id, "/v1/inbox", "l6", json!({}), None));
+        assert!(matches!(o, Outcome::Status(401)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_replay_after_a_restart_is_refused() {
+        let (inner, dir) = temp_inner("restart");
+        let path = inner.path.clone();
+        let host = quiet();
+        let dev = add_device(&mut lock(&inner.store), now_ms()).unwrap();
+        let key = dev.key_bytes().unwrap();
+        let snapshot = lock(&inner.store).clone();
+        inner.save(&snapshot).unwrap();
+        let req = request_with(&key, &dev.id, "/v1/inbox", "r1", json!({}), Some("1.2"));
+        assert!(matches!(handle_sealed(&inner, &host, "/v1/inbox", Some(&dev.id), &req), Outcome::Sealed(_)));
+        drop(inner);
+        // Hivo restarted: the same request is still a replay.
+        let again = Inner::new(path.clone());
+        assert!(matches!(handle_sealed(&again, &host, "/v1/inbox", Some(&dev.id), &req), Outcome::Status(401)));
+        let fresh = request_with(&key, &dev.id, "/v1/inbox", "r2", json!({}), Some("1.2"));
+        assert!(matches!(handle_sealed(&again, &host, "/v1/inbox", Some(&dev.id), &fresh), Outcome::Sealed(_)));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(replay_log(&path)).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        // Loading keeps only the last NONCE_TTL_MS (and skips junk), then rewrites the log.
+        let log = dir.join("guard.replay");
+        let now = 1_000_000_000_000;
+        fs::write(&log, format!("{}\td|old\n{}\td|fresh\njunk\n\n", now - NONCE_TTL_MS - 1, now - 1_000)).unwrap();
+        let mut g = ReplayGuard::load(log.clone(), now);
+        assert_eq!(g.check("d", "fresh", now, now), Err(Reject::Replayed));
+        assert_eq!(g.check("d", "old", now, now), Ok(()));
+        let kept = fs::read_to_string(&log).unwrap();
+        assert!(!kept.contains("junk") && kept.contains("d|fresh") && kept.contains("d|old"), "{kept}");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

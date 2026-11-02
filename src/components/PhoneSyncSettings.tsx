@@ -20,7 +20,9 @@ const T = dict(
     firewall:
       "The first time it's on, macOS or Windows asks whether Hivo may accept incoming connections: allow it (private networks only on Windows), or the phone can't reach it.",
     pair: "Pair a phone",
-    scan: "Scan this code with the Hivo phone app. It holds the pairing key: show it only to your own phone.",
+    scan: "Scan this code with the Hivo phone app. It works once, for 5 minutes: show it only to your own phone.",
+    expired: "This code expired (or was used). Show a new one if the phone didn't pair.",
+    newCode: "Show a new code",
     pasteHint: "No camera (iOS Simulator)? Paste this link in the app instead:",
     copy: "Copy link",
     copied: "Copied",
@@ -33,11 +35,12 @@ const T = dict(
     lastSeen: (when: string) => `Last seen ${when}`,
     forget: "Forget",
     repair: "Re-pair this phone",
-    repairHint: "Shows a new QR for this phone: scan it with the Hivo phone app. Its old key stops working.",
+    repairHint: "Shows a new QR for this phone: scan it with the Hivo phone app. Its old key stops working once the phone used it.",
+    upgrade: "Paired with an older Hivo: re-pair it to upgrade its security (Hivo on the phone must be up to date).",
     needsQr: "This computer listens on a new port now: this phone needs the new QR. Re-pair it.",
     unnamed: "Phone",
     security:
-      "Each phone gets its own key, kept on this computer in an owner-only file and never shown again. Every request is encrypted and signed with it; Forget deletes the key, and that phone can't sync any more. A phone that never connects within a day is forgotten.",
+      "Each phone gets its own key, made by the phone and this computer together when it pairs: the QR code only holds a one-time code, so a photo of it is useless afterwards. The key is kept on this computer in an owner-only file. Every request and answer is encrypted and signed with it; Forget deletes the key, and that phone can't sync any more.",
     phoneOutdated: "Update Hivo on this phone: it's older than this computer's.",
     openFirewall: "Open the firewall settings",
     firewallWindows: "Phone says it's not on the same Wi-Fi? Windows Firewall may be blocking Hivo: allow it on private networks.",
@@ -54,7 +57,9 @@ const T = dict(
     firewall:
       "La première fois, macOS ou Windows demande si Hivo peut accepter les connexions entrantes : autorise-le (réseaux privés seulement sous Windows), sinon le téléphone ne peut pas le joindre.",
     pair: "Appairer un téléphone",
-    scan: "Scanne ce code avec l'appli Hivo sur ton téléphone. Il contient la clé d'appairage : ne le montre qu'à ton propre téléphone.",
+    scan: "Scanne ce code avec l'appli Hivo sur ton téléphone. Il ne sert qu'une fois, pendant 5 minutes : ne le montre qu'à ton propre téléphone.",
+    expired: "Ce code a expiré (ou a déjà servi). Affiches-en un nouveau si le téléphone n'est pas appairé.",
+    newCode: "Afficher un nouveau code",
     pasteHint: "Pas de caméra (simulateur iOS) ? Colle plutôt ce lien dans l'appli :",
     copy: "Copier le lien",
     copied: "Copié",
@@ -67,11 +72,12 @@ const T = dict(
     lastSeen: (when: string) => `Vu ${when}`,
     forget: "Oublier",
     repair: "Réappairer ce téléphone",
-    repairHint: "Affiche un nouveau QR pour ce téléphone : scanne-le avec l'appli Hivo. Son ancienne clé ne marche plus.",
+    repairHint: "Affiche un nouveau QR pour ce téléphone : scanne-le avec l'appli Hivo. Son ancienne clé ne marche plus dès que le téléphone l'a utilisé.",
+    upgrade: "Appairé avec une ancienne version de Hivo : réappaire-le pour renforcer sa sécurité (Hivo doit être à jour sur le téléphone).",
     needsQr: "Cet ordi écoute maintenant sur un autre port : ce téléphone a besoin du nouveau QR. Réappaire-le.",
     unnamed: "Téléphone",
     security:
-      "Chaque téléphone a sa propre clé, gardée sur cet ordi dans un fichier réservé à ton compte et jamais réaffichée. Chaque requête est chiffrée et signée avec ; Oublier supprime la clé, et ce téléphone ne peut plus synchroniser. Un téléphone qui ne se connecte pas dans la journée est oublié.",
+      "Chaque téléphone a sa propre clé, créée par le téléphone et cet ordi ensemble à l'appairage : le QR code ne contient qu'un code à usage unique, donc une photo ne sert plus à rien ensuite. La clé est gardée sur cet ordi dans un fichier réservé à ton compte. Chaque requête et chaque réponse sont chiffrées et signées avec ; Oublier supprime la clé, et ce téléphone ne peut plus synchroniser.",
     phoneOutdated: "Mets Hivo à jour sur ce téléphone : il est plus ancien que celui de cet ordi.",
     openFirewall: "Ouvrir les réglages du pare-feu",
     firewallWindows: "Le téléphone dit qu'il n'est pas sur le même Wi-Fi ? Le pare-feu Windows bloque peut-être Hivo : autorise-le sur les réseaux privés.",
@@ -86,6 +92,7 @@ export function PhoneSyncSettings() {
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     let live = true;
@@ -99,6 +106,7 @@ export function PhoneSyncSettings() {
   useEffect(() => {
     if (!pairing) return;
     const id = setInterval(() => {
+      setNow(Date.now());
       api.phoneSyncStatus().then(setStatus).catch(() => {});
     }, 2000);
     return () => clearInterval(id);
@@ -132,6 +140,7 @@ export function PhoneSyncSettings() {
       // 2x bitmap shown at 320 px (no smoothing) are what phone scanners need.
       const qr = await QRCode.toDataURL(p.url, { errorCorrectionLevel: "L", margin: 4, width: 640 });
       setPairing({ ...p, qr });
+      setNow(Date.now());
       setCopied(false);
       setStatus(await api.phoneSyncStatus());
     } catch (e) {
@@ -146,7 +155,9 @@ export function PhoneSyncSettings() {
   const on = !!status?.on;
   const windows = navigator.userAgent.includes("Windows");
   const paired = status?.devices ?? [];
-  const justPaired = pairing ? paired.find((d) => d.id === pairing.deviceId && d.lastSeenMs) : undefined;
+  // Paired with this QR: stored (again, for a re-pair) since it was shown.
+  const justPaired = pairing ? paired.find((d) => d.id === pairing.deviceId && d.lastSeenMs && d.pairedAtMs >= pairing.issuedAtMs) : undefined;
+  const expired = !!pairing && !justPaired && now > pairing.expiresAtMs;
 
   return (
     <section id="phone-sync">
@@ -188,11 +199,26 @@ export function PhoneSyncSettings() {
       {pairing && (
         <div className="mt-3 rounded-lg border border-rule bg-panel p-4">
           <p className="text-xs leading-relaxed text-body">{t.scan}</p>
-          <img src={pairing.qr} alt={t.pair} width={320} height={320} style={{ imageRendering: "pixelated" }} className="mt-3 rounded bg-white" />
-          <p className="mt-3 text-[11px] text-engrave">{t.pasteHint}</p>
-          <div className="mt-1 select-all break-all rounded border border-rule bg-raised p-2 font-mono text-[11px] text-body">{pairing.url}</div>
+          {expired ? (
+            <div className="mt-3 text-xs text-warn">
+              {t.expired}{" "}
+              <button
+                onClick={() => void pair(paired.some((d) => d.id === pairing.deviceId) ? pairing.deviceId : undefined)}
+                disabled={busy}
+                className="text-body underline hover:text-cream"
+              >
+                {t.newCode}
+              </button>
+            </div>
+          ) : (
+            <>
+              <img src={pairing.qr} alt={t.pair} width={320} height={320} style={{ imageRendering: "pixelated" }} className="mt-3 rounded bg-white" />
+              <p className="mt-3 text-[11px] text-engrave">{t.pasteHint}</p>
+              <div className="mt-1 select-all break-all rounded border border-rule bg-raised p-2 font-mono text-[11px] text-body">{pairing.url}</div>
+            </>
+          )}
           <div className={`mt-2 text-xs ${justPaired ? "text-emerald-300" : "text-engrave"}`}>
-            {justPaired ? t.connected(justPaired.name ?? t.unnamed) : t.waiting}
+            {justPaired ? t.connected(justPaired.name ?? t.unnamed) : expired ? null : t.waiting}
           </div>
           <div className="mt-3 flex gap-2">
             <button
@@ -227,13 +253,14 @@ export function PhoneSyncSettings() {
                 </div>
                 {d.needsNewQr && <div className="mt-0.5 text-[11px] text-warn">{t.needsQr}</div>}
                 {d.phoneOutdated && <div className="mt-0.5 text-[11px] text-warn">{t.phoneOutdated}</div>}
+                {d.legacyPairing && <div className="mt-0.5 text-[11px] text-warn">{t.upgrade}</div>}
               </div>
               {on && (
                 <button
                   onClick={() => void pair(d.id)}
                   disabled={busy}
                   title={t.repairHint}
-                  className={`shrink-0 rounded-md px-3 py-1.5 text-xs disabled:opacity-40 ${d.needsNewQr ? "bg-orange-500 font-medium text-chassis hover:bg-orange-400" : "border border-rule-strong text-body hover:bg-raised"}`}
+                  className={`shrink-0 rounded-md px-3 py-1.5 text-xs disabled:opacity-40 ${d.needsNewQr || d.legacyPairing ? "bg-orange-500 font-medium text-chassis hover:bg-orange-400" : "border border-rule-strong text-body hover:bg-raised"}`}
                 >
                   {t.repair}
                 </button>

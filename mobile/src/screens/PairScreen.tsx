@@ -39,14 +39,14 @@ export function PairScreen() {
     setScanning(false);
     try {
       // Only a computer that answers is kept (a wrong or old code saves nothing).
-      const v = await verifyPairing(r.pairing);
+      const v = await verifyPairing("offer" in r ? r.offer : r.pairing);
       if (!v.ok) {
         setError(t.pairCheckFailed(errorText(v.code)));
         setBusy(false);
         handled.current = false;
         return;
       }
-      await pair({ ...r.pairing, desktopName: v.desktopName }); // the app switches to the Library
+      await pair(v.pairing); // the app switches to the Library
       void sync();
     } catch (e) {
       // Saving the key failed on the phone (secure storage): the raw text is for the log.

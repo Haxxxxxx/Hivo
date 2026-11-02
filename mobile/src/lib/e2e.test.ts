@@ -5,26 +5,48 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { toB64url } from "./bytes";
-import { createClient, SyncError } from "./client";
+import { createClient, SyncError, type Transport } from "./client";
+import { completePairing } from "./handshake";
+import { parsePairingUrl } from "./pairing";
 import { createIdea, ideaPayload, parseIdeaResults } from "./ideas";
 import { MAX_CHUNK_BYTES, parseInboxStatuses, uploadItem, type OutItem } from "./outbox";
 
 const dir = process.env.HIVO_E2E_DIR;
 
 describe.skipIf(!dir)("phone ↔ desktop, for real", () => {
-  it("pushes an idea, uploads a sketch in chunks, reads the statuses", async () => {
+  it("pairs with the v1.2 QR, pushes an idea, uploads a sketch in chunks, reads the statuses", async () => {
     const d = dir as string;
     for (let i = 0; i < 600 && !existsSync(join(d, "ready")); i++) await new Promise((r) => setTimeout(r, 100));
     const port = Number(readFileSync(join(d, "ready"), "utf8"));
-    const call = createClient({
-      pairing: { deviceId: "e2eDevice0000000000000", key: toB64url(new Uint8Array(32).fill(9)), hosts: ["127.0.0.1"], port, desktopName: "E2E" },
-      transport: (url, init) => fetch(url, init),
-      random: (n) => crypto.getRandomValues(new Uint8Array(n)),
-      now: Date.now,
-    });
+    const transport: Transport = (url, init) => fetch(url, init);
+    const random = (n: number) => crypto.getRandomValues(new Uint8Array(n));
+    let pairedId = "";
     try {
-      const hello = (await call("/v1/hello", { phoneName: "E2E phone", appVersion: "0.7.0" })) as { desktopName: string };
-      expect(hello.desktopName).toBe("Test desk");
+      // A phone paired before 1.2 (its key was in the old QR) still works, and gets bound answers now.
+      let upgraded = false;
+      const old = createClient({
+        pairing: { deviceId: "e2eDevice0000000000000", key: toB64url(new Uint8Array(32).fill(9)), hosts: ["127.0.0.1"], port, desktopName: "E2E" },
+        transport,
+        random,
+        now: Date.now,
+        onBound: () => (upgraded = true),
+      });
+      expect(await old("/v1/hello", { phoneName: "Old phone", appVersion: "0.6.2" })).toMatchObject({ desktopName: "Test desk", protocol: "1.2" });
+      expect(upgraded).toBe(true);
+
+      // The v1.2 QR: a one-time token and the computer's X25519 key.
+      const parsed = parsePairingUrl(readFileSync(join(d, "pair-url"), "utf8"), { loopback: true });
+      if (!("offer" in parsed)) throw new Error("not a v1.2 QR: " + JSON.stringify(parsed));
+      const paired = await completePairing(parsed.offer, { transport, random, now: Date.now, phoneName: "E2E phone", appVersion: "0.7.0" });
+      expect(paired.pairing.scheme).toBe("1.2");
+      expect(paired.desktopName).toBe("Test desk");
+      pairedId = paired.pairing.deviceId;
+      // The same QR again (a photo of it): refused.
+      await expect(completePairing(parsed.offer, { transport, random, now: Date.now, phoneName: "Thief", appVersion: "0.7.0" })).rejects.toMatchObject({ code: "expired" });
+
+      const call = createClient({ pairing: paired.pairing, transport, random, now: Date.now });
+      const hello = (await call("/v1/hello", { phoneName: "E2E phone", appVersion: "0.7.0" })) as { desktopName: string; protocol: string };
+      expect(hello).toMatchObject({ desktopName: "Test desk", protocol: "1.2" });
 
       const idea = createIdea("idea1", Date.now(), { title: "Cold room", text: "lights off", target: { kind: "beat", id: "/b.wav", title: "Dark" } });
       expect(parseIdeaResults(await call("/v1/ideas", { ideas: [ideaPayload(idea)] }))).toEqual([{ id: "idea1", status: "stored", filedTo: null }]);
@@ -78,5 +100,10 @@ describe.skipIf(!dir)("phone ↔ desktop, for real", () => {
     expect(sketch?.files.map((f) => f.name)).toEqual(["Night Run.mp3", "stems.zip"]);
     expect(new Uint8Array(readFileSync(sketch!.files[0].path))).toEqual(Uint8Array.from({ length: MAX_CHUNK_BYTES * 2 + 123 }, (_, i) => (i * 31) % 256));
     expect(list.some((x) => x.itemId === "idea1")).toBe(true);
+    // The computer stored the new phone with its derived key, the thief not at all.
+    const devices = JSON.parse(readFileSync(join(d, "devices.json"), "utf8")) as { id: string; derived: boolean; name: string | null }[];
+    expect(devices.find((x) => x.id === pairedId)).toMatchObject({ derived: true, name: "E2E phone" });
+    expect(devices.find((x) => x.id === "e2eDevice0000000000000")).toMatchObject({ derived: false });
+    expect(devices).toHaveLength(2);
   }, 60_000);
 });

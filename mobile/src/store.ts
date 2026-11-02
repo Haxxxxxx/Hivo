@@ -7,8 +7,9 @@ import { getRandomBytes } from "expo-crypto";
 import * as Device from "expo-device";
 import * as SecureStore from "expo-secure-store";
 import { useSyncExternalStore } from "react";
-import { createClient, SyncError, type SyncErrorCode } from "./lib/client";
-import type { Pairing } from "./lib/pairing";
+import { createClient, SyncError, type SyncErrorCode, type Transport } from "./lib/client";
+import { completePairing } from "./lib/handshake";
+import type { PairOffer, Pairing } from "./lib/pairing";
 import { clip } from "./lib/text";
 import { desktopIsOlder } from "./lib/update";
 import {
@@ -317,17 +318,33 @@ export async function load(): Promise<void> {
   setState({ loaded: true, pairing, sync });
 }
 
-/** Checks a scanned pairing with /v1/hello before keeping it. Returns the
- * computer's name, or why it didn't answer. */
-export async function verifyPairing(p: Pairing): Promise<{ ok: true; desktopName: string } | { ok: false; code: SyncErrorCode }> {
+/** Checks a scanned pairing before keeping it: a v1.2 QR (an offer) pairs
+ * with /v1/pair (the token works once), an older computer's QR is checked
+ * with /v1/hello. Returns the pairing to save, or why it didn't answer. */
+export async function verifyPairing(p: Pairing | PairOffer): Promise<{ ok: true; pairing: Pairing } | { ok: false; code: SyncErrorCode }> {
+  const transport: Transport = (url, init) => fetch(url, init);
   try {
-    const call = createClient({ pairing: p, transport: (url, init) => fetch(url, init), random: getRandomBytes, now: Date.now });
+    if ("token" in p) {
+      const r = await completePairing(p, { transport, random: getRandomBytes, now: Date.now, phoneName: phoneName(), appVersion: appVersion() });
+      return { ok: true, pairing: r.pairing };
+    }
+    let bound = false;
+    const call = createClient({ pairing: p, transport, random: getRandomBytes, now: Date.now, onBound: () => (bound = true) });
     const h = (await call("/v1/hello", { phoneName: phoneName(), appVersion: appVersion() })) as { desktopName?: unknown } | null;
     const name = h && typeof h.desktopName === "string" && h.desktopName.trim() ? h.desktopName.trim().slice(0, 80) : p.desktopName;
-    return { ok: true, desktopName: name };
+    return { ok: true, pairing: { ...p, desktopName: name, ...(bound ? { bound: true } : {}) } };
   } catch (e) {
     return { ok: false, code: e instanceof SyncError ? e.code : "server" };
   }
+}
+
+/** A pairing from before 1.2 got a bound answer: from now on only bound ones count. */
+async function markBound(deviceId: string): Promise<void> {
+  const p = state.pairing;
+  if (!p || p.deviceId !== deviceId || p.bound || p.scheme === "1.2") return;
+  const updated: Pairing = { ...p, bound: true };
+  setState({ pairing: updated });
+  await SecureStore.setItemAsync(PAIRING_KEY, JSON.stringify(updated)).catch((e) => console.warn("Hivo: could not save the pairing", e));
 }
 
 /** Saves a pairing (already verified: hello done). Note edits made on the
@@ -431,7 +448,7 @@ export async function sync(): Promise<boolean> {
   if (!pairing || state.syncing) return false;
   setState({ syncing: true, error: null, errorDetail: null });
   try {
-    const call = createClient({ pairing, transport: (url, init) => fetch(url, init), random: getRandomBytes, now: Date.now });
+    const call = createClient({ pairing, transport: (url, init) => fetch(url, init), random: getRandomBytes, now: Date.now, onBound: () => void markBound(pairing.deviceId) });
     // Unpaired (or paired elsewhere) while this ran: its results belong to the old computer.
     const stillPaired = () => state.pairing?.deviceId === pairing.deviceId;
     // Once per app run (and per computer): hello again, so a version change on either side shows.

@@ -7,7 +7,7 @@ import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { onShare, onShareStart, sweepShareCache, takeShared, type Shared } from "./modules/hivo-share";
 import { setLang, tr } from "./src/lib/i18n";
 import type { IdeaTarget } from "./src/lib/ideas";
-import { parsePairingUrl, type Pairing } from "./src/lib/pairing";
+import { parsePairingUrl, type PairOffer, type Pairing } from "./src/lib/pairing";
 import { dequeue, enqueue } from "./src/lib/shareQueue";
 import { errorText, T } from "./src/strings";
 import type { Kind } from "./src/lib/sync";
@@ -26,14 +26,14 @@ import { C } from "./src/theme";
 setLang(getLocales()[0]?.languageCode);
 
 /** Checks the computer answers, then saves the pairing and syncs. */
-async function pairChecked(p: Pairing): Promise<void> {
+async function pairChecked(p: Pairing | PairOffer): Promise<void> {
   const t = tr(T);
   const v = await verifyPairing(p);
   if (!v.ok) {
     Alert.alert(t.pairTitle, t.pairCheckFailed(errorText(v.code)));
     return;
   }
-  await pair({ ...p, desktopName: v.desktopName });
+  await pair(v.pairing);
   void sync();
 }
 
@@ -47,9 +47,10 @@ function pairFromLink(url: string | null | undefined): void {
   const r = parsePairingUrl(url, { loopback: Platform.OS === "ios" });
   if (!r.ok) return;
   const t = tr(T);
-  const { desktopName, hosts, port, deviceId } = r.pairing;
+  const link = "offer" in r ? r.offer : r.pairing;
+  const { desktopName, hosts, port, deviceId } = link;
   const current = getState().pairing;
-  if (current?.deviceId === deviceId && current.key === r.pairing.key) return;
+  if ("pairing" in r && current?.deviceId === deviceId && current.key === r.pairing.key) return;
   const title = current ? t.replacePairTitle(desktopName) : t.linkPairTitle;
   const body = current ? t.replacePairBody(current.desktopName, `${hosts[0]}:${port}`) : t.linkPairBody(desktopName, `${hosts[0]}:${port}`);
   Alert.alert(title, body, [
@@ -59,7 +60,7 @@ function pairFromLink(url: string | null | undefined): void {
       onPress: () => {
         // Still the pairing the question was about.
         if (getState().pairing?.deviceId !== current?.deviceId) return;
-        void pairChecked(r.pairing);
+        void pairChecked(link);
       },
     },
   ]);

@@ -7,6 +7,9 @@ server or any cloud (user decision 2026-10-25). Not in v1: BandLab share,
 voice memos, files, ideas inbox, session view (step 4), mDNS discovery.
 
 ## Security model
+**Since protocol 1.2 (2026-11), pairing, answer binding and the replay set
+work as described in "v1.2" at the end of this file**; what follows is v1,
+still accurate for phones paired before 1.2.
 - Opt-in: Settings → Phone sync, **off by default**. The HTTP listener exists
   only while it's on; turning it off closes the port.
 - Pairing: the desktop generates a random 32-byte key per pairing and shows a
@@ -31,7 +34,8 @@ voice memos, files, ideas inbox, session view (step 4), mDNS discovery.
   devices can do anything.
 
 ## Pairing QR payload
-A URL, all base64url without padding:
+(v1 QR, made by desktops before 1.2. Hivo 1.2 shows a `v=2` QR instead: see
+"v1.2" below.) A URL, all base64url without padding:
 `hivo://pair?v=1&d=<deviceId>&k=<key b64url>&h=<host1>,<host2>&p=<port>&n=<desktop name, URI-encoded>`
 - `deviceId`: 16 random bytes, b64url (also stored with the key on the desktop).
 - `h`: the desktop's private IPv4 addresses (10/8, 172.16/12, 192.168/16),
@@ -328,3 +332,129 @@ On the desktop:
 - **File an idea** → appended to the target's note under a `--- idea from <phone> ---` marker; target gone → pick another; the note would pass 20 000 characters → refused, "the note is full".
 - **Inbox file missing** (deleted by hand) → the item says "file missing" and can only be removed.
 - **Session view**: no lyrics → "Nothing written yet" + a button to the note; the song removed while open → the window keeps the last text and says so; a song renamed or relinked (or continued in FL Studio) → the window follows it; the main window closed → the session window closes too.
+
+## v1.2: bound answers, one-time pairing, replay set across restarts (2026-11)
+
+Answers the 2026-11 security review: (1) an answer wasn't tied to its
+request, so someone on the Wi-Fi could replay an old sealed answer (an
+upload's `finish: stored`, so the phone deletes a sketch it thinks was
+delivered, or an old notes `applied`); (2) the QR carried the permanent
+device key, so a photo or screenshot of it was permanent access; (3) the
+replay set lived in memory, so for 2 minutes after a restart a recorded
+request was accepted again. Same envelope (XChaCha20-Poly1305, 24-byte
+nonce), same request AAD, same paths, same bare statuses.
+
+### Answers bound to their request
+- Every request plaintext now says what the phone speaks:
+  `{"ts", "nonce", "body", "v": "1.2"}` (older desktops ignore `v`).
+- The desktop seals the answer with
+  `AAD = "hivo-sync-v1|" + deviceId + "|" + path + "|resp|" + <the request's nonce>`
+  (1.1: the same without the last `|<nonce>`). Every path, uploads and
+  errors included (`clock`, `bad request`, `busy`...). A request whose
+  plaintext doesn't parse has no nonce: its `bad request` is bound to `""`,
+  which a 1.2 phone refuses (it never sends one).
+- The phone opens an answer only with the AAD of the request it just sent
+  (`openAnswer` in `mobile/src/lib/client.ts`). An answer recorded earlier,
+  for any other request, doesn't open. Bare statuses (401, 404, 413,
+  429/503) aren't authenticated and never mark anything as delivered: they
+  only stop or delay a sync.
+- Standard construction: the request nonce is a fresh 16-byte random value
+  the desktop already checks once (replay set), so binding it in the
+  answer's AAD is the usual request/response binding (like a TLS
+  transcript or an AEAD-sealed RPC id), with nothing new inside the
+  plaintext.
+
+### Pairing (QR format `v=2`)
+`hivo://pair?v=2&d=<deviceId>&t=<token>&x=<desktop X25519 public key>&h=<host1>,<host2>&p=<port>&n=<desktop name>`
+- `t`: 32 random bytes, **works once, for 5 minutes** (`PAIR_TTL_MS`),
+  kept in memory only (a restart voids every QR shown). `x`: a fresh X25519
+  key pair per QR; its secret never leaves memory. No device key anywhere
+  in the QR. "Pair a phone" drops the previous unused QR; "Re-pair this
+  phone" makes one for the same `d`.
+- The phone makes its own X25519 key pair and derives the device key:
+  ```
+  shared = X25519(phone secret, desktop public)        // desktop: X25519(desktop secret, phone public)
+  key    = HKDF-SHA256(salt = token, ikm = shared,
+                       info = "hivo-sync-v1.2|pair|" + deviceId + "|" + b64url(desktop pub) + "|" + b64url(phone pub),
+                       length = 32)
+  ```
+  The token is mixed in as the HKDF salt, the way Noise's `psk` modes and
+  WireGuard's preshared key mix a secret into a DH: the token alone (a photo
+  of the QR) gives no key, the DH alone (someone on the Wi-Fi without the
+  QR) gives no key either. Both public keys and the device id are bound in
+  `info`. An all-zero shared secret (a low-order point) is refused on both
+  sides.
+- First request: `POST /v1/pair`, header `X-Hivo-Device: <deviceId>`, body
+  `{"n", "c", "x": "<phone X25519 public key, b64url>"}`, the envelope
+  sealed with the derived key, AAD `hivo-sync-v1|<deviceId>|/v1/pair`,
+  payload as hello (`{"phoneName", "appVersion"}`). The desktop derives the
+  same key from `x`; if the envelope opens, the phone had the token. The
+  QR is then burnt, the device is stored with its key (`derived: true` in
+  `phone-sync.json`; a re-pair replaces the key in place, name kept, the
+  old key works until this moment), and the answer is a hello answer,
+  bound to the request's nonce. Opening it proves to the phone that it is
+  talking to the computer that showed the QR (only it has the X25519
+  secret).
+- Refusals: wrong token, unknown device, QR used, replaced or expired →
+  bare 401 (the phone says "This code was already used or is more than 5
+  minutes old: show a new one", `expired`). A failed attempt doesn't burn
+  the QR (the real phone can still use it). A `clock` error doesn't finish
+  the pairing either. A phone whose `/v1/pair` answer was lost (no answer,
+  `busy`) sends it once more a second later with the same key, and gets an
+  answer (the desktop opens it with the key it stored).
+- Who can still pair: whoever scans the QR first within 5 minutes. A
+  second phone with the same code gets `expired`; one that pairs in your
+  place shows up under Paired phones, and your phone says `expired`. Same
+  advice as before: show the QR only to your own phone.
+
+### Version negotiation and compatibility
+- `/v1/hello` (and `/v1/pair`) answer `{"desktopName", "hivoVersion", "protocol": "1.2"}`.
+- **New pairings always use v1.2** (the desktop only makes `v=2` QRs).
+  A 1.1 phone scanning one says "This link is for another version of
+  Hivo. Update the app." (`version`).
+- **Phones paired before 1.2** keep their key and keep working: the
+  desktop binds its answers when the request says `v` ≥ 1.2 and answers
+  in the 1.1 form only to a phone paired the old way that doesn't (a 1.1
+  phone). Settings → Phone sync marks those rows "Paired with an older
+  Hivo: re-pair it to upgrade its security" (`legacyPairing` in the
+  status), with an orange Re-pair button that shows a `v=2` QR for the
+  same device.
+- **A 1.2 phone on an old pairing**: takes unbound answers until the
+  computer answers bound once (its Hivo was updated), then saves
+  `bound: true` with the pairing and refuses unbound answers from then on
+  (no downgrade). A 1.2 pairing (`scheme: "1.2"`) never takes one.
+- **A 1.2 phone and a 1.1 desktop**: a `v=1` QR still pairs as before; a
+  1.1 desktop never makes a `v=2` one (and answers `/v1/pair` with 404,
+  `outdated`).
+- Downgrading the desktop below 1.2 after a v1.2 pairing: the older
+  desktop answers unbound, the phone refuses ("The desktop answered with
+  an error"); update the desktop or pair again.
+
+### Replay set across restarts
+Every accepted `(device, nonce)` is appended to `phone-sync.replay` next to
+`phone-sync.json` (owner-only) before the request is answered. At start the
+desktop reloads the entries of the last 10 minutes (`NONCE_TTL_MS`, more
+than twice the 2-minute window) and rewrites the file with those only; it
+is rewritten the same way every 10 000 appends. A request replayed right
+after a restart is still a replay (bare 401). If the log can't be written,
+the request is refused as `busy` (fail closed). Nonces are printable ASCII
+(1 to 64 characters), else `bad request`.
+
+### Tests
+- Rust (`phone_sync.rs`): `key_derivation_test_vector`,
+  `pairing_is_one_time_and_expires`, `answers_are_bound_to_the_request`,
+  `a_phone_paired_before_1_2_still_works_and_can_upgrade`,
+  `a_replay_after_a_restart_is_refused`.
+- Phone (`mobile/src/lib/handshake.test.ts`): the same vector, pairing
+  against a fake 1.2 desktop (single use, a stranger's answer refused),
+  binding, hello negotiation (1.1 desktop, upgrade, no downgrade).
+- Shared vector: desktop secret = bytes 1..32, phone secret = bytes
+  0x21..0x40, token = 32 × 0x55, deviceId = b64url(16 × 0x07) →
+  desktop pub `B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHw`, phone pub
+  `WGmv9FBUlzLLqu1eXfmzCm2jHLDldCutWtShp2jxpns`, key
+  `nuf6rptKkMpoSSsZ3ooSuRlVMKdcr0uHlFRRwqLz8bQ` (also checked with
+  Node's own X25519 + HKDF).
+- `scripts/e2e-phone-sync.sh`: the real Rust server shows a `v=2` QR, the
+  phone's real client pairs with it, a second use is refused, then it
+  syncs, sends ideas and a sketch; an old-style pairing still works and
+  gets bound answers.

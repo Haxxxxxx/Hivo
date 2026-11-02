@@ -825,6 +825,8 @@ export interface PhoneDevice {
   needsNewQr: boolean;
   /** Its Hivo is older (major.minor) than this computer's. Absent from older builds. */
   phoneOutdated?: boolean;
+  /** Paired before protocol 1.2 (its key was in the QR): "Re-pair to upgrade security". */
+  legacyPairing?: boolean;
 }
 
 export interface PhoneSyncStatus {
@@ -837,10 +839,13 @@ export interface PhoneSyncStatus {
   error: string | null;
 }
 
-/** A new pairing: the QR payload (holds the key, shown once). */
+/** A pairing QR (v1.2): a one-time token and this computer's public key, never the device key. */
 export interface PhonePairing {
   deviceId: string;
   url: string;
+  issuedAtMs: number;
+  /** The QR stops working then (and once a phone used it). */
+  expiresAtMs: number;
 }
 
 /** A decrypted /v1/snapshot or /v1/notes request, forwarded by Rust. */

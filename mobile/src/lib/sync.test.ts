@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { fnv1a, toB64url } from "./bytes";
 import { createClient, SyncError, timeoutFor, type Transport } from "./client";
-import { openRequest, ReplayGuard, sealResponse, type Reply } from "./envelope";
+import { openRequestFull, ReplayGuard, sealResponse, type Reply } from "./envelope";
 import type { Pairing } from "./pairing";
 import {
   allItems,
@@ -183,7 +183,8 @@ describe("applyPushResults", () => {
 });
 
 // A fake desktop that follows the contract, end to end through the envelope.
-function fakeDesktop(pairing: Pairing, initial: Item[], opts: { demo?: boolean; error?: string; hivoVersion?: string } = {}) {
+// It answers like a 1.2 desktop (bound to the request when the phone says 1.2), or like a 1.1 one with `v11`.
+function fakeDesktop(pairing: Pairing, initial: Item[], opts: { demo?: boolean; error?: string; hivoVersion?: string; v11?: boolean } = {}) {
   const renamed: { kind: Kind; from: string; to: string }[] = [];
   const key = Buffer.from(pairing.key, "base64url");
   const guard = new ReplayGuard();
@@ -195,8 +196,11 @@ function fakeDesktop(pairing: Pairing, initial: Item[], opts: { demo?: boolean; 
     log.push(`${new URL(url).hostname} ${path}`);
     if (new URL(url).hostname !== "192.168.1.20") throw new TypeError("Network request failed");
     let body: unknown;
+    let bind: string | undefined;
     try {
-      body = openRequest(key, init.headers["X-Hivo-Device"], path, JSON.parse(init.body), Date.now(), guard);
+      const req = openRequestFull(key, init.headers["X-Hivo-Device"], path, JSON.parse(init.body), Date.now(), guard);
+      body = req.body;
+      if (!opts.v11 && req.v === "1.2") bind = req.nonce;
     } catch {
       return { status: 401, text: async () => "" };
     }
@@ -218,7 +222,7 @@ function fakeDesktop(pairing: Pairing, initial: Item[], opts: { demo?: boolean; 
       });
       reply = { ok: true, body: { results } };
     }
-    const env = sealResponse(key, init.headers["X-Hivo-Device"], path, reply, rnd);
+    const env = sealResponse(key, init.headers["X-Hivo-Device"], path, reply, rnd, bind);
     return { status: 200, text: async () => JSON.stringify(env) };
   };
   return { transport, notes, log, renamed };
