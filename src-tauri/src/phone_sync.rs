@@ -1557,9 +1557,9 @@ mod tests {
         // Shown in the status until a save works.
         fs::write(&path, "still not json").unwrap();
         let inner = Inner::new(path.clone());
-        assert!(status_of(&inner).error.is_some_and(|e| e.contains("pairing again")));
+        assert!(status_of(&inner, "0.7.0").error.is_some_and(|e| e.contains("pairing again")));
         inner.save(&SyncFile::default()).unwrap();
-        assert_eq!(status_of(&inner).error, None);
+        assert_eq!(status_of(&inner, "0.7.0").error, None);
         let bads = fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().starts_with("phone-sync.json.bad-")).count();
         assert_eq!(bads, 2, "a second broken file never replaces the first");
         // Can't be read at all (here: a folder in its place): left alone, saving refused.
