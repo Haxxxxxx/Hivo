@@ -1,6 +1,7 @@
 #!/bin/bash
 # Phone ↔ desktop sync, for real: the Rust server (an ignored test) and the
-# phone's TypeScript client + uploader (mobile/src/lib/e2e.test.ts) talk over
+# phone's TypeScript client + uploader (mobile/src/lib/e2e.test.ts) pair with a
+# v1.2 QR (one-time token, X25519) and talk over
 # localhost with real envelopes. Usage: scripts/e2e-phone-sync.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
