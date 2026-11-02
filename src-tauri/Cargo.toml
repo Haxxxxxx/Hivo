@@ -25,7 +25,7 @@ serde_json = "1"
 tauri-plugin-dialog = "2"
 # In-app updates: the signed manifest and installers live in the public
 # `releases` bucket of the crew's Supabase project (see tauri.conf.json).
-tauri-plugin-updater = "2"
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "system-proxy"] }
 tauri-plugin-process = "2"
 walkdir = "2.5.0"
 trash = "5"

@@ -2,9 +2,8 @@
 # `cargo audit --file src-tauri/Cargo.lock`).
 
 [advisories]
-# zip 4.x comes in through tauri-plugin-updater (Windows target only; our own
-# zip is 9.x). The three advisories are about extracting attacker-controlled
-# archives (symlink targets, SUID bits). The updater only ever extracts the
-# update it has just verified against our signing key, so they don't apply.
-# Drop these once the updater plugin moves to zip >= 9.
-ignore = ["RUSTSEC-2026-0367", "RUSTSEC-2026-0368", "RUSTSEC-2026-0369"]
+# Nothing ignored. zip 4.x (RUSTSEC-2026-0367/0368/0369/0429) came in through
+# tauri-plugin-updater's default "zip" feature, which Hivo doesn't use (Mac
+# updates are .app.tar.gz, Windows updates the NSIS -setup.exe): the feature
+# is turned off in src-tauri/Cargo.toml, so zip 4.x is gone from the lockfile.
+ignore = []
