@@ -206,8 +206,9 @@ export const useDigger = create<DiggerState>((set, get) => ({
       const beats = scan.beats;
       const known = new Set(beats.map((b) => b.path));
       set({ beats, scanInfo: { total: scan.total, capped: scan.capped, ignored: scan.ignored }, picked: get().picked.filter((p) => known.has(p)) });
-      // Notes follow a renamed or moved beat.
-      useAppStore.getState().syncBeatNotes(beats);
+      // Notes follow a renamed or moved beat; never after a partial scan (a
+      // beat missing from it may only be on an unplugged drive).
+      useAppStore.getState().syncBeatNotes(beats, !scan.capped && !(scan.unreachable > 0));
       void get().analyseBeats();
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });

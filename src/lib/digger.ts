@@ -2,7 +2,7 @@
 // file names, leads (text files) and the user's converter link. Links only:
 // the Digger never downloads anything.
 
-import type { BeatFacts, BeatFile, DigResult, Lead, WebLink, YoutubeVideo } from "../types";
+import type { BeatFacts, BeatFile, BeatMove, DigResult, Lead, WebLink, YoutubeVideo } from "../types";
 
 /** Same limit as `MAX_QUERY_CHARS` in src-tauri/src/youtube.rs. */
 export const MAX_QUERY_CHARS = 120;
@@ -155,13 +155,19 @@ const MIN_CONTAIN_RATIO = 0.75;
 
 /** The beat in the user's folders that is this lead, if one is. `manual`
  * (the user's own link, `Workspace.leadBeats`) wins: a beat path, or null
- * for "not in your prods". Otherwise the same cleaned name, or one that
+ * for "not in your prods"; a linked path the scan no longer has falls back
+ * to the name match. Otherwise the same cleaned name, or one that
  * contains the other when their lengths are close (a downloaded file is
  * usually named after the video, sometimes with a short suffix). Short keys
  * never match by containment. */
 export function matchBeat<B extends { name: string; path?: string }>(lead: { title: string }, beats: B[], manual?: string | null): B | null {
   if (manual === null) return null;
-  if (manual !== undefined) return beats.find((b) => b.path === manual) ?? null;
+  if (manual !== undefined) {
+    const linked = beats.find((b) => b.path === manual);
+    if (linked) return linked;
+    // The linked file is gone from this scan (moved and not relinked yet,
+    // or deleted): the name match below, rather than nothing forever.
+  }
   const key = titleKey(lead.title);
   if (!key) return null;
   const exact = beats.find((b) => titleKey(b.name) === key);
@@ -303,49 +309,98 @@ export function sortBeats(beats: BeatFile[], facts: Record<string, BeatFacts | n
   });
 }
 
+/** What follows a beat file around (`Workspace` fields of the same names). */
+export interface BeatLinks {
+  beatNotes?: Record<string, string>;
+  beatNoteSizes?: Record<string, number>;
+  beatNoteMoves?: Record<string, BeatMove>;
+  leadBeats?: Record<string, string | null>;
+}
+
+/** Tombstones kept at most (oldest dropped first). */
+export const MAX_BEAT_MOVES = 500;
+
+type ScannedBeat = { path: string; name: string; sizeBytes: number };
+
+const fileStem = (p: string) => (p.split(/[\\/]/).pop() ?? p).replace(/\.[^.]+$/, "");
+
 /**
- * Notes that follow their beat when it's renamed or moved: a noted path the
- * scan no longer finds goes to the one new beat (no note yet) with the same
- * file name and size, else the same name (moved), else the same size
- * (renamed), only when exactly one beat fits. Returns null when nothing moved.
+ * Notes and lead links that follow their beat when it's moved or renamed.
+ * A tracked path (a noted beat, or a beat a saved prod is linked to by hand)
+ * the scan no longer finds goes to the one untracked beat with the same file
+ * name AND size, only when exactly one fits, and only when the scan is
+ * `complete` (not capped, every beats folder read): a beat missing from a
+ * partial scan isn't gone. The old key is kept as a tombstone
+ * (`beatNoteMoves`) until a later complete scan finds the new path; if the
+ * old path comes back first, its note is restored. Sizes are kept for every
+ * tracked path. Returns null when nothing changed.
  */
-export function relinkBeatNotes(
-  notes: Record<string, string> | undefined,
-  sizes: Record<string, number> | undefined,
-  beats: { path: string; name: string; sizeBytes: number }[],
-): { notes: Record<string, string>; sizes: Record<string, number> } | null {
-  if (!notes) return null;
-  const here = new Set(beats.map((b) => b.path));
-  const lost = Object.keys(notes).filter((p) => !here.has(p));
-  if (!lost.length) return null;
-  const free = beats.filter((b) => !(b.path in notes));
-  const base = (p: string) => (p.split(/[\\/]/).pop() ?? p).replace(/\.[^.]+$/, "");
-  const nextNotes = { ...notes };
-  const nextSizes = { ...(sizes ?? {}) };
-  let moved = false;
-  for (const old of lost) {
-    const size = sizes?.[old];
-    const name = base(old);
-    const tries = [
-      (b: (typeof free)[number]) => b.name === name && b.sizeBytes === size,
-      (b: (typeof free)[number]) => b.name === name,
-      (b: (typeof free)[number]) => size !== undefined && b.sizeBytes === size,
-    ];
-    for (const fits of tries) {
-      const hits = free.filter(fits);
-      if (hits.length === 1) {
-        const to = hits[0];
-        nextNotes[to.path] = nextNotes[old];
-        nextSizes[to.path] = to.sizeBytes;
-        delete nextNotes[old];
-        delete nextSizes[old];
-        free.splice(free.indexOf(to), 1);
-        moved = true;
-        break;
+export function relinkBeatNotes(links: BeatLinks, beats: ScannedBeat[], complete: boolean): Required<BeatLinks> | null {
+  const notes = { ...(links.beatNotes ?? {}) };
+  const sizes = { ...(links.beatNoteSizes ?? {}) };
+  const moves = { ...(links.beatNoteMoves ?? {}) };
+  const leadBeats = { ...(links.leadBeats ?? {}) };
+  const here = new Map(beats.map((b) => [b.path, b]));
+  let changed = false;
+
+  // Tombstones: the old path is back (restore its note), or the new one is
+  // confirmed by a complete scan (forget the old one).
+  for (const [old, mv] of Object.entries(moves)) {
+    const back = here.get(old);
+    if (back) {
+      if (mv.text !== undefined && notes[old] === undefined) {
+        notes[old] = mv.text;
+        sizes[old] = back.sizeBytes;
       }
+      delete moves[old];
+      changed = true;
+    } else if (complete && here.has(mv.to)) {
+      delete moves[old];
+      changed = true;
     }
   }
-  return moved ? { notes: nextNotes, sizes: nextSizes } : null;
+
+  const tracked = () => new Set([...Object.keys(notes), ...Object.values(leadBeats).filter((p): p is string => typeof p === "string")]);
+  if (complete) {
+    const taken = tracked();
+    const lost = [...taken].filter((p) => !here.has(p));
+    const free = beats.filter((b) => !taken.has(b.path));
+    for (const old of lost) {
+      const size = sizes[old];
+      if (size === undefined) continue;
+      const name = fileStem(old);
+      const fits = (b: ScannedBeat) => b.name === name && b.sizeBytes === size;
+      const hits = free.filter(fits);
+      // Two lost beats that both fit one file: no guess.
+      if (hits.length !== 1 || lost.filter((o) => o !== old && fileStem(o) === name && sizes[o] === size).length > 0) continue;
+      const to = hits[0];
+      const text = notes[old];
+      if (text !== undefined) {
+        notes[to.path] = text;
+        delete notes[old];
+      }
+      moves[old] = text !== undefined ? { to: to.path, size, text } : { to: to.path, size };
+      for (const [hash, p] of Object.entries(leadBeats)) if (p === old) leadBeats[hash] = to.path;
+      sizes[to.path] = to.sizeBytes;
+      delete sizes[old];
+      free.splice(free.indexOf(to), 1);
+      changed = true;
+    }
+  }
+
+  // Sizes of tracked beats only; a tracked beat missing from this scan keeps its last size.
+  const keep = tracked();
+  const nextSizes: Record<string, number> = {};
+  for (const p of keep) {
+    const s = here.get(p)?.sizeBytes ?? sizes[p];
+    if (s !== undefined) nextSizes[p] = s;
+  }
+  if (JSON.stringify(nextSizes) !== JSON.stringify(links.beatNoteSizes ?? {})) changed = true;
+
+  const ids = Object.keys(moves);
+  for (const old of ids.slice(0, Math.max(0, ids.length - MAX_BEAT_MOVES))) delete moves[old];
+
+  return changed ? { beatNotes: notes, beatNoteSizes: nextSizes, beatNoteMoves: moves, leadBeats } : null;
 }
 
 /** What the Digger keeps of the last dig across restarts (`save_last_dig`). */

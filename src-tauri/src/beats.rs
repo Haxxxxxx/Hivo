@@ -39,6 +39,10 @@ pub struct BeatScan {
     pub capped: bool,
     /// Audio files in a format the Digger can't read (opus, aac…).
     pub ignored: usize,
+    /// Beats folders (or folders inside them) that couldn't be read: an
+    /// unplugged drive, a permission error. Beats in them are missing from
+    /// `beats`, not deleted, so notes must not follow them elsewhere.
+    pub unreachable: usize,
 }
 
 /// How deep to look inside a beats folder.
@@ -52,12 +56,20 @@ pub fn list_beats(folders: &[PathBuf]) -> BeatScan {
     let mut scan = BeatScan::default();
     let mut visited = 0usize;
     'roots: for root in folders {
+        if !root.is_dir() {
+            scan.unreachable += 1;
+            continue;
+        }
         // Phone memos linked to beats (`_memos`) aren't beats.
         let walker = WalkDir::new(root)
             .max_depth(MAX_DEPTH)
             .into_iter()
             .filter_entry(|e| !(e.depth() == 1 && e.file_type().is_dir() && e.file_name() == crate::phone_inbox::BEAT_MEMOS_DIR));
-        for e in walker.filter_map(|e| e.ok()) {
+        for e in walker {
+            let Ok(e) = e else {
+                scan.unreachable += 1;
+                continue;
+            };
             visited += 1;
             if visited > MAX_VISITED {
                 scan.capped = true;
@@ -251,7 +263,18 @@ mod tests {
         let mut names: Vec<String> = scan.beats.into_iter().map(|b| b.name).collect();
         names.sort();
         assert_eq!(names, vec!["Cold Room", "Night Drive (prod. X)", "song"]);
-        assert_eq!((scan.total, scan.capped, scan.ignored), (3, false, 2));
+        assert_eq!((scan.total, scan.capped, scan.ignored, scan.unreachable), (3, false, 2, 0));
+    }
+
+    #[test]
+    fn a_missing_beats_folder_is_reported() {
+        let root = std::env::temp_dir().join(format!("flsm-beats-gone-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("a.mp3"), b"x").unwrap();
+        let scan = list_beats(&[root.clone(), root.join("unplugged")]);
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!((scan.beats.len(), scan.unreachable), (1, 1));
     }
 
     #[test]

@@ -5,6 +5,7 @@ import { STATUSES } from "../lib/songs";
 import type { SongStatus, TemplateInfo } from "../types";
 import { Modal, btn, btnPrimary, input, sectionLabel } from "./ui";
 import { dict, tr } from "../i18n";
+import { adoptBeat } from "../store/beatToSong";
 
 const T = dict(
   {
@@ -30,6 +31,10 @@ const T = dict(
     cancel: "Cancel",
     creating: "Creating…",
     create: "Create song",
+    fromBeat: (name: string) => `From the beat ${name}: its notes and phone memos move to the song. The beat file stays where it is.`,
+    creditProducer: "Credit as producer",
+    producerName: "Producer",
+    memosFailed: (name: string, list: string) => `Created ${name}, but these phone memos stayed on the beat: ${list}. File them from the Phone inbox.`,
   },
   {
     openFailed: (name: string, err: string) =>
@@ -55,6 +60,10 @@ const T = dict(
     cancel: "Annuler",
     creating: "Création…",
     create: "Créer le son",
+    fromBeat: (name: string) => `À partir de la prod ${name} : ses notes et ses mémos du téléphone passent au son. Le fichier de la prod reste où il est.`,
+    creditProducer: "Créditer comme producteur",
+    producerName: "Producteur",
+    memosFailed: (name: string, list: string) => `${name} est créé, mais ces mémos du téléphone sont restés sur la prod : ${list}. Range-les depuis la boîte du téléphone.`,
   },
 );
 
@@ -76,6 +85,8 @@ export function NewProjectModal() {
   const [status, setStatus] = useState<SongStatus>(draft?.status ?? "creation");
   const [albumId, setAlbumId] = useState<string>(draft?.albumId ?? "");
   const [openAfter, setOpenAfter] = useState(true);
+  const [producer, setProducer] = useState("");
+  const [creditProducer, setCreditProducer] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -95,6 +106,9 @@ export function NewProjectModal() {
     if (!draft) return;
     setStatus(draft.status);
     setAlbumId(draft.albumId ?? "");
+    if (draft.name !== undefined) setName(draft.name);
+    setProducer(draft.fromBeat?.producer ?? "");
+    setCreditProducer(!!draft.fromBeat?.producer);
   }, [draft]);
 
   const factory = useFactoryTemplates(!!draft, setTemplatePath);
@@ -120,6 +134,12 @@ export function NewProjectModal() {
         status,
       });
       setName("");
+      // From a beat: its note, a producer credit and its phone memos move to the song.
+      let memosFailed: string[] = [];
+      if (draft?.fromBeat) {
+        const r = await adoptBeat(path, draft.fromBeat, creditProducer ? producer.trim() || null : null);
+        memosFailed = r.failed;
+      }
       // Land where the new song shows: the Library (no drawer on Settings or
       // the Launch Kit; the drawer would squeeze the Digger's panels), with
       // no filter hiding it.
@@ -127,6 +147,8 @@ export function NewProjectModal() {
       if (view === "settings" || view === "launch" || view === "digger") setView("library");
       resetLibraryFilters();
       openDetail(path);
+      // The song exists: say what didn't follow it on the app's error strip, not on a closed modal.
+      if (memosFailed.length) useAppStore.setState({ actionError: tr(T).memosFailed(trimmed, memosFailed.join(", ")) });
       if (openAfter) {
         try {
           await api.openInFlStudio(path);
@@ -161,6 +183,26 @@ export function NewProjectModal() {
           <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder={L.namePlaceholder} className={`${input} mt-1.5`} />
           {clash && <div className="mt-1 text-xs text-amber-400">{L.clash}</div>}
         </div>
+
+        {draft.fromBeat && (
+          <div className="flex flex-col gap-2 rounded border border-rule bg-chassis px-3 py-2 text-xs text-body">
+            <span>{L.fromBeat(draft.fromBeat.name)}</span>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={creditProducer} onChange={(e) => setCreditProducer(e.target.checked)} className="accent-orange-500" />
+              {L.creditProducer}
+              <input
+                value={producer}
+                onChange={(e) => {
+                  setProducer(e.target.value);
+                  setCreditProducer(!!e.target.value.trim());
+                }}
+                placeholder={L.producerName}
+                aria-label={L.producerName}
+                className={`${input} flex-1 py-1`}
+              />
+            </label>
+          </div>
+        )}
 
         <div>
           <div className={sectionLabel}>{L.startFrom}</div>

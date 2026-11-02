@@ -537,11 +537,18 @@ export interface Workspace {
   leadNotes?: Record<string, string>;
   /** Notes on beats (Settings → Beats folders), by file path. */
   beatNotes?: Record<string, string>;
-  /** The size of each noted beat, so a renamed or moved file finds its
-   * notes again on the next scan (`relinkBeatNotes`). */
+  /** The size of each tracked beat (noted, or linked to a saved prod by
+   * hand), so a moved or renamed file finds its notes and links again on the
+   * next complete scan (`relinkBeatNotes`). */
   beatNoteSizes?: Record<string, number>;
+  /** Tombstones of beat notes/links moved to another path, by old path:
+   * dropped once a later complete scan finds the new path, undone (the note
+   * restored) if the old path comes back first. */
+  beatNoteMoves?: Record<string, BeatMove>;
   /** Saved prod (lead hash) → the beat file that is it (path), set by hand
-   * ("This is…"); null = "not in your prods", overriding the name match. */
+   * ("This is…"); null = "not in your prods", overriding the name match.
+   * Follows the beat when it moves (`relinkBeatNotes`); a path the scan
+   * no longer has falls back to the name match (`matchBeat`). */
   leadBeats?: Record<string, string | null>;
   /** Set only on generated sample data (src/lib/sampleData.ts): a workspace
    * carrying it is never written to disk. */
@@ -660,6 +667,15 @@ export interface BeatFile {
   modifiedAtMs: number;
 }
 
+/** A beat's notes (or a lead's link) moved from one path to another: kept
+ * until the move is confirmed, so the note comes back if the old path does. */
+export interface BeatMove {
+  to: string;
+  size: number;
+  /** The note as it was moved (absent when only lead links moved). */
+  text?: string;
+}
+
 /** The beats scan (src-tauri/src/beats.rs BeatScan). */
 export interface BeatScan {
   beats: BeatFile[];
@@ -669,6 +685,9 @@ export interface BeatScan {
   capped: boolean;
   /** Audio files in formats the Digger can't read (opus, aac…). */
   ignored: number;
+  /** Beats folders (or folders in them) that couldn't be read: their beats
+   * are missing from `beats`, not gone. */
+  unreachable: number;
 }
 
 /** One beat's offline analysis (src-tauri/src/beats.rs analyze_beats). */

@@ -90,6 +90,11 @@ interface RenderOptions {
 interface NewProjectDraft {
   albumId: string | null;
   status: SongStatus;
+  /** A name to start with ("Start a song from this beat"). */
+  name?: string;
+  /** The beat this song starts from: its note and phone memos move to the
+   * song once created (src/store/beatToSong.ts). */
+  fromBeat?: { path: string; name: string; producer: string | null };
 }
 
 /** In-app updates (src/lib/updater.ts): one check at startup, then Settings. */
@@ -339,8 +344,12 @@ interface AppState {
   /** Notes on a saved prod (by lead hash) or a beat (by file path); empty removes. */
   setLeadNote: (hash: string, text: string) => void;
   setBeatNote: (path: string, text: string) => void;
-  /** After a beats scan: notes follow renamed/moved beats, noted beats' sizes are remembered. */
-  syncBeatNotes: (beats: { path: string; name: string; sizeBytes: number }[]) => void;
+  /** After a beats scan: notes and hand-made lead links follow moved or
+   * renamed beats (only after a `complete` scan: not capped, every folder
+   * read), tracked beats' sizes are remembered (`relinkBeatNotes`). */
+  syncBeatNotes: (beats: { path: string; name: string; sizeBytes: number }[], complete: boolean) => void;
+  /** A pure workspace change (src/lib/*) applied and saved like any edit. */
+  applyWorkspace: (change: (ws: Workspace) => Workspace) => void;
   /** A saved prod's beat set by hand: a path, null ("not in your prods"), or undefined (back to the name match). */
   setLeadBeat: (hash: string, path: string | null | undefined) => void;
   /** Also removes their credits and pitches. */
@@ -1294,21 +1303,16 @@ export const useAppStore = create<AppState>((set, get) => {
 
     setLeadNote: (hash, text) => mutateWorkspace((ws) => ({ ...ws, leadNotes: setNote(ws.leadNotes, hash, text) })),
     setBeatNote: (path, text) => mutateWorkspace((ws) => ({ ...ws, beatNotes: setNote(ws.beatNotes, path, text) })),
-    syncBeatNotes: (beats) => {
+    syncBeatNotes: (beats, complete) => {
       const ws = get().workspace;
-      if (!ws.beatNotes || Object.keys(ws.beatNotes).length === 0) return;
-      const moved = relinkBeatNotes(ws.beatNotes, ws.beatNoteSizes, beats);
-      const notes = moved?.notes ?? ws.beatNotes;
-      const sizes: Record<string, number> = {};
-      const byPath = new Map(beats.map((b) => [b.path, b.sizeBytes]));
-      // Sizes of noted beats only; a noted beat missing from this scan keeps its last size.
-      for (const p of Object.keys(notes)) {
-        const s = byPath.get(p) ?? moved?.sizes[p] ?? ws.beatNoteSizes?.[p];
-        if (s !== undefined) sizes[p] = s;
-      }
-      const same = !moved && JSON.stringify(sizes) === JSON.stringify(ws.beatNoteSizes ?? {});
-      if (!same) mutateWorkspace((w) => ({ ...w, beatNotes: notes, beatNoteSizes: sizes }), { quiet: true });
+      if (ws.sample) return;
+      const hasLinks = Object.keys(ws.beatNotes ?? {}).length > 0 || Object.keys(ws.beatNoteMoves ?? {}).length > 0 || Object.values(ws.leadBeats ?? {}).some((p) => typeof p === "string");
+      if (!hasLinks) return;
+      const next = relinkBeatNotes(ws, beats, complete);
+      // Quiet: an automatic relink on a read-only workspace is skipped without a message.
+      if (next) mutateWorkspace((w) => ({ ...w, ...next }), { quiet: true });
     },
+    applyWorkspace: (change) => mutateWorkspace(change),
     setLeadBeat: (hash, path) =>
       mutateWorkspace((ws) => {
         const next = { ...(ws.leadBeats ?? {}) };
