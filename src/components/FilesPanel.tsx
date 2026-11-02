@@ -7,7 +7,7 @@ import { kitFolderName } from "../lib/kitState";
 import { formatBytes, formatRelative } from "../lib/format";
 import type { ProjectInfo } from "../types";
 import { FileRow } from "../ui";
-import { dict, tr } from "../i18n";
+import { dict, plural, tr } from "../i18n";
 
 const T = dict(
   {
@@ -33,7 +33,7 @@ const T = dict(
   {
     project: "Projet",
     backups: "Sauvegardes",
-    backupsDetail: (n: number, size: string) => `${n} sauvegarde${n > 1 ? "s" : ""} · ${size}`,
+    backupsDetail: (n: number, size: string) => `${n} sauvegarde${plural(n, "", "s")} · ${size}`,
     noneYet: "aucune pour l'instant",
     takes: "Prises enregistrées",
     takesDetail: (n: number, size: string) => `${n} dans Audio/ · ${size}`,
@@ -43,12 +43,12 @@ const T = dict(
     stemsDetail: (n: number, where: string, size: string, when: string) => `${n} dans ${where} · ${size} · ${when}`,
     noStems: "aucun exporté (un dossier Stems, ou les pistes du mixer séparées par FL)",
     mixdowns: "Mixdowns",
-    olderMixdowns: (n: number) => `+${n} mixdown${n > 1 ? "s" : ""} plus ancien${n > 1 ? "s" : ""}`,
+    olderMixdowns: (n: number) => `+${n} mixdown${plural(n, "", "s")} plus ancien${plural(n, "", "s")}`,
     setExportFolder: "choisis un dossier d'export dans les Réglages",
     looking: "recherche…",
     notExported: "pas encore exporté",
     openKit: "Ouvrir le Launch Kit →",
-    kitFiles: (n: number, folder: string) => `${n} fichier${n > 1 ? "s" : ""} dans ${folder}`,
+    kitFiles: (n: number, folder: string) => `${n} fichier${plural(n, "", "s")} dans ${folder}`,
   },
 );
 

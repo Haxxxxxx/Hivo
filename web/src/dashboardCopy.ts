@@ -1,4 +1,4 @@
-import { dict } from "@shared/i18n";
+import { dict, plural } from "@shared/i18n";
 
 // The signed-in crew website in English and French (same system and words
 // as the desktop app: src/i18n, docs/I18N.md). The language follows the page:
@@ -157,7 +157,7 @@ export const W = dict(
     released: "Sorties passées",
     owner: "propriétaire",
     memberLine: (shared: number, active: number, last: string | null) =>
-      `${shared} partagé${shared > 1 ? "s" : ""} · ${active} en cours · ${last ? `dernière session ${last}` : "pas encore de session"}`,
+      `${shared} partagé${plural(shared, "", "s")} · ${active} en cours · ${last ? `dernière session ${last}` : "pas encore de session"}`,
     anotherCrew: "Rejoindre ou créer un autre crew",
     cancel: "Annuler",
     tenCrews: "Tu es déjà dans 10 crews, le maximum. Quittes-en un d'abord.",
@@ -170,7 +170,7 @@ export const W = dict(
     invitesHelp: "Envoie un code à quelqu'un du crew : connexion sur hi-vo.fr ou dans Hivo, puis le code. Un code marche 10 fois pendant 7 jours.",
     newInvite: "Nouveau code d'invitation",
     noInvites: "Aucun code ouvert.",
-    inviteLine: (uses: number, max: number, until: string) => `${uses}/${max} utilisé${uses > 1 ? "s" : ""} · jusqu'au ${until}`,
+    inviteLine: (uses: number, max: number, until: string) => `${uses}/${max} utilisé${plural(uses, "", "s")} · jusqu'au ${until}`,
     copy: "Copier",
     copied: "Copié",
     revoke: "Révoquer",

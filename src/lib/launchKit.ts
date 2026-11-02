@@ -5,7 +5,7 @@ import { LEAD_DAYS, parseDate, resolveReleaseDate } from "./releaseDates";
 import { masterFreshness } from "./kitState";
 import { dawOf, isSketch } from "./daws";
 import { linkVerified } from "./profiles";
-import { applyLang, currentLang, dict, tr } from "../i18n";
+import { applyLang, currentLang, dict, plural, tr } from "../i18n";
 
 // On-screen text only (field labels, provenance notes, check messages).
 // Values and the exported files stay in English: kitFiles builds from
@@ -94,7 +94,7 @@ const T = dict(
     fromRelease: (title: string) => `From the release "${title}"`,
     firstFriday: (days: number, skipped: number) =>
       `First Friday ${days}+ days out: time to deliver to the distributor and pitch to Spotify editorial` +
-      (skipped ? `. Skipped ${skipped} Friday${skipped === 1 ? "" : "s"} that already ha${skipped === 1 ? "s" : "ve"} a release (yours or the crew's)` : ""),
+      (skipped ? `. Skipped ${skipped} Friday${plural(skipped, "", "s")} that already ha${plural(skipped, "s", "ve")} a release (yours or the crew's)` : ""),
     labelCrew: "Your crew's name. Self-releasing? Your artist name works too",
     labelSelf: "Self-released: the artist name is the usual label",
     labelEmpty: "Your label, or your artist name if self-released",
@@ -195,7 +195,7 @@ const T = dict(
     fromRelease: (title: string) => `D'après la sortie "${title}"`,
     firstFriday: (days: number, skipped: number) =>
       `Premier vendredi dans ${days} jours ou plus : le temps de livrer au distributeur et de pitcher l'éditorial Spotify` +
-      (skipped ? `. ${skipped} vendredi${skipped === 1 ? "" : "s"} sauté${skipped === 1 ? "" : "s"}, déjà pris par une sortie (la tienne ou celle du crew)` : ""),
+      (skipped ? `. ${skipped} vendredi${plural(skipped, "", "s")} sauté${plural(skipped, "", "s")}, déjà pris par une sortie (la tienne ou celle du crew)` : ""),
     labelCrew: "Le nom de ton crew. Tu sors en indé ? Ton nom d'artiste marche aussi",
     labelSelf: "Sortie en indé : en général, le nom d'artiste sert de label",
     labelEmpty: "Ton label, ou ton nom d'artiste si tu sors en indé",

@@ -9,7 +9,7 @@ import { formatRelative } from "../lib/format";
 import { isFinished, statusInfo } from "../lib/songs";
 import { localDay } from "../lib/crewStats";
 import { StatusDot } from "./ui";
-import { dict, locale, tr } from "../i18n";
+import { dict, locale, plural, tr } from "../i18n";
 
 // The crew pages behind the sidebar's crew section. The board is for every
 // member; members & invites and crew settings are the owner's.
@@ -54,7 +54,7 @@ const T = dict(
     releasesSub: (crew: string) => `${crew} · partage les tiennes depuis leur page dans Sorties`,
     noReleases: "Aucune sortie partagée pour l'instant. Ouvre une des tiennes dans Sorties et clique sur « Partager avec » ton crew.",
     noDate: "Pas encore de date",
-    finished: (done: number, total: number) => `${done}/${total} terminé${done > 1 ? "s" : ""}`,
+    finished: (done: number, total: number) => `${done}/${total} terminé${plural(done, "", "s")}`,
   },
 );
 

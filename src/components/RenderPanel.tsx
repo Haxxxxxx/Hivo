@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { CheckCircle2, Loader2, XCircle, Clock, X } from "lucide-react";
 import { useAppStore } from "../store/useAppStore";
-import { dict, tr } from "../i18n";
+import { dict, plural, tr } from "../i18n";
 
 const T = dict(
   {
@@ -9,7 +9,7 @@ const T = dict(
     complete: "Export complete",
     hideWhileRendering: "Hide (the render goes on)",
     stuckHint: "FL Studio stuck? Quit it: Hivo gives up on a render after 15 minutes.",
-    finishedErrors: (n: number) => `Finished with ${n} error${n === 1 ? "" : "s"}`,
+    finishedErrors: (n: number) => `Finished with ${n} error${plural(n, "", "s")}`,
     summary: (done: number, failed: number) => `${done} done${failed > 0 ? `, ${failed} failed` : ""}`,
   },
   {
@@ -17,9 +17,9 @@ const T = dict(
     complete: "Export terminé",
     hideWhileRendering: "Masquer (le rendu continue)",
     stuckHint: "FL Studio bloqué ? Quitte-le : Hivo abandonne un rendu au bout de 15 minutes.",
-    finishedErrors: (n: number) => `Terminé avec ${n} erreur${n === 1 ? "" : "s"}`,
+    finishedErrors: (n: number) => `Terminé avec ${n} erreur${plural(n, "", "s")}`,
     summary: (done: number, failed: number) =>
-      `${done} terminé${done > 1 ? "s" : ""}${failed > 0 ? `, ${failed} en échec` : ""}`,
+      `${done} terminé${plural(done, "", "s")}${failed > 0 ? `, ${failed} en échec` : ""}`,
   },
 );
 

@@ -1,7 +1,7 @@
 // Phase B step 4 on the phone: ideas, voice memos, shared files (BandLab
 // exports) and what happens to them. Every error state of docs/PHONE-SYNC.md
 // v1.1 has its sentence here.
-import { dict, tr } from "./lib/i18n";
+import { dict, plural, tr } from "./lib/i18n";
 import type { OutError } from "./lib/outbox";
 import type { ExtrasError } from "./store";
 
@@ -88,7 +88,7 @@ export const S = dict(
     pause: "Pause",
     // Share
     shareTitle: "Send to your computer",
-    shareFiles: (n: number) => (n === 1 ? "1 file" : `${n} files`),
+    shareFiles: (n: number) => plural(n, "1 file", `${n} files`),
     shareName: "Name",
     shareNamePlaceholder: "The song's name on the computer",
     shareSend: "Send to the computer",
@@ -190,7 +190,7 @@ export const S = dict(
     play: "Écouter",
     pause: "Pause",
     shareTitle: "Envoyer vers ton ordi",
-    shareFiles: (n: number) => (n === 1 ? "1 fichier" : `${n} fichiers`),
+    shareFiles: (n: number) => plural(n, `${n} fichier`, `${n} fichiers`),
     shareName: "Nom",
     shareNamePlaceholder: "Le nom du son sur l'ordi",
     shareSend: "Envoyer vers l'ordi",

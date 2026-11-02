@@ -6,13 +6,13 @@ import { useAppStore } from "../store/useAppStore";
 import { formatRelative } from "../lib/format";
 import { statusInfo } from "../lib/songs";
 import { StatusDot } from "../ui";
-import { dict, tr } from "../i18n";
+import { dict, plural, tr } from "../i18n";
 import { errorText } from "../lib/errors";
 
 const T = dict(
   {
     empty: "Nothing needs you right now: mixdowns are current and every song opens cleanly.",
-    count: (n: number) => `${n} song${n === 1 ? "" : "s"}`,
+    count: (n: number) => `${n} song${plural(n, "", "s")}`,
     previous: "Previous songs",
     more: "More songs",
     list: "Songs that need attention",
@@ -21,7 +21,7 @@ const T = dict(
   },
   {
     empty: "Rien à compléter pour l'instant : les mixdowns sont à jour et chaque son s'ouvre sans souci.",
-    count: (n: number) => `${n} son${n === 1 ? "" : "s"}`,
+    count: (n: number) => `${n} son${plural(n, "", "s")}`,
     previous: "Sons précédents",
     more: "Plus de sons",
     list: "Sons qui demandent ton attention",

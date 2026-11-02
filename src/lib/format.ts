@@ -1,4 +1,4 @@
-import { currentLang, dict, locale, tr } from "../i18n";
+import { currentLang, dict, locale, plural, tr } from "../i18n";
 
 const T = dict(
   {
@@ -6,8 +6,8 @@ const T = dict(
     units: "B KB MB GB",
     today: "today",
     todayAt: (time: string) => `Today ${time}`,
-    ago: (n: number, unit: "day" | "week" | "month") => `${n} ${unit}${n === 1 ? "" : "s"} ago`,
-    inTime: (n: number, unit: "day" | "week" | "month") => `in ${n} ${unit}${n === 1 ? "" : "s"}`,
+    ago: (n: number, unit: "day" | "week" | "month") => `${n} ${unit}${plural(n, "", "s")} ago`,
+    inTime: (n: number, unit: "day" | "week" | "month") => `in ${n} ${unit}${plural(n, "", "s")}`,
   },
   {
     trash: "Corbeille",
@@ -22,7 +22,7 @@ const T = dict(
 function frUnit(n: number, unit: "day" | "week" | "month"): string {
   if (unit === "month") return "mois";
   const word = unit === "day" ? "jour" : "semaine";
-  return n === 1 ? word : `${word}s`;
+  return plural(n, word, `${word}s`, "fr");
 }
 
 /** What the OS calls the place deleted files go. */

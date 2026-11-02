@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Check, FolderPlus, RefreshCw } from "lucide-react";
 import { useAppStore } from "../store/useAppStore";
 import { btn } from "../ui";
-import { dict, tr } from "../i18n";
+import { dict, plural, tr } from "../i18n";
 import { errorText } from "../lib/errors";
 
 const T = dict(
@@ -11,7 +11,7 @@ const T = dict(
     none: "No DAW's default projects folder was found on this computer. This only checks the usual default places: if you save your projects somewhere else, add that folder above.",
     listLabel: "DAW folders found on this computer",
     empty: "No projects in it yet",
-    projects: (n: number) => `${n >= 999 ? "999+" : n} project${n === 1 ? "" : "s"}`,
+    projects: (n: number) => `${n >= 999 ? "999+" : n} project${plural(n, "", "s")}`,
     linked: "Linked",
     linking: "Linking…",
     link: "Link",
@@ -23,7 +23,7 @@ const T = dict(
     none: "Aucun dossier de projets par défaut de DAW trouvé sur cet ordi. Seuls les emplacements par défaut habituels sont vérifiés : si tu enregistres tes projets ailleurs, ajoute ce dossier au-dessus.",
     listLabel: "Dossiers de DAW trouvés sur cet ordi",
     empty: "Pas encore de projet dedans",
-    projects: (n: number) => `${n >= 999 ? "999+" : n} projet${n === 1 ? "" : "s"}`,
+    projects: (n: number) => `${n >= 999 ? "999+" : n} projet${plural(n, "", "s")}`,
     linked: "Relié",
     linking: "Liaison…",
     link: "Relier",

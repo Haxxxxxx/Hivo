@@ -8,7 +8,7 @@ import type { FileEntry, ProjectInfo, Snippet } from "../types";
 import { usePickedConcept } from "./CoverConcepts";
 import { kitFolderName, previousKitFolder } from "../lib/kitState";
 import { btn, btnPrimary } from "./ui";
-import { dict, tr } from "../i18n";
+import { dict, plural, tr } from "../i18n";
 import { errorText, errorReason, errorTextOr } from "../lib/errors";
 
 const T = dict(
@@ -36,7 +36,7 @@ const T = dict(
     setPath: "set its path in Settings",
     looking: "Looking for ffmpeg…",
     rendering: (n: number) => `Rendering ${n} shorts…`,
-    render: (n: number) => `Render ${n} short${n === 1 ? "" : "s"}`,
+    render: (n: number) => `Render ${n} short${plural(n, "", "s")}`,
     showInFolder: "Show in folder",
   },
   {
@@ -63,7 +63,7 @@ const T = dict(
     setPath: "indique son chemin dans les Réglages",
     looking: "Recherche de ffmpeg…",
     rendering: (n: number) => `Rendu de ${n} shorts…`,
-    render: (n: number) => `Faire le rendu de ${n} short${n === 1 ? "" : "s"}`,
+    render: (n: number) => `Faire le rendu de ${n} short${plural(n, "", "s")}`,
     showInFolder: "Afficher dans le dossier",
   },
 );

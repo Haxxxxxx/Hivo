@@ -1,5 +1,5 @@
 import { DiggerView } from "./components/DiggerView";
-import { applyLang, dict, resolveLang, tr } from "./i18n";
+import { applyLang, dict, plural, resolveLang, tr } from "./i18n";
 import { CrewBoardView, CrewMembersView, CrewReleasesView, CrewSettingsView } from "./components/CrewViews";
 import { useEffect, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
@@ -42,7 +42,7 @@ const reportText = (shown: string) => {
 
 const T = dict(
   {
-    kept: (n: number) => `Kept the details of ${n} renamed or moved song${n === 1 ? "" : "s"}`,
+    kept: (n: number) => `Kept the details of ${n} renamed or moved song${plural(n, "", "s")}`,
     ok: "OK",
     moved: (file: string) => `moved (${file})`,
     more: (n: number) => `+${n} more`,
@@ -80,7 +80,7 @@ const T = dict(
   },
   {
     kept: (n: number) =>
-      n === 1 ? "Infos gardées pour 1 son renommé ou déplacé" : `Infos gardées pour ${n} sons renommés ou déplacés`,
+      plural(n, `Infos gardées pour ${n} son renommé ou déplacé`, `Infos gardées pour ${n} sons renommés ou déplacés`),
     ok: "OK",
     moved: (file: string) => `déplacé (${file})`,
     more: (n: number) => `+${n} autres`,

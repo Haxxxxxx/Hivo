@@ -9,14 +9,13 @@ import { StatusDot } from "./ui";
 import { btn, btnPrimary, ConfirmButton, input } from "../ui";
 import { crewText, inviteMessage } from "../lib/crewMessages";
 import { cleanCode, isCodeComplete } from "../lib/signInCode";
-import { dict, locale, tr } from "../i18n";
+import { dict, locale, plural, tr } from "../i18n";
 import { errorText } from "../lib/errors";
 
 const field = input;
 const primary = `${btnPrimary} shrink-0 justify-center py-2`;
 const secondary = `${btn} shrink-0 justify-center py-2`;
 
-const plural = (n: number) => (n === 1 ? "" : "s");
 
 const T = dict(
   {
@@ -48,16 +47,16 @@ const T = dict(
     syncing: "Syncing…",
     justNow: "just now",
     synced: (when: string) => `Synced ${when}`,
-    refused: (n: number) => ` · ${n} song${plural(n)} refused by the server`,
+    refused: (n: number) => ` · ${n} song${plural(n, "", "s")} refused by the server`,
     notSynced: "Not synced yet",
     owner: "Owner",
     member: "Member",
     syncNow: "Sync now",
     youShare: "You share",
-    songsShared: (n: number) => ` song${plural(n)}. Share songs from their panel, or select several in the Library.`,
+    songsShared: (n: number) => ` song${plural(n, "", "s")}. Share songs from their panel, or select several in the Library.`,
     orphans: (n: number) =>
-      `${n} shared song${n === 1 ? " isn't" : "s aren't"} in your library right now (renamed, moved or on an unplugged drive), so ${n === 1 ? "its" : "their"} crew card is frozen.`,
-    stopSharingThem: (n: number) => `Stop sharing ${n === 1 ? "it" : "them"}`,
+      `${n} shared song${plural(n, " isn't", "s aren't")} in your library right now (renamed, moved or on an unplugged drive), so ${plural(n, "its", "their")} crew card is frozen.`,
+    stopSharingThem: (n: number) => `Stop sharing ${plural(n, "it", "them")}`,
     members: (n: number) => `Members · ${n}`,
     ownerTag: "· owner",
     youTag: "· you",
@@ -84,15 +83,15 @@ const T = dict(
     cancel: "Cancel",
     maxCrews: "You're in 10 crews, the most allowed. Leave one first.",
     tracksElsewhere: (n: number) =>
-      `${n} track${n === 1 ? " is" : "s are"} shared with another crew, so ${n === 1 ? "it stays" : "they stay"} there.`,
+      `${n} track${plural(n, " is", "s are")} shared with another crew, so ${plural(n, "it stays", "they stay")} there.`,
     releaseElsewhere: "Shared with another crew or account.",
     releaseShared: (crew: string, shared: number, total: number) => `Shared with ${crew} · ${shared}/${total} tracks`,
-    shareOthers: (n: number) => `Share the ${n} other track${plural(n)}`,
+    shareOthers: (n: number) => `Share the ${n} other track${plural(n, "", "s")}`,
     stopSharing: "Stop sharing",
     stopRelease: "Stop sharing the release?",
     releaseLeft: "The release leaves the crew's list. Its tracks stay shared.",
     shareWith: "Share with",
-    sharesRelease: (n: number) => `Shares the release and its ${n} track${plural(n)}.`,
+    sharesRelease: (n: number) => `Shares the release and its ${n} track${plural(n, "", "s")}.`,
     otherAccount: "Shared from another account on this computer. Sign in with it to change this.",
     sharedWith: "Shared with",
     formerCrew: "a crew you're no longer in",
@@ -171,18 +170,18 @@ const T = dict(
     syncing: "Synchro…",
     justNow: "à l'instant",
     synced: (when: string) => `Synchronisé ${when}`,
-    refused: (n: number) => ` · ${n} son${plural(n)} refusé${plural(n)} par le serveur`,
+    refused: (n: number) => ` · ${n} son${plural(n, "", "s")} refusé${plural(n, "", "s")} par le serveur`,
     notSynced: "Pas encore synchronisé",
     owner: "Propriétaire",
     member: "Membre",
     syncNow: "Synchroniser maintenant",
     youShare: "Tu partages",
-    songsShared: (n: number) => ` son${plural(n)}. Partage des sons depuis leur panneau, ou sélectionnes-en plusieurs dans la Bibliothèque.`,
+    songsShared: (n: number) => ` son${plural(n, "", "s")}. Partage des sons depuis leur panneau, ou sélectionnes-en plusieurs dans la Bibliothèque.`,
     orphans: (n: number) =>
       n === 1
         ? "1 son partagé n'est pas dans ta bibliothèque en ce moment (renommé, déplacé ou sur un disque débranché), donc sa carte dans le crew est figée."
         : `${n} sons partagés ne sont pas dans ta bibliothèque en ce moment (renommés, déplacés ou sur un disque débranché), donc leurs cartes dans le crew sont figées.`,
-    stopSharingThem: (n: number) => (n === 1 ? "Ne plus le partager" : "Ne plus les partager"),
+    stopSharingThem: (n: number) => plural(n, "Ne plus le partager", "Ne plus les partager"),
     members: (n: number) => `Membres · ${n}`,
     ownerTag: "· propriétaire",
     youTag: "· toi",
@@ -190,7 +189,7 @@ const T = dict(
     removeConfirm: (name: string) => `Retirer ${name} ?`,
     removeNote: "Retirer quelqu'un enlève ses sons partagés du tableau du crew.",
     openInvites: (n: number) => `Codes d'invitation actifs · ${n}`,
-    used: (uses: number, max: number) => `${uses}/${max} utilisé${plural(uses)}`,
+    used: (uses: number, max: number) => `${uses}/${max} utilisé${plural(uses, "", "s")}`,
     expires: (date: string) => `expire le ${date}`,
     revoke: "Révoquer",
     revokeConfirm: "Révoquer le code ?",
@@ -214,12 +213,12 @@ const T = dict(
         : `${n} morceaux sont partagés avec un autre crew, donc ils y restent.`,
     releaseElsewhere: "Partagée avec un autre crew ou un autre compte.",
     releaseShared: (crew: string, shared: number, total: number) => `Partagée avec ${crew} · ${shared}/${total} morceaux`,
-    shareOthers: (n: number) => (n === 1 ? "Partager le morceau restant" : `Partager les ${n} autres morceaux`),
+    shareOthers: (n: number) => plural(n, "Partager le morceau restant", `Partager les ${n} autres morceaux`),
     stopSharing: "Ne plus partager",
     stopRelease: "Ne plus partager la sortie ?",
     releaseLeft: "La sortie quitte la liste du crew. Ses morceaux restent partagés.",
     shareWith: "Partager avec",
-    sharesRelease: (n: number) => (n === 1 ? "Partage la sortie et son morceau." : `Partage la sortie et ses ${n} morceaux.`),
+    sharesRelease: (n: number) => plural(n, "Partage la sortie et son morceau.", `Partage la sortie et ses ${n} morceaux.`),
     otherAccount: "Partagé depuis un autre compte sur cet ordi. Connecte-toi avec ce compte pour changer ça.",
     sharedWith: "Partagé avec",
     formerCrew: "un crew dont tu ne fais plus partie",

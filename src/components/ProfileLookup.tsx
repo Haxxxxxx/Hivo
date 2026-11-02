@@ -3,7 +3,7 @@ import { Check, Copy, ExternalLink, Plus, Search, X } from "lucide-react";
 import { addLink, confirmLink, linkVerified, mergeProfile, removeLink } from "../lib/profiles";
 import { useAppStore } from "../store/useAppStore";
 import * as api from "../lib/tauri";
-import { dict, tr } from "../i18n";
+import { dict, plural, tr } from "../i18n";
 import type { LookupCandidate, MatchInfo, Person, PlatformLink, SpotifyStatus } from "../types";
 import { btn, btnPrimary, input, sectionLabel } from "./ui";
 import { errorText } from "../lib/errors";
@@ -48,7 +48,7 @@ const T = dict(
     confirm: "It's them",
     remove: "Remove",
     fans: (n: number) => `${new Intl.NumberFormat().format(n)} fans`,
-    albums: (n: number) => `${n} album${n === 1 ? "" : "s"}`,
+    albums: (n: number) => `${n} album${plural(n, "", "s")}`,
     top: (s: string) => `top: ${s}`,
     addLink: "Add a link",
     addPlaceholder: "https://… (a profile page)",
@@ -88,7 +88,7 @@ const T = dict(
     confirm: "C'est bien lui",
     remove: "Retirer",
     fans: (n: number) => `${new Intl.NumberFormat("fr-FR").format(n)} fans`,
-    albums: (n: number) => `${n} album${n > 1 ? "s" : ""}`,
+    albums: (n: number) => `${n} album${plural(n, "", "s")}`,
     top: (s: string) => `top : ${s}`,
     addLink: "Ajouter un lien",
     addPlaceholder: "https://… (une page de profil)",

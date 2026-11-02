@@ -29,7 +29,7 @@ import {
 } from "../lib/launchKit";
 import { busyDates, daysUntil, releaseOf } from "../lib/releaseDates";
 import { acceptFingerprint, exportedFolderName, exportFingerprint, exportStatus, isKitAccepted, isLossless, kitMaster, lastLyricsLanguage, previousKitFolder } from "../lib/kitState";
-import { dict, tr } from "../i18n";
+import { dict, plural, tr } from "../i18n";
 import { aiDisclosure, draftCopy, reviewKit } from "../lib/ai";
 import { formatRelative } from "../lib/format";
 import { stageRank, statusInfo } from "../lib/songs";
@@ -46,7 +46,6 @@ import { errorReason, errorText } from "../lib/errors";
 // Snippet colors: the dark categorical slots, in fixed order (as elsewhere).
 const SNIPPET_COLORS = ["#ff5a1f", "#f2efe8", "#3ddc84"];
 
-const plural = (n: number) => (n === 1 ? "" : "s");
 
 const T = dict(
   {
@@ -61,7 +60,7 @@ const T = dict(
     renderNow: "Render now",
     rendering: "Rendering…",
     exportConfirm: (missing: number, flagged: number) => {
-      const what = [missing && `${missing} field${plural(missing)} still need${missing === 1 ? "s" : ""} you`, flagged && `the AI flagged ${flagged}`]
+      const what = [missing && `${missing} field${plural(missing, "", "s")} still need${plural(missing, "s", "")} you`, flagged && `the AI flagged ${flagged}`]
         .filter(Boolean)
         .join(" and ");
       return `${what[0].toUpperCase()}${what.slice(1)}. Export anyway? Open items go in checklist.md and the distributor sheet.`;
@@ -78,10 +77,10 @@ const T = dict(
     artistIdsHint: (artists: { name: string; profiles: unknown[] }[]) =>
       artists.length === 0
         ? "No one credited on this song yet (credit people in the song panel)."
-        : `Adds artist-ids.md and an \"Artist profiles\" section to the distributor sheet: ${artists.map((a) => `${a.name} (${a.profiles.length} ID${a.profiles.length === 1 ? "" : "s"})`).join(", ")}. Look up profiles in People to fill them.`,
+        : `Adds artist-ids.md and an \"Artist profiles\" section to the distributor sheet: ${artists.map((a) => `${a.name} (${a.profiles.length} ID${plural(a.profiles.length, "", "s")})`).join(", ")}. Look up profiles in People to fill them.`,
     exported: (open: number) => `Kit exported${open ? `, with ${open} open item(s) listed in checklist.md` : ""}.`,
     showFolder: "Show folder",
-    useSuggestions: (n: number) => `Use all ${n} AI suggestion${plural(n)}`,
+    useSuggestions: (n: number) => `Use all ${n} AI suggestion${plural(n, "", "s")}`,
     resetConfirm: "Undo every change you made in this kit?",
     clickAgain: "Sure? Click again",
     exportAnyway: "Export anyway",
@@ -101,8 +100,8 @@ const T = dict(
     notChecked: "Not checked yet.",
     changedSince: "Some values changed since the last check.",
     allRight: "Every field looks right.",
-    toLookAt: (n: number) => `${n} field${plural(n)} to look at.`,
-    notCheckedN: (n: number) => `${n} field${plural(n)} not checked. Re-check.`,
+    toLookAt: (n: number) => `${n} field${plural(n, "", "s")} to look at.`,
+    notCheckedN: (n: number) => `${n} field${plural(n, "", "s")} not checked. Re-check.`,
     noProblems: "No problems found.",
     aiLayer: "AI layer",
     writing: "Writing…",
@@ -180,7 +179,7 @@ const T = dict(
     renderNow: "Faire le rendu",
     rendering: "Rendu en cours…",
     exportConfirm: (missing: number, flagged: number) => {
-      const what = [missing && `${missing} champ${plural(missing)} à compléter`, flagged && `l'IA en a signalé ${flagged}`].filter(Boolean).join(" et ");
+      const what = [missing && `${missing} champ${plural(missing, "", "s")} à compléter`, flagged && `l'IA en a signalé ${flagged}`].filter(Boolean).join(" et ");
       return `${what[0].toUpperCase()}${what.slice(1)}. Exporter quand même ? Ce qui reste ouvert va dans checklist.md et la fiche distributeur.`;
     },
     answerFirst: "Réponds d'abord aux champs marqués « À compléter »",
@@ -195,10 +194,10 @@ const T = dict(
     artistIdsHint: (artists: { name: string; profiles: unknown[] }[]) =>
       artists.length === 0
         ? "Personne n'est crédité sur ce son pour l'instant (crédite des personnes dans le panneau du son)."
-        : `Ajoute artist-ids.md et une section « Profils artistes » à la fiche distributeur : ${artists.map((a) => `${a.name} (${a.profiles.length} ID${a.profiles.length > 1 ? "s" : ""})`).join(", ")}. Cherche les profils dans Personnes pour les remplir.`,
-    exported: (open: number) => `Kit exporté${open ? `, avec ${open} point${plural(open)} ouvert${plural(open)} dans checklist.md` : ""}.`,
+        : `Ajoute artist-ids.md et une section « Profils artistes » à la fiche distributeur : ${artists.map((a) => `${a.name} (${a.profiles.length} ID${plural(a.profiles.length, "", "s")})`).join(", ")}. Cherche les profils dans Personnes pour les remplir.`,
+    exported: (open: number) => `Kit exporté${open ? `, avec ${open} point${plural(open, "", "s")} ouvert${plural(open, "", "s")} dans checklist.md` : ""}.`,
     showFolder: "Ouvrir le dossier",
-    useSuggestions: (n: number) => (n === 1 ? "Utiliser la suggestion de l'IA" : `Utiliser les ${n} suggestions de l'IA`),
+    useSuggestions: (n: number) => plural(n, "Utiliser la suggestion de l'IA", `Utiliser les ${n} suggestions de l'IA`),
     resetConfirm: "Annuler tous tes changements dans ce kit ?",
     clickAgain: "Sûr ? Clique encore",
     exportAnyway: "Exporter quand même",
@@ -217,8 +216,8 @@ const T = dict(
     notChecked: "Pas encore vérifié.",
     changedSince: "Des valeurs ont changé depuis la dernière vérif.",
     allRight: "Tous les champs ont l'air bons.",
-    toLookAt: (n: number) => `${n} champ${plural(n)} à regarder.`,
-    notCheckedN: (n: number) => `${n} champ${plural(n)} pas vérifié${plural(n)}. Revérifie.`,
+    toLookAt: (n: number) => `${n} champ${plural(n, "", "s")} à regarder.`,
+    notCheckedN: (n: number) => `${n} champ${plural(n, "", "s")} pas vérifié${plural(n, "", "s")}. Revérifie.`,
     noProblems: "Aucun problème trouvé.",
     aiLayer: "Couche IA",
     writing: "Écriture…",
