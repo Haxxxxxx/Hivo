@@ -10,6 +10,7 @@ import type { DashboardLayout } from "../lib/dashboardLayout";
 import { applyRelinks, findRelinks, isUnder, rootRelinks, type Relink } from "../lib/relink";
 import { setNote } from "../lib/notes";
 import { relinkBeatNotes } from "../lib/digger";
+import { addRenames } from "../lib/phoneSync";
 import { canRenderInApp, dawOf, splitRenderable } from "../lib/daws";
 import type {
   DetectedFolder,
@@ -586,7 +587,8 @@ export const useAppStore = create<AppState>((set, get) => {
     const map = new Map(relinks.map((r) => [r.from, r.to]));
     // The session window follows too (sessionBridge.ts).
     set({ lastRelinks: relinks });
-    mutateWorkspace((ws) => applyRelinks(ws, relinks));
+    // The phone follows too: its pending note edits re-key (`renamed` in /v1/snapshot).
+    mutateWorkspace((ws) => ({ ...applyRelinks(ws, relinks), phoneRenames: addRenames(ws.phoneRenames, relinks.map((r) => ({ kind: "song", from: r.from, to: r.to })), Date.now()) }));
     const favs = get().settings.favorites;
     if (favs.some((f) => map.has(f))) void get().updateSettings({ favorites: favs.map((f) => map.get(f) ?? f) });
     const open = get().detailPath;
@@ -1259,7 +1261,16 @@ export const useAppStore = create<AppState>((set, get) => {
         if (s !== undefined) sizes[p] = s;
       }
       const same = !moved && JSON.stringify(sizes) === JSON.stringify(ws.beatNoteSizes ?? {});
-      if (!same) mutateWorkspace((w) => ({ ...w, beatNotes: notes, beatNoteSizes: sizes }));
+      // Notes that moved to another beat path: the phone re-keys its edits too.
+      const gone = Object.keys(ws.beatNotes).filter((p) => !(p in notes));
+      const moves = moved
+        ? gone.flatMap((from) => {
+            const to = Object.keys(notes).find((p) => !(p in (ws.beatNotes ?? {})) && notes[p] === ws.beatNotes?.[from]);
+            return to ? [{ kind: "beat" as const, from, to }] : [];
+          })
+        : [];
+      if (!same)
+        mutateWorkspace((w) => ({ ...w, beatNotes: notes, beatNoteSizes: sizes, ...(moves.length ? { phoneRenames: addRenames(w.phoneRenames, moves, Date.now()) } : {}) }));
     },
     setLeadBeat: (hash, path) =>
       mutateWorkspace((ws) => {

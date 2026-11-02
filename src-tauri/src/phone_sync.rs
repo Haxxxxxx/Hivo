@@ -1042,13 +1042,36 @@ fn song_folder(scope: &crate::scope::Scope, key: &str) -> Result<PathBuf, String
     Err("That isn't a song in a linked folder.".to_string())
 }
 
-/// Copies a memo into `<song folder>/Voice memos/`. Returns the copies.
+/// The memo sub-folder for a project whose folder holds other projects too
+/// (FL's flat `Projects/*.flp`): its file stem. None for a song alone in its
+/// folder, and for a sketch (keyed by its BandLab folder).
+pub fn memo_sub_for(song_key: &Path, folder: &Path) -> Option<String> {
+    crate::daws::Daw::of_project(song_key)?;
+    let projects = fs::read_dir(folder)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_file() && crate::daws::Daw::of_project(&e.path()).is_some())
+        .count();
+    if projects > 1 {
+        song_key.file_stem().map(|s| s.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
+/// Copies a memo into `<song folder>/Voice memos/` (`Voice memos/<song>/`
+/// when the folder holds several projects). Returns the copies.
 #[tauri::command]
 pub async fn phone_inbox_attach_song(app: AppHandle, id: String, song_path: String) -> Result<Vec<String>, String> {
     let scope = crate::scope::Scope::load(&app)?;
     let folder = song_folder(&scope, &song_path)?;
     let inner = state_inner(&app)?;
-    tauri::async_runtime::spawn_blocking(move || inner.inbox.attach_to_song_folder(&id, &folder)).await.map_err(|e| format!("copy failed: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        let sub = memo_sub_for(Path::new(&song_path), &folder);
+        inner.inbox.attach_to_song_folder(&id, &folder, &song_path, sub.as_deref())
+    })
+    .await
+    .map_err(|e| format!("copy failed: {e}"))?
 }
 
 /// Links a memo to a beat or a saved prod and copies its audio into that
@@ -1247,6 +1270,25 @@ mod tests {
         assert!(!ranked.contains(&Ipv4Addr::new(82, 1, 2, 3)));
         assert_eq!(ranked.len(), 4);
         assert!(rank_addresses(&list, None).iter().all(Ipv4Addr::is_private));
+    }
+
+    #[test]
+    fn memo_folder_per_song_when_songs_share_a_folder() {
+        let d = std::env::temp_dir().join(format!("hivo-memo-sub-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let alone = d.join("Envy");
+        let flat = d.join("Projects");
+        fs::create_dir_all(&alone).unwrap();
+        fs::create_dir_all(&flat).unwrap();
+        fs::write(alone.join("Envy.flp"), b"x").unwrap();
+        fs::write(alone.join("Envy mix.wav"), b"x").unwrap();
+        fs::write(flat.join("One.flp"), b"x").unwrap();
+        fs::write(flat.join("Two.als"), b"x").unwrap();
+        assert_eq!(memo_sub_for(&alone.join("Envy.flp"), &alone), None, "alone in its folder: Voice memos/");
+        assert_eq!(memo_sub_for(&flat.join("One.flp"), &flat).as_deref(), Some("One"));
+        // A sketch is keyed by its BandLab folder: never a sub-folder.
+        assert_eq!(memo_sub_for(&flat.join("X").join("BandLab"), &flat.join("X")), None);
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

@@ -540,6 +540,10 @@ export interface Workspace {
   /** Saved prod (lead hash) → the beat file that is it (path), set by hand
    * ("This is…"); null = "not in your prods", overriding the name match. */
   leadBeats?: Record<string, string | null>;
+  /** Songs and beats that moved to a new path (relinks, renames, "Continue
+   * in FL Studio"), kept a few days for the phone's `/v1/snapshot`
+   * `renamed` list, so its pending note edits follow (src/lib/phoneSync.ts). */
+  phoneRenames?: { kind: "song" | "beat"; from: string; to: string; at: number }[];
   /** Set only on generated sample data (src/lib/sampleData.ts): a workspace
    * carrying it is never written to disk. */
   sample?: true;

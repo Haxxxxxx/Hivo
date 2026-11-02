@@ -5,7 +5,7 @@
 
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import * as api from "../lib/tauri";
-import { applyNoteChanges, buildSnapshot, noteLookup, parseChanges, type SyncSources } from "../lib/phoneSync";
+import { applyNoteChanges, buildSnapshot, noteLookup, parseChanges, refusal, type SyncSources } from "../lib/phoneSync";
 import type { PhoneSyncRequest } from "../types";
 import { useAppStore } from "./useAppStore";
 import { startPhoneInbox } from "./usePhoneInbox";
@@ -39,11 +39,8 @@ async function sources(): Promise<SyncSources | Reply> {
     scanSettled(SCAN_WAIT_MS),
   ]);
   const s = useAppStore.getState();
-  if (s.demoMode) return { error: "demo" };
-  if (!s.workspaceWritable) return { error: "busy" };
-  // A scan still running answers from the last one; only the very first
-  // scan (nothing listed yet) is worth waiting for, or songs would look deleted.
-  if (s.scanning && s.projects.length === 0) return { error: "busy" };
+  const refused = refusal({ ...s, hasIssue: s.workspaceIssue !== null, projectCount: s.projects.length });
+  if (refused) return { error: refused };
   return { leads, beats, projects: s.projects, workspace: s.workspace };
 }
 

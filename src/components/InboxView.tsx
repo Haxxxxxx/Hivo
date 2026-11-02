@@ -82,6 +82,7 @@ const T = dict(
     filedSketch: "Filed as a new song",
     sharedWith: "Shared with it",
     filedMemo: "Copied into the song's Voice memos folder",
+    filedMemoTo: (title: string) => `Copied into the Voice memos folder of ${title}`,
     filedLink: (title: string) => `Linked to ${title}`,
     filedLinkCopy: (title: string) => `Linked to ${title} (copied into the beats folder's _memos)`,
     dismissed: "Dismissed",
@@ -143,6 +144,7 @@ const T = dict(
     filedSketch: "Rangé comme nouveau son",
     sharedWith: "Partagé avec",
     filedMemo: "Copié dans le dossier Voice memos du son",
+    filedMemoTo: (title: string) => `Copié dans le dossier Voice memos de ${title}`,
     filedLink: (title: string) => `Lié à ${title}`,
     filedLinkCopy: (title: string) => `Lié à ${title} (copié dans _memos du dossier de prods)`,
     dismissed: "Écarté",
@@ -405,9 +407,11 @@ function InboxCard({ item, options, onNotice }: { item: InboxItem; options: Targ
                 : item.itemType === "idea" && filedTitle
                   ? t.filedNote(filedTitle)
                   : filedTitle
-                    ? item.copiedTo
-                      ? t.filedLinkCopy(filedTitle)
-                      : t.filedLink(filedTitle)
+                    ? item.filedAs === "folder"
+                      ? t.filedMemoTo(filedTitle)
+                      : item.copiedTo
+                        ? t.filedLinkCopy(filedTitle)
+                        : t.filedLink(filedTitle)
                     : t.filedMemo}
           </span>
         )}

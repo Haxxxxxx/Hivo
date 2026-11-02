@@ -13,6 +13,7 @@ import {
   knownTarget,
   memosFor,
   memosForSong,
+  relinkedFilings,
   newCount,
   parseTargetKey,
   sketchName,
@@ -124,6 +125,15 @@ describe("memos", () => {
     expect(memosForSong(list, "/Music/Envy/BandLab").length).toBe(1);
     expect(memosForSong([memo("C:\\Music\\Envy\\Voice memos\\a.m4a")], "C:\\Music\\Envy\\Envy.flp").length).toBe(1);
     expect(memosFor(list, "beat", "/Beats/a.wav").map((i) => i.id)).toEqual(["beat:/Beats/a.wav"]);
+  });
+  it("matches memos by song key, so songs sharing a folder each list their own", () => {
+    const list = [memo("song:/Music/Projects/Envy.flp"), memo("song:/Music/Projects/Other.flp")];
+    expect(memosForSong(list, "/Music/Projects/Envy.flp").map((i) => i.id)).toEqual(["song:/Music/Projects/Envy.flp"]);
+    expect(memosForSong(list, "/Music/Projects/Third.flp")).toEqual([]);
+    // A rename moves what was filed to the song.
+    expect(relinkedFilings([...list, memo("beat:/b.wav")], [{ from: "/Music/Projects/Envy.flp", to: "/Music/Projects/Envy v2.flp" }])).toEqual([
+      { id: "song:/Music/Projects/Envy.flp", filedTo: "song:/Music/Projects/Envy v2.flp" },
+    ]);
   });
   it("formats durations", () => {
     expect(duration(125_400)).toBe("2:05");

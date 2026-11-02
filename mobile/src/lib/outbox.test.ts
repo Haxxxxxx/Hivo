@@ -29,6 +29,7 @@ function fakeDesktop() {
   const sizes = new Map<string, number>();
   const done = new Set<string>();
   const starts: Record<string, unknown>[] = [];
+  const counts = new Map<string, number>();
   const knobs = { dropAfterChunks: -1, chunks: 0, loseReplyOnce: false, refuse: "" as string, busyOnce: false, forgetOnce: false };
   const err = (m: string) => new SyncError("server", m);
   const call = async (path: string, p: any): Promise<unknown> => {
@@ -40,6 +41,9 @@ function fakeDesktop() {
     const k = `${p.itemId}/${p.fileIndex}`;
     if (path === "/v1/upload/start") {
       starts.push(p);
+      // A later file of an item it doesn't know: the phone must start over.
+      if (!counts.has(p.itemId) && p.fileIndex > 0) throw err("unknown upload");
+      counts.set(p.itemId, p.fileCount);
       if (sizes.get(k) !== p.size) {
         sizes.set(k, p.size);
         parts.set(k, new Uint8Array());
@@ -78,11 +82,20 @@ function fakeDesktop() {
         throw err("size");
       }
       done.add(k);
-      return { status: "stored" };
+      const count = counts.get(p.itemId) ?? 0;
+      const all = Array.from({ length: count }, (_, i) => done.has(`${p.itemId}/${i}`)).every(Boolean);
+      return { status: all ? "stored" : "waiting" };
     }
     throw new Error(path);
   };
-  return { parts, knobs, call, starts };
+  /** "Remove" on the desktop while the item is still arriving. */
+  const remove = (itemId: string) => {
+    counts.delete(itemId);
+    for (const k of [...parts.keys()]) if (k.startsWith(`${itemId}/`)) parts.delete(k);
+    for (const k of [...sizes.keys()]) if (k.startsWith(`${itemId}/`)) sizes.delete(k);
+    for (const k of [...done]) if (k.startsWith(`${itemId}/`)) done.delete(k);
+  };
+  return { parts, knobs, call, starts, remove, done };
 }
 
 const fileOf = (n: number) => Uint8Array.from({ length: n }, (_, i) => i % 251);
@@ -163,6 +176,50 @@ describe("uploadItem", () => {
     expect(desk.parts.get("it1/0")).toEqual(data.a);
   });
 
+  it("sends every file again from the first when the computer removed the half-arrived item", async () => {
+    const desk = fakeDesktop();
+    const three = { ...data, c: fileOf(7) };
+    const it3 = item({ files: [...item().files, { uri: "c", name: "vox.wav", size: 7, done: false }] });
+    // The first two arrive, then the Wi-Fi drops.
+    desk.knobs.dropAfterChunks = 5;
+    let last = it3;
+    await expect(uploadItem(io(desk, three), it3, (i) => (last = i))).rejects.toMatchObject({ code: "offline" });
+    expect(last.files.map((f) => f.done)).toEqual([true, true, false]);
+    // Removed on the desktop meanwhile.
+    desk.remove("it1");
+    const out = await uploadItem(io(desk, three), last, () => {});
+    expect(out.state).toBe("sent");
+    expect(out.files.every((f) => f.done)).toBe(true);
+    for (const [i, uri] of ["a", "b", "c"].entries()) expect(desk.parts.get(`it1/${i}`)).toEqual(three[uri as "a" | "b" | "c"]);
+    expect(desk.done.size).toBe(3);
+  });
+
+  it("checks with the computer before marking an item sent whose files were all done", async () => {
+    const desk = fakeDesktop();
+    const allDone = item({ files: item().files.map((f) => ({ ...f, done: true })), state: "sending" });
+    // The computer never got it whole (removed there): every file again.
+    const out = await uploadItem(io(desk, data), allDone, () => {});
+    expect(out.state).toBe("sent");
+    expect(desk.parts.get("it1/0")).toEqual(data.a);
+    expect(desk.parts.get("it1/1")).toEqual(data.b);
+  });
+
+  it("never marks an item sent while the computer says it's still waiting for files", async () => {
+    const desk = fakeDesktop();
+    // A computer that keeps answering "waiting": gives up as refused, never "sent".
+    const call = desk.call;
+    const io2 = { ...io(desk, data), call: async (path: string, p: unknown) => (path === "/v1/upload/finish" ? (await call(path, p), { status: "waiting" }) : call(path, p)) };
+    const out = await uploadItem(io2, item(), () => {});
+    expect(out.state).toBe("failed");
+    expect(out.error).toBe("refused");
+  });
+
+  it("holds (never fails) an item when the computer couldn't write it", async () => {
+    const desk = fakeDesktop();
+    desk.knobs.refuse = "could not write the file: permission denied";
+    await expect(uploadItem(io(desk, data), item(), () => {})).rejects.toMatchObject({ reason: "desktop-error" });
+  });
+
   it("fails what can't go and holds when the computer is full", async () => {
     const desk = fakeDesktop();
     desk.knobs.refuse = "type";
@@ -186,7 +243,8 @@ describe("verdict (what an error does to the item)", () => {
     expect(verdict(sealed("type"))).toEqual({ fail: "type" });
     expect(verdict(sealed("too big"))).toEqual({ fail: "too-big" });
     expect(verdict(sealed("size"))).toEqual({ fail: "size" });
-    expect(verdict(sealed("something else"))).toEqual({ fail: "refused" });
+    // The computer's own trouble (an I/O error): held, tried again next sync.
+    expect(verdict(sealed("could not write the file: permission denied"))).toEqual({ hold: "desktop-error" });
     expect(verdict(new SyncError("too-big", "HTTP 413"))).toEqual({ fail: "too-big" });
     expect(verdict(sealed("inbox full"))).toEqual({ hold: "inbox-full" });
     expect(verdict(sealed("disk full"))).toEqual({ hold: "disk-full" });

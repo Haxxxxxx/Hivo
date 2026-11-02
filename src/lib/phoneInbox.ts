@@ -104,11 +104,28 @@ export function songFolder(songKey: string): string {
   return songKey.replace(/[\\/][^\\/]*$/, "");
 }
 
-/** Memos copied into this song's `Voice memos` folder (what the drawer lists). */
+/** Memos attached to this song (what the drawer lists): filed as
+ * `song:<key>` since 2026-11, so songs sharing one folder (FL's flat
+ * `Projects/*.flp`) each list their own. Memos filed before then carry the
+ * copy's path: matched by the song's `Voice memos` folder, as they were. */
 export function memosForSong(items: InboxItem[], songKey: string): InboxItem[] {
+  const key = targetKey({ kind: "song", id: songKey });
   const folder = songFolder(songKey);
   const prefix = `${folder}${sep(folder)}Voice memos${sep(folder)}`;
-  return items.filter((i) => i.status === "filed" && i.itemType !== "idea" && (i.filedTo ?? "").startsWith(prefix));
+  return items.filter((i) => {
+    if (i.status !== "filed" || i.itemType !== "memo") return false;
+    const to = i.filedTo ?? "";
+    return to === key || (!parseTargetKey(to) && to.startsWith(prefix));
+  });
+}
+
+/** Items filed to a song that moved (relinks): their new `filedTo`. */
+export function relinkedFilings(items: InboxItem[], relinks: { from: string; to: string }[]): { id: string; filedTo: string }[] {
+  const map = new Map(relinks.map((r) => [targetKey({ kind: "song", id: r.from }), targetKey({ kind: "song", id: r.to })]));
+  return items.flatMap((i) => {
+    const to = i.status === "filed" && i.filedTo ? map.get(i.filedTo) : undefined;
+    return to ? [{ id: i.id, filedTo: to }] : [];
+  });
 }
 
 /** Memos linked to a beat or a prod (the Digger's notes panel lists them). */

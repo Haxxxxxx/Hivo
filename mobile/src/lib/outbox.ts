@@ -23,8 +23,10 @@ export type OutState = "waiting" | "sending" | "sent" | "failed";
  * another error after the request opened); the others still go. */
 export type OutError = "too-big" | "type" | "missing-file" | "size" | "refused";
 /** Why sending stopped for now (the item stays waiting, retried at the next
- * sync). "inbox-full" holds that item and bigger ones; "disk-full" holds all. */
-export type HoldReason = "inbox-full" | "disk-full";
+ * sync). "inbox-full" holds that item and bigger ones; "disk-full" and
+ * "desktop-error" (the computer couldn't write: a folder it can't create, a
+ * file it can't save) hold all. */
+export type HoldReason = "inbox-full" | "disk-full" | "desktop-error";
 /** Sent items and filed/dismissed ideas leave the phone after this long. */
 export const KEEP_SENT_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -158,9 +160,12 @@ const reason = (e: unknown): string => (e instanceof SyncError ? e.message : "")
  * What an error from the computer means for the item being sent:
  * - `fail`: this item can't go as it is (refused, wrong type, too big…);
  *   it shows the reason and the queue goes on with the next one.
- * - `hold`: the computer is full; the item waits for the next sync.
+ * - `hold`: the computer is full, or couldn't write (an I/O error on its
+ *   side); the item waits for the next sync.
  * - `stop`: the computer can't be reached or doesn't take anything right
  *   now (offline, off, busy, forgotten, clock, demo, outdated): the sync stops.
+ * Only what's wrong with the item itself (bad request, type, size, too big)
+ * fails it: a failed item stays failed until the user retries.
  */
 export type Verdict = { fail: OutError } | { hold: HoldReason } | { stop: unknown };
 
@@ -175,10 +180,26 @@ export function verdict(e: unknown): Verdict {
   if (r === "disk full") return { hold: "disk-full" };
   if (e instanceof SyncError) {
     if (e.code === "too-big") return { fail: "too-big" }; // 413: the body itself
-    if (e.code === "server") return { fail: "refused" }; // any other sealed error
+    // Any other sealed error ("could not write the file: …"): the computer's
+    // trouble, not this item's. Held, tried again at the next sync.
+    if (e.code === "server") return { hold: "desktop-error" };
   }
   return { stop: e };
 }
+
+/** The finish answer: is the whole item on the computer? (`waiting`: some
+ * of its files aren't, e.g. removed there meanwhile.) Older answers without
+ * a status count as stored. */
+const itemStored = (body: unknown): boolean => (body as { status?: unknown } | null)?.status !== "waiting";
+
+/** An item-level failure, as `uploadItem`'s file loop hands it back. */
+class Failed {
+  constructor(public item: OutItem) {}
+}
+
+/** How many times an item is sent again from its first file (the computer
+ * forgot it: removed there, or dropped after 7 days) before it fails. */
+const MAX_ITEM_RESETS = 2;
 
 /**
  * Sends one item. Returns the item as it ends: "sent", or "failed" with a
@@ -205,76 +226,100 @@ export async function uploadItem(io: UploadIO, start: OutItem, onUpdate: (i: Out
   };
   update({});
   const doneBytes = () => item.files.reduce((n, f) => n + (f.done ? f.size : 0), 0);
+  /** The computer forgot the item: every file goes again, from the first. */
+  const UNKNOWN = Symbol("unknown upload");
+  const isUnknown = (e: unknown) => reason(e) === "unknown upload";
+  const finish = (index: number) => withBusyRetry(io, () => io.call("/v1/upload/finish", { itemId: item.id, fileIndex: index }));
 
-  for (let index = 0; index < item.files.length; index++) {
-    const file = item.files[index];
-    if (file.done) continue;
-    if (!(await io.exists(file.uri))) return fail("missing-file");
-    let restarts = 0;
-    for (;;) {
-      // Start (or resume): the desktop says how much it has.
-      let offset: number;
-      try {
-        offset = offsetOf(
-          await withBusyRetry(io, () =>
-            io.call("/v1/upload/start", {
-              itemId: item.id,
-              itemType: item.type,
-              title: item.title,
-              ...(item.text ? { text: item.text } : {}),
-              target: item.target,
-              createdAt: item.createdAt,
-              durationMs: item.durationMs,
-              fileIndex: index,
-              fileCount: item.files.length,
-              name: file.name,
-              size: file.size,
-            }),
-          ),
-        ) ?? 0;
-      } catch (e) {
-        return settle(e);
-      }
-      offset = Math.min(offset, file.size);
-      let restart = false;
-      while (offset < file.size) {
-        const bytes = await io.read(file.uri, offset, Math.min(MAX_CHUNK_BYTES, file.size - offset));
-        if (bytes.length === 0) return fail("missing-file");
+  /** Sends what isn't done yet; the last finish answer, null when none was
+   * needed, or UNKNOWN. Item-level failures come back as an OutItem. */
+  const sendFiles = async (): Promise<unknown> => {
+    let last: unknown = null;
+    for (let index = 0; index < item.files.length; index++) {
+      const file = item.files[index];
+      if (file.done) continue;
+      if (!(await io.exists(file.uri))) return new Failed(fail("missing-file"));
+      let restarts = 0;
+      for (;;) {
+        // Start (or resume): the desktop says how much it has.
+        let offset: number;
         try {
-          const r = await withBusyRetry(io, () => io.call("/v1/upload/chunk", { itemId: item.id, fileIndex: index, offset, data: toB64url(bytes) }));
-          offset = offsetOf(r) ?? offset + bytes.length;
+          offset = offsetOf(
+            await withBusyRetry(io, () =>
+              io.call("/v1/upload/start", {
+                itemId: item.id,
+                itemType: item.type,
+                title: item.title,
+                ...(item.text ? { text: item.text } : {}),
+                target: item.target,
+                createdAt: item.createdAt,
+                durationMs: item.durationMs,
+                fileIndex: index,
+                fileCount: item.files.length,
+                name: file.name,
+                size: file.size,
+              }),
+            ),
+          ) ?? 0;
         } catch (e) {
-          const r = reason(e);
-          const m = /^offset:(\d+)$/.exec(r);
-          if (m) {
-            offset = Math.min(Number(m[1]), file.size);
+          if (isUnknown(e)) return UNKNOWN;
+          return new Failed(settle(e));
+        }
+        offset = Math.min(offset, file.size);
+        while (offset < file.size) {
+          const bytes = await io.read(file.uri, offset, Math.min(MAX_CHUNK_BYTES, file.size - offset));
+          if (bytes.length === 0) return new Failed(fail("missing-file"));
+          try {
+            const r = await withBusyRetry(io, () => io.call("/v1/upload/chunk", { itemId: item.id, fileIndex: index, offset, data: toB64url(bytes) }));
+            offset = offsetOf(r) ?? offset + bytes.length;
+          } catch (e) {
+            const m = /^offset:(\d+)$/.exec(reason(e));
+            if (m) {
+              offset = Math.min(Number(m[1]), file.size);
+              continue;
+            }
+            if (isUnknown(e)) return UNKNOWN;
+            return new Failed(settle(e));
+          }
+          update({ sentBytes: doneBytes() + offset });
+        }
+        try {
+          last = await finish(index);
+        } catch (e) {
+          if (isUnknown(e)) return UNKNOWN;
+          // Fewer bytes than declared: that file once more from 0.
+          if (reason(e) === "size" && restarts < 2) {
+            restarts++;
             continue;
           }
-          if (r === "unknown upload" && restarts < 2) {
-            restarts++;
-            restart = true;
-            break;
-          }
-          return settle(e);
+          return new Failed(settle(e));
         }
-        update({ sentBytes: doneBytes() + offset });
+        break;
       }
-      if (restart) continue;
-      try {
-        await withBusyRetry(io, () => io.call("/v1/upload/finish", { itemId: item.id, fileIndex: index }));
-      } catch (e) {
-        const r = reason(e);
-        // Fewer bytes than declared (or dropped on the desktop): once more from 0.
-        if ((r === "size" || r === "unknown upload") && restarts < 2) {
-          restarts++;
-          continue;
-        }
-        return settle(e);
-      }
-      break;
+      const files = item.files.map((f, i) => (i === index ? { ...f, done: true } : f));
+      update({ files, sentBytes: files.reduce((n, f) => n + (f.done ? f.size : 0), 0) });
     }
-    const files = item.files.map((f, i) => (i === index ? { ...f, done: true } : f));
-    update({ files, sentBytes: files.reduce((n, f) => n + (f.done ? f.size : 0), 0) });
+    return last;
+  };
+
+  for (let resets = 0; ; resets++) {
+    let answer = await sendFiles();
+    if (answer instanceof Failed) return answer.item;
+    // Every file was done before this run (the app stopped before marking it
+    // sent): ask the computer whether it still has the whole item.
+    if (answer === null && item.files.length > 0) {
+      try {
+        answer = await finish(item.files.length - 1);
+      } catch (e) {
+        if (!isUnknown(e)) return settle(e);
+        answer = UNKNOWN;
+      }
+    }
+    // Sent and marked "sent" (and later purged) only once the computer says
+    // the whole item is there; else every file goes again, from the first.
+    if (answer !== UNKNOWN && itemStored(answer)) break;
+    if (resets >= MAX_ITEM_RESETS) return fail("refused");
+    update({ files: item.files.map((f) => ({ ...f, done: false })), sentBytes: 0 });
   }
   update({ state: "sent", status: "stored", sentAt: io.now(), sentBytes: totalBytes(item) });
   return item;
@@ -312,7 +357,7 @@ export async function sendQueue(io: UploadIO, hooks: QueueHooks): Promise<HoldRe
       if (!(e instanceof HoldError)) throw e;
       const now = hooks.items().find((i) => i.id === cur.id);
       if (now) hooks.onUpdate({ ...now, state: "waiting" });
-      if (e.reason === "disk-full") return "disk-full";
+      if (e.reason !== "inbox-full") return e.reason;
       held = "inbox-full";
       fullAt = Math.min(fullAt, left);
     }

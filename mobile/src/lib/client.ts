@@ -9,6 +9,7 @@ export type SyncErrorCode =
   | "forgotten" // bare 401: the desktop no longer knows this phone's key (or, from an older desktop, the clock is off)
   | "clock" // sealed "clock": the request opened but its time is more than 2 minutes off the computer's
   | "demo" // the desktop is in demo mode
+  | "read-only" // sealed "read only": the desktop's workspace can't be saved (unreadable, or from a newer Hivo)
   | "busy" // 429 / 503 / "busy": scan running, workspace loading, rate limit; retry in a few seconds
   | "too-big" // 413, "too many changes", "note too long": the whole push was refused
   | "outdated" // 404 or "bad request": the two apps don't speak the same version
@@ -94,6 +95,7 @@ export function createClient(opts: ClientOptions) {
       if (reply.error === "demo") throw new SyncError("demo");
       if (reply.error === "clock") throw new SyncError("clock");
       if (reply.error === "busy") throw new SyncError("busy");
+      if (reply.error === "read only") throw new SyncError("read-only");
       if (reply.error === "bad request") throw new SyncError("outdated", reply.error);
       if (/^(too many changes|note too long)/.test(reply.error)) throw new SyncError("too-big", reply.error);
       throw new SyncError("server", reply.error.slice(0, 200));

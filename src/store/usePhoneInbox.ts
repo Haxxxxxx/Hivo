@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import * as api from "../lib/tauri";
-import { appendIdea, ideaBlock, newCount, targetKey } from "../lib/phoneInbox";
+import { appendIdea, ideaBlock, newCount, relinkedFilings, targetKey } from "../lib/phoneInbox";
 import { useAppStore } from "./useAppStore";
 import type { FiledSketch, IncomingItem, InboxItem, InboxTarget } from "../types";
 import { dict, tr } from "../i18n";
@@ -159,8 +159,19 @@ export function startPhoneInbox(): () => void {
       else unlisten = u;
     })
     .catch(() => {});
+  // A song renamed or relinked (or continued in FL Studio): what was filed
+  // to it (`song:<key>`) follows, so its drawer still lists its memos.
+  const unsubRelinks = useAppStore.subscribe((s, prev) => {
+    if (s.lastRelinks === prev.lastRelinks || s.lastRelinks.length === 0 || s.demoMode) return;
+    const moves = relinkedFilings(usePhoneInbox.getState().items, s.lastRelinks);
+    if (moves.length === 0) return;
+    void Promise.all(moves.map((m) => api.phoneInboxMark(m.id, "filed", m.filedTo)))
+      .catch((e) => console.error("phone inbox: following a relink failed", e))
+      .finally(() => void usePhoneInbox.getState().refresh());
+  });
   return () => {
     stopped = true;
     unlisten?.();
+    unsubRelinks();
   };
 }
