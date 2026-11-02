@@ -331,7 +331,7 @@ const fr: LandingCopy = {
 export const LANDING: Record<Lang, LandingCopy> = { en, fr };
 
 /** The sign-in card's own words (the card lives in App.tsx). */
-export const SIGN_IN: Record<Lang, { title: string; email: string; send: string; sending: string; enterCode: string; code: string; signIn: string; checking: string; other: string }> = {
+export const SIGN_IN: Record<Lang, { title: string; email: string; send: string; sending: string; enterCode: string; code: string; signIn: string; checking: string; other: string; haveCode: string }> = {
   en: {
     title: "Sign in to your crew",
     email: "Your email",
@@ -342,6 +342,7 @@ export const SIGN_IN: Record<Lang, { title: string; email: string; send: string;
     signIn: "Sign in",
     checking: "Checking…",
     other: "Use another email",
+    haveCode: "Have a code? Enter it",
   },
   fr: {
     title: "Connexion au crew",
@@ -353,5 +354,6 @@ export const SIGN_IN: Record<Lang, { title: string; email: string; send: string;
     signIn: "Se connecter",
     checking: "Vérification…",
     other: "Utiliser un autre email",
+    haveCode: "Tu as déjà un code\u202f? Entre-le",
   },
 };

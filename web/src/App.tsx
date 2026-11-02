@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Wordmark } from "./LogoMark";
-import { CalendarDays, CheckCircle2, Disc3, KanbanSquare, LogOut, Users } from "lucide-react";
+import { CalendarDays, CheckCircle2, Disc3, Download, KanbanSquare, LogOut, Users } from "lucide-react";
 import { STATUSES, UNSORTED, isFinished, statusInfo } from "@shared/lib/songs";
 import { formatRelative } from "@shared/lib/format";
 import { crewPipeline, groupCrewSongs } from "@shared/lib/crewBoard";
-import { releaseTracks, sortCrewReleases } from "@shared/lib/crewSync";
+import { crewCreditsText, crewMixdown, nameOf, releaseTracks, sortCrewReleases } from "@shared/lib/crewSync";
 import { localDay } from "@shared/lib/crewStats";
 import type { CrewSongRow, SongStatus } from "@shared/types";
 import { useWeb } from "./store";
@@ -88,8 +88,12 @@ function SignIn({ lang }: { lang: Lang }) {
   const { sendCode, verifyCode, error: storeError } = useWeb();
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
-  const [sentTo, setSentTo] = useState<string | null>(null);
+  // Kept for this tab: switching to the mail app and back (a reload on a
+  // phone) must not lose the code step.
+  const [sentTo, setSentToState] = useState<string | null>(() => readSentTo());
+  const setSentTo = (v: string | null) => (setSentToState(v), writeSentTo(v));
   const { busy, error, run } = useAction();
+  const validEmail = /^\S+@\S+\.\S+$/.test(email.trim());
   return (
     <div className="flex flex-col gap-4">
       <h2 className="text-xl font-semibold">{t.title}</h2>
@@ -104,8 +108,11 @@ function SignIn({ lang }: { lang: Lang }) {
           }}
         >
           <input type="email" name="email" id="signin-email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder={t.email} autoComplete="email" autoCapitalize="none" spellCheck={false} className={input} />
-          <button disabled={busy || !/^\S+@\S+\.\S+$/.test(email.trim())} className={primary}>
+          <button disabled={busy || !validEmail} className={primary}>
             {busy ? t.sending : t.send}
+          </button>
+          <button type="button" disabled={!validEmail} onClick={() => setSentTo(email.trim())} className="self-start text-xs text-engrave hover:text-cream disabled:opacity-40">
+            {t.haveCode}
           </button>
           <p className="text-xs text-engrave">{crewText("signInHint", lang)}</p>
         </form>
@@ -114,7 +121,7 @@ function SignIn({ lang }: { lang: Lang }) {
           className="flex flex-col gap-3"
           onSubmit={(e) => {
             e.preventDefault();
-            void run(() => verifyCode(sentTo, code));
+            void run(() => verifyCode(sentTo, code)).then((ok) => ok && writeSentTo(null));
           }}
         >
           <p className="text-sm text-body">
@@ -138,6 +145,62 @@ function SignIn({ lang }: { lang: Lang }) {
         </form>
       )}
       {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
+    </div>
+  );
+}
+
+const SENT_TO_KEY = "flm-crew-web-sent-to";
+function readSentTo(): string | null {
+  try {
+    return sessionStorage.getItem(SENT_TO_KEY);
+  } catch {
+    return null;
+  }
+}
+function writeSentTo(v: string | null) {
+  try {
+    if (v) sessionStorage.setItem(SENT_TO_KEY, v);
+    else sessionStorage.removeItem(SENT_TO_KEY);
+  } catch {
+    /* the code step just won't survive a reload */
+  }
+}
+
+/** Mac, Windows and Android downloads (the same links as the landing page). */
+function GetTheApp() {
+  const link = "inline-flex items-center gap-1.5 rounded border border-rule-strong px-3 py-1.5 text-sm text-body hover:bg-raised hover:text-cream";
+  return (
+    <section aria-label={tr(W).getApp} className="flex flex-col gap-2 rounded-xl border border-rule bg-panel p-4">
+      <h2 className="text-sm font-medium text-cream">{tr(W).getApp}</h2>
+      <p className="text-xs text-engrave">{tr(W).getAppHelp}</p>
+      <div className="flex flex-wrap gap-2">
+        <a href="/download/mac" className={link}>
+          <Download size={14} /> {tr(W).mac}
+        </a>
+        <a href="/download/windows" className={link}>
+          <Download size={14} /> {tr(W).windows}
+        </a>
+        <a href="/download/android" className={link}>
+          <Download size={14} /> {tr(W).android}
+        </a>
+      </div>
+    </section>
+  );
+}
+
+/** Once: "You now own <crew>" (a handover, or the owner left). */
+function OwnerNotice() {
+  const nowOwnerOf = useWeb((s) => s.nowOwnerOf);
+  const dismiss = useWeb((s) => s.dismissOwnerNotice);
+  if (!nowOwnerOf.length) return null;
+  return (
+    <div role="status" className="mx-4 mt-3 flex flex-col gap-1 rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-sm text-cream">
+      {nowOwnerOf.map((name) => (
+        <span key={name}>{tr(W).nowOwner(name)}</span>
+      ))}
+      <button onClick={dismiss} className="self-start text-xs underline hover:text-cream">
+        {tr(W).ok}
+      </button>
     </div>
   );
 }
@@ -173,6 +236,9 @@ function Join({ another = false, onDone }: { another?: boolean; onDone?: () => v
   const [displayName, setDisplayName] = useState(another ? lastName : "");
   const [code, setCode] = useState("");
   const [crewName, setCrewName] = useState("");
+  // With no crew yet, creating one is almost always a mistake (the invite
+  // code is the way in): one more step first.
+  const [confirmedNew, setConfirmedNew] = useState(another);
   const { busy, error, run } = useAction();
   const done = (ok: boolean) => ok && onDone?.();
   return (
@@ -205,13 +271,25 @@ function Join({ another = false, onDone }: { another?: boolean; onDone?: () => v
       <details className="text-sm text-engrave">
         <summary className="cursor-pointer text-body">{tr(W).newCrewInstead}</summary>
         <div className="mt-3 flex flex-col gap-3">
+          {!confirmedNew ? (
+            <>
+              <p className="text-xs text-warn">{tr(W).createWarning}</p>
+              <button onClick={() => setConfirmedNew(true)} className="self-start text-xs text-body underline hover:text-cream">
+                {tr(W).createAnyway}
+              </button>
+            </>
+          ) : (
+            <>
           <input value={crewName} onChange={(e) => setCrewName(e.target.value)} maxLength={CREW_NAME_MAX} placeholder={tr(W).crewName} aria-label={tr(W).crewName} className={input} />
           <button onClick={() => void run(() => createCrew(crewName, displayName)).then(done)} disabled={busy || !crewName.trim() || !displayName.trim()} className="rounded-lg border border-rule-strong px-4 py-2.5 text-sm text-cream hover:bg-raised disabled:opacity-40">
             {tr(W).createCrew}
           </button>
+            </>
+          )}
         </div>
       </details>
       {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
+      {!another && <GetTheApp />}
       {!another && (
         <button onClick={() => void signOut()} className="self-start text-xs text-engrave hover:text-cream">
           {tr(W).signOut}
@@ -268,6 +346,7 @@ function Dashboard({ topError }: { topError: string | null }) {
           </button>
         ))}
       </nav>
+      <OwnerNotice />
       {topError && <div role="alert" className="mx-4 mt-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">{topError}</div>}
       <main className="flex min-h-0 flex-1 flex-col">
         {tab === "board" && <Board />}
@@ -279,9 +358,11 @@ function Dashboard({ topError }: { topError: string | null }) {
   );
 }
 
+/** Names by user id: current members, else the last name seen in this browser. */
 function useNames() {
   const members = useWeb((s) => s.members);
-  return useMemo(() => new Map(members.map((m) => [m.user_id, m.display_name])), [members]);
+  const known = useWeb((s) => s.knownNames);
+  return useMemo(() => ({ get: (id: string | null | undefined) => nameOf(id, members, known) }), [members, known]);
 }
 
 /** The crew board, in the crew's columns (the owner sets them in the app).
@@ -299,7 +380,15 @@ function Board() {
   const groups = useMemo(() => groupCrewSongs(songs, cfg), [songs, cfg]);
 
   if (songs.length === 0) {
-    return <div className="p-8 text-center text-sm text-body">{tr(W).nothingShared}</div>;
+    return (
+      <div className="mx-auto flex w-full max-w-md flex-col gap-4 p-8 text-center text-sm text-body">
+        <p>{tr(W).nothingShared}</p>
+        <p className="text-xs text-engrave">{tr(W).shareFromApp}</p>
+        <div className="text-left">
+          <GetTheApp />
+        </div>
+      </div>
+    );
   }
   const mark = (next: { col: string; before: string | null } | null) => {
     if (spotRef.current?.col === next?.col && spotRef.current?.before === next?.before) return;
@@ -436,7 +525,15 @@ function SongCard({
           </span>
         )}
         <span className="ml-auto flex items-center gap-1">
-          {s.has_mixdown && <Disc3 size={11} aria-label={tr(W).hasMixdown} />}
+          {crewMixdown(s) !== "none" && (
+            <Disc3
+              size={11}
+              className={crewMixdown(s) === "stale" ? "text-warn" : undefined}
+              aria-label={crewMixdown(s) === "fresh" ? tr(W).mixdownFresh : crewMixdown(s) === "stale" ? tr(W).mixdownStale : tr(W).hasMixdown}
+            >
+              <title>{crewMixdown(s) === "fresh" ? tr(W).mixdownFresh : crewMixdown(s) === "stale" ? tr(W).mixdownStale : tr(W).hasMixdown}</title>
+            </Disc3>
+          )}
           {s.kit_accepted && <CheckCircle2 size={11} className="text-emerald-300/80" aria-label={tr(W).kitAccepted} />}
         </span>
       </div>
@@ -457,6 +554,11 @@ function SongCard({
         </select>
       </label>
       {mover && s.stage_updated_by !== s.owner_id && <div className="mt-1 text-[10px] text-engrave">{tr(W).movedBy(mover)}</div>}
+      {crewCreditsText(s.credits) && (
+        <div className="mt-1 text-[11px] text-engrave">
+          {tr(W).credits}: {crewCreditsText(s.credits)}
+        </div>
+      )}
     </article>
   );
 }
@@ -623,6 +725,7 @@ function Crew() {
         </button>
       )}
       <OwnerTools />
+      <GetTheApp />
       <LeaveCrew />
     </div>
   );

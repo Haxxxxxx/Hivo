@@ -32,7 +32,7 @@ const en: PrivacyCopy = {
       title: "Crew sharing (optional)",
       body: [
         "If you join a crew, you sign in with your email address (we email you a one-time code) and pick a display name your crew sees.",
-        "Only the songs you choose to share are sent: title, stage, BPM, key, tags, credits (names, roles, splits), dates, and whether a mixdown or a release kit exists. Releases you share send their title, type, colour, date and tracks. Never audio, file paths, notes, samples or track names.",
+        "Only the songs you choose to share are sent: title, stage, BPM, key, tags, credits (names, roles, splits), dates, whether a mixdown exists and is up to date, and whether a release kit exists. Releases you share send their title, type, colour, date and tracks. Never audio, file paths, notes, samples or track names.",
         "This goes to Hivo's database, hosted by Supabase in the EU (Ireland). Only members of your crew can read it.",
       ],
     },
@@ -97,7 +97,7 @@ const fr: PrivacyCopy = {
       title: "Partage avec le crew (optionnel)",
       body: [
         "Si tu rejoins un crew, tu te connectes avec ton adresse email (on t'envoie un code à usage unique) et tu choisis un nom que ton crew voit.",
-        "Seuls les sons que tu choisis de partager sont envoyés : titre, étape, BPM, tonalité, tags, crédits (noms, rôles, parts), dates, et s'il existe un mixdown ou un kit de sortie. Les sorties que tu partages envoient leur titre, type, couleur, date et morceaux. Jamais d'audio, de chemins de fichiers, de notes, de samples ni de noms de pistes.",
+        "Seuls les sons que tu choisis de partager sont envoyés : titre, étape, BPM, tonalité, tags, crédits (noms, rôles, parts), dates, s'il existe un mixdown et s'il est à jour, et s'il existe un kit de sortie. Les sorties que tu partages envoient leur titre, type, couleur, date et morceaux. Jamais d'audio, de chemins de fichiers, de notes, de samples ni de noms de pistes.",
         "Tout ça va dans la base de données de Hivo, hébergée par Supabase dans l'UE (Irlande). Seuls les membres de ton crew peuvent la lire.",
       ],
     },
