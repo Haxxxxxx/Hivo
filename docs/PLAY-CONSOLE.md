@@ -40,12 +40,26 @@ can't move from one to the other. So Play signs with **your** upload key.
 **Data safety** (what Play calls "collected" means sent off the device to you
 or a third party; sending to the user's own computer on their Wi-Fi isn't
 that):
-- Does the app collect or share user data? **No.**
-- The microphone (voice memos), the camera (pairing QR), notes, ideas and
-  shared files stay on the phone and go only to the user's own computer over
-  the local Wi-Fi, end-to-end encrypted, no Hivo server. Nothing goes to
-  Hivo or anyone else.
-- Is data encrypted in transit? **Yes** (XChaCha20-Poly1305 with the pairing key).
+- Does the app collect or share user data? **Yes**, but only through Google's
+  SDK: the pairing QR is scanned with Google Play services' code scanner (ML
+  Kit, `CameraView.launchScanner` in `mobile/src/screens/PairScreen.tsx`).
+  Google's ML Kit data disclosure
+  (https://developers.google.com/ml-kit/android-data-disclosure) says it sends
+  device information (manufacturer, model, OS version and build), package
+  name and app version, performance metrics (latency) and error codes, plus
+  device or other identifiers, "for diagnostics and usage analytics",
+  encrypted over HTTPS, not transferred to third parties. Declare:
+  - **App info and performance → Diagnostics** and **Device or other IDs**:
+    collected, not shared, purpose **Analytics** (and App functionality if
+    Play asks), not optional (scanning needs it), encrypted in transit.
+  - Re-read that Google page before each Data safety review: it's Google's
+    wording, and its list can change.
+- Hivo's own data: the microphone (voice memos), the camera (pairing QR),
+  notes, ideas and shared files stay on the phone and go only to the user's
+  own computer over the local Wi-Fi, end-to-end encrypted, no Hivo server.
+  Nothing goes to Hivo or anyone else, so none of it is declared.
+- Is data encrypted in transit? **Yes** (XChaCha20-Poly1305 with the pairing
+  key; ML Kit's diagnostics over HTTPS).
 - Can users ask for deletion? Everything is on their devices: removing the
   app (and Forget on the computer) deletes it.
 
@@ -91,7 +105,7 @@ website shows the Google Play button, and deploy the website.
 - A new permission or anything new leaving the phone → update **Data safety**
   and the privacy policy before uploading that version.
 - 0.7.0 adds the **microphone** (voice memos) and **shared files** (Share to
-  Hivo): both stay on the phone and the user's computer, so Data safety stays
-  "no data collected", but Play asks about the microphone permission's use:
+  Hivo): both stay on the phone and the user's computer, so they add nothing to
+  Data safety (only the ML Kit diagnostics above are declared), but Play asks about the microphone permission's use:
   answer "voice memos the user records, kept on the device and sent to the
   user's own computer".

@@ -97,7 +97,7 @@ Hivo helps you untangle your notes on each beat you pick, and the rest of the wr
 6. ✅ **Sync status** and the paired desktop's name.
 
 **Desktop**
-1. ✅ **Notes on saved prods and beats** in the Digger (stored in the workspace, not in the lead files, so re-saving a prod never wipes them; side panel with preview), and the song's existing notes in its drawer. When a beat becomes a song (a new FL project), its notes move with it. The desktop holds every note; the phone syncs to it.
+1. ✅ **Notes on saved prods and beats** in the Digger (stored in the workspace, not in the lead files, so re-saving a prod never wipes them; side panel with preview), and the song's existing notes in its drawer. When a beat becomes a song (a new FL project: "Start a song" in the beat's notes panel), its notes move with it, the phone memos linked to it are copied into the song's `Voice memos/`, and a producer credit is offered; the beat file stays where it is. The desktop holds every note; the phone syncs to it.
 2. ✅ **Phone sync** in Settings: on/off, pairing QR code, paired phones, last sync.
 3. ✅ **Inbox:** what came from the phone and isn't attached yet (ideas, memos, sketches), to assign to a beat or a song.
 4. ✅ **Session view (teleprompter):** a window kept on top of FL Studio, showing the lyrics large, section by section; arrow keys or auto-scroll at the BPM.

@@ -53,10 +53,18 @@ fn inside(path: &Path, root: &Path) -> bool {
     path.starts_with(root)
 }
 
-/// Audio Hivo can decode (symphonia: wav, mp3, ogg, flac).
+/// Audio Hivo can decode (symphonia: wav, mp3, ogg, flac, and m4a = AAC or
+/// ALAC in MP4) and the webview can play.
 pub fn is_beat_file(path: &Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-    matches!(ext.as_str(), "wav" | "mp3" | "ogg" | "flac")
+    matches!(ext.as_str(), "wav" | "mp3" | "ogg" | "flac" | "m4a")
+}
+
+/// Audio a beats folder may hold that the Digger can't read (no decoder, or
+/// the webview can't play it): counted, so the list can say so.
+pub fn is_unsupported_audio(path: &Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    matches!(ext.as_str(), "opus" | "aac" | "wma" | "aif" | "aiff" | "webm" | "weba" | "alac" | "ape")
 }
 
 fn denied(what: &str, path: &str) -> String {
@@ -98,6 +106,12 @@ impl Scope {
         self.beat_roots.iter().any(|r| inside(path, &r.join(crate::leads::LEADS_DIR)))
     }
 
+    /// A phone memo copied into a beats folder's `_memos` (linked to a beat
+    /// or a saved prod, phone_inbox.rs): shown and revealed like a lead.
+    fn in_beat_memos(&self, path: &Path) -> bool {
+        self.beat_roots.iter().any(|r| inside(path, &r.join(crate::phone_inbox::BEAT_MEMOS_DIR)))
+    }
+
     /// A DAW project file inside a linked folder.
     pub fn project(&self, path: &str) -> Result<PathBuf, String> {
         let real = resolve(Path::new(path)).filter(|p| self.in_roots(p)).ok_or_else(|| denied("That project", path))?;
@@ -125,11 +139,11 @@ impl Scope {
     }
 
     /// Any file in a linked folder or the export folder (what the app shows,
-    /// plays or analyzes: projects, renders, kit files), or a saved lead in
-    /// a beats folder's `_leads`.
+    /// plays or analyzes: projects, renders, kit files), or a saved lead or
+    /// a phone memo in a beats folder's `_leads` / `_memos`.
     pub fn known_file(&self, path: &str) -> Result<PathBuf, String> {
         resolve(Path::new(path))
-            .filter(|p| self.in_roots(p) || self.in_output(p) || self.in_beat_leads(p))
+            .filter(|p| self.in_roots(p) || self.in_output(p) || self.in_beat_leads(p) || self.in_beat_memos(p))
             .map(|_| PathBuf::from(path))
             .ok_or_else(|| denied("That file", path))
     }
@@ -160,7 +174,7 @@ impl Scope {
             .filter(|p| self.beat_roots.iter().any(|r| inside(p, r)))
             .ok_or_else(|| format!("That beat isn't inside a beats folder linked in Settings: {path}"))?;
         if !is_beat_file(&real) || !real.is_file() {
-            return Err(format!("not a beat (mp3, wav, ogg or flac): {path}"));
+            return Err(format!("not a beat (mp3, wav, ogg, flac or m4a): {path}"));
         }
         // The resolved path: what was checked is what gets opened.
         Ok(real)

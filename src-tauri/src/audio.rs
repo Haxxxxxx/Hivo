@@ -455,6 +455,9 @@ pub fn safe_name(name: &str) -> String {
 /// Cuts each clip out of `src` (one decode pass) into `<out_dir>/<label>.wav`
 /// as 16-bit PCM with short fades.
 pub fn export_clips(src: &Path, clips: &[Snippet], out_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    if crate::kits::is_link(out_dir) {
+        return Err(format!("{} is a link: refusing to write through it", out_dir.display()));
+    }
     fs::create_dir_all(out_dir).map_err(|e| format!("could not create {}: {e}", out_dir.display()))?;
     let mut buffers: Vec<Vec<f32>> = vec![Vec::new(); clips.len()];
     let (mut frame_index, mut channels, mut rate) = (0u64, 0usize, 0u32);
@@ -489,6 +492,7 @@ pub fn export_clips(src: &Path, clips: &[Snippet], out_dir: &Path) -> Result<Vec
             }
         }
         let path = out_dir.join(format!("{}.wav", safe_name(&clip.label)));
+        crate::kits::clear_target(&path).map_err(|e| format!("could not write {}: {e}", path.display()))?;
         write_wav(&path, &buf, channels as u16, rate).map_err(|e| format!("could not write {}: {e}", path.display()))?;
         written.push(path);
     }
@@ -512,20 +516,64 @@ pub struct KitFile {
 /// Writes a launch kit folder: the text files, a copy of the master
 /// mixdown, and the snippet clips in `snippets/`. Re-exporting overwrites
 /// the kit's own files only; anything else in the folder (cover art) stays.
+/// `song` is the song's workspace key (its owner id in the kit manifest);
+/// `previous_folder` is the folder the app recorded for its last export.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn export_launch_kit(
     app: tauri::AppHandle,
+    song: String,
     folder_name: String,
     files: Vec<KitFile>,
     master: Option<String>,
     master_name: String,
     clips: Vec<Snippet>,
+    previous_folder: Option<String>,
 ) -> Result<String, String> {
     let scope = crate::scope::Scope::load(&app)?;
     let output_folder = scope.output()?.to_string_lossy().to_string();
+    let owner = crate::kits::kit_owner(&scope.known_file(&song)?.to_string_lossy());
     let master = master.map(|m| scope.audio(&m).map(|p| p.to_string_lossy().to_string())).transpose()?;
     check_kit_files(&files)?;
-    write_launch_kit(output_folder, folder_name, files, master, master_name, clips).await
+    write_launch_kit(output_folder, owner, folder_name, files, master, master_name, clips, previous_folder).await
+}
+
+/// The saved cover concept of a kit, as base64, for the shorts' art (the
+/// webview can't read a file itself): the file the cover was saved to
+/// (it stays put when the title changes), else the one in `folder_name`.
+/// Only a plain `cover-concept.jpg` directly in a kit folder is read.
+#[tauri::command]
+pub async fn read_kit_cover(app: tauri::AppHandle, saved_path: Option<String>, folder_name: String) -> Result<Option<String>, String> {
+    use base64::Engine;
+    let scope = crate::scope::Scope::load(&app)?;
+    let output = scope.output()?.to_path_buf();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(path) = find_kit_cover(&output, saved_path.as_deref(), &folder_name) else { return Ok(None) };
+        let bytes = fs::read(&path).map_err(|e| format!("could not read the cover concept: {e}"))?;
+        Ok(Some(base64::engine::general_purpose::STANDARD.encode(bytes)))
+    })
+    .await
+    .map_err(|e| format!("reading the cover failed: {e}"))?
+}
+
+const MAX_COVER_BYTES: u64 = 20 * 1024 * 1024;
+
+/// A plain `cover-concept.jpg` directly in a kit folder (never through a
+/// link), first at `saved_path`, else in `<kits>/<folder_name>`.
+fn find_kit_cover(output: &Path, saved_path: Option<&str>, folder_name: &str) -> Option<PathBuf> {
+    let kits = output.join(crate::scanner::LAUNCH_KITS_DIR);
+    if crate::kits::is_link(&kits) {
+        return None;
+    }
+    let root = kits.canonicalize().ok()?;
+    let ok = |p: &Path| -> bool {
+        let plain = fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_file() && m.len() <= MAX_COVER_BYTES);
+        let named = p.file_name().is_some_and(|n| n == crate::cover::COVER_FILE);
+        let Some(dir) = p.parent() else { return false };
+        plain && named && !crate::kits::is_link(dir) && dir.canonicalize().ok().and_then(|d| d.parent().map(Path::to_path_buf)) == Some(root.clone())
+    };
+    let saved = saved_path.map(PathBuf::from).filter(|p| p.is_absolute());
+    saved.into_iter().chain([kits.join(safe_name(folder_name)).join(crate::cover::COVER_FILE)]).find(|p| ok(p))
 }
 
 /// What a kit's text files may be called: the kit's own text formats only.
@@ -540,38 +588,54 @@ fn check_kit_files(files: &[KitFile]) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn write_launch_kit(
     output_folder: String,
+    owner: String,
     folder_name: String,
     files: Vec<KitFile>,
     master: Option<String>,
     master_name: String,
     clips: Vec<Snippet>,
+    previous_folder: Option<String>,
 ) -> Result<String, String> {
+    use crate::kits;
     tauri::async_runtime::spawn_blocking(move || {
-        // <export folder>/Launch Kits/<song>; the song part is sanitized here
-        // so a title like ".." can't climb out.
-        let dir = PathBuf::from(&output_folder)
-            .join(crate::scanner::LAUNCH_KITS_DIR)
-            .join(safe_name(&folder_name));
-        fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+        // <export folder>/Launch Kits/<song>[ (n)]; the song part is
+        // sanitized there so a title like ".." can't climb out.
+        let output = PathBuf::from(&output_folder);
+        let dir = kits::resolve_kit_dir(&output, &folder_name, &owner, previous_folder.as_deref())?;
+        let mut written: Vec<String> = Vec::new();
         for f in &files {
-            let path = dir.join(safe_name(&f.name));
-            fs::write(&path, &f.content).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+            let name = safe_name(&f.name);
+            let path = dir.join(&name);
+            kits::write_new(&path, f.content.as_bytes()).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+            written.push(name);
         }
         if let Some(master) = master {
             let src = Path::new(&master);
             let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("wav");
-            let dest = dir.join(format!("{}.{ext}", safe_name(&master_name)));
-            // Copying a file onto itself truncates it on Unix: never do that.
+            let name = format!("{}.{ext}", safe_name(&master_name));
+            let dest = dir.join(&name);
+            // Copying a file onto itself would destroy it: never do that.
             let same = matches!((src.canonicalize(), dest.canonicalize()), (Ok(a), Ok(b)) if a == b);
             if !same {
-                fs::copy(src, &dest).map_err(|e| format!("could not copy the mixdown: {e}"))?;
+                kits::copy_new(src, &dest).map_err(|e| format!("could not copy the mixdown: {e}"))?;
             }
+            written.push(name);
             if !clips.is_empty() {
-                export_clips(src, &clips, &dir.join("snippets"))?;
+                for path in export_clips(src, &clips, &kits::sub_dir(&dir, "snippets")?)? {
+                    if let Some(n) = path.file_name().and_then(|n| n.to_str()) {
+                        written.push(format!("snippets/{n}"));
+                    }
+                }
             }
         }
+        // Leftovers of the last export: in this folder (a new master name,
+        // renamed snippets), and this song's old folders after a title change.
+        kits::remove_previous(&dir, &written, false);
+        kits::clean_old_kits(&kits::kits_root(&output)?, &dir, &owner, &written);
+        kits::write_manifest(&dir, &kits::KitManifest { owner: Some(owner.clone()), files: written })?;
         Ok(dir.to_string_lossy().to_string())
     })
     .await
@@ -705,6 +769,136 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         assert!(written[0].ends_with("snippets/Hook 15s.wav"));
         assert_eq!(bytes.len(), 44 + 15 * 8000 * 2);
+    }
+
+    /// One export of `song` into `out` (README.md + the master + one clip).
+    fn export_kit(out: &Path, src: &Path, song: &str, folder: &str, master_name: &str, label: &str, prev: Option<&str>) -> PathBuf {
+        PathBuf::from(
+            tauri::async_runtime::block_on(write_launch_kit(
+                out.to_string_lossy().to_string(),
+                crate::kits::kit_owner(song),
+                folder.to_string(),
+                vec![KitFile { name: "README.md".to_string(), content: "x".to_string() }],
+                Some(src.to_string_lossy().to_string()),
+                master_name.to_string(),
+                vec![Snippet { label: label.into(), start_sec: 30.0, length_sec: 7.0, reason: None }],
+                prev.map(str::to_string),
+            ))
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn re_export_replaces_only_the_files_it_wrote() {
+        let dir = temp("reexport");
+        let out = dir.join("out");
+        let src = fixture(&dir);
+        let export = |folder: &str, master_name: &str, label: &str, prev: Option<&str>| export_kit(&out, &src, "/p/a.flp", folder, master_name, label, prev);
+
+        let first = export("Night Run", "Ana - Night Run", "Hook 7s", None);
+        // Things the user put in the kit folder.
+        fs::write(first.join("cover-concept.jpg"), b"jpg").unwrap();
+        fs::write(first.join("notes.md"), b"mine").unwrap();
+        // A file next to the kit folders, never touched.
+        fs::write(dir.join("out").join("keep.md"), b"outside").unwrap();
+
+        // Same title, new artist and snippet name: the old master and clip go.
+        let again = export("Night Run", "Ana feat. Ben - Night Run", "Hook 15s", Some("Night Run"));
+        assert_eq!(again, first);
+        assert!(!first.join("Ana - Night Run.wav").exists());
+        assert!(first.join("Ana feat. Ben - Night Run.wav").exists());
+        assert!(!first.join("snippets").join("Hook 7s.wav").exists());
+        assert!(first.join("snippets").join("Hook 15s.wav").exists());
+        assert!(first.join("cover-concept.jpg").exists() && first.join("notes.md").exists());
+
+        // New title: a new folder; the old one keeps only what the user put there.
+        let renamed = export("Night Drive", "Ana - Night Drive", "Hook 15s", Some("Night Run"));
+        assert!(renamed.join("Ana - Night Drive.wav").exists());
+        assert!(!first.join("Ana feat. Ben - Night Run.wav").exists());
+        assert!(!first.join("README.md").exists());
+        assert!(!first.join("snippets").exists());
+        assert!(!first.join(crate::kits::KIT_MANIFEST).exists());
+        assert!(first.join("cover-concept.jpg").exists() && first.join("notes.md").exists());
+        assert!(dir.join("out").join("keep.md").exists());
+        // The cover saved in the old folder is still found for the shorts.
+        let saved = first.join(crate::cover::COVER_FILE);
+        assert_eq!(find_kit_cover(&out, Some(&saved.to_string_lossy()), "Night Drive"), Some(saved));
+
+        // Only a renamed folder whose files were all ours disappears.
+        let _ = export("Solo", "Ana - Solo", "Hook 15s", None);
+        let _ = export("Solo 2", "Ana - Solo 2", "Hook 15s", Some("Solo"));
+        let kits = out.join(crate::scanner::LAUNCH_KITS_DIR);
+        assert!(!kits.join("Solo").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_case_only_title_change_keeps_the_kit() {
+        let dir = temp("case");
+        let out = dir.join("out");
+        let src = fixture(&dir);
+        let first = export_kit(&out, &src, "/p/a.flp", "night run", "Ana - night run", "Hook 7s", None);
+        let second = export_kit(&out, &src, "/p/a.flp", "Night Run", "Ana - Night Run", "Hook 7s", Some("night run"));
+        // Whatever the file system, the new kit is complete: nothing just
+        // written was cleaned up as "the old folder".
+        assert!(second.ends_with("Night Run"));
+        assert!(second.join("README.md").exists(), "README.md was deleted");
+        assert!(second.join("Ana - Night Run.wav").exists());
+        assert!(second.join("snippets").join("Hook 7s.wav").exists());
+        assert_eq!(crate::kits::read_manifest(&second).unwrap().owner, Some(crate::kits::kit_owner("/p/a.flp")));
+        // On a case-insensitive file system it's the same folder, renamed.
+        if crate::kits::same_path(&first, &second) == Some(true) {
+            let names: Vec<String> = fs::read_dir(out.join(crate::scanner::LAUNCH_KITS_DIR)).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+            assert_eq!(names, vec!["Night Run".to_string()]);
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_songs_with_one_title_keep_their_own_kits() {
+        let dir = temp("twins");
+        let out = dir.join("out");
+        let src = fixture(&dir);
+        let a = export_kit(&out, &src, "/p/a.flp", "Night Run", "Ana - Night Run", "Hook 7s", None);
+        let b = export_kit(&out, &src, "/p/b.flp", "Night Run", "Ben - Night Run", "Hook 7s", None);
+        assert_ne!(a, b);
+        assert!(b.ends_with("Night Run (2)"));
+        // Song A is renamed: its old folder goes, song B's kit stays whole.
+        let a2 = export_kit(&out, &src, "/p/a.flp", "Night Walk", "Ana - Night Walk", "Hook 7s", Some("Night Run"));
+        assert!(a2.join("README.md").exists());
+        assert!(!a.join("Ana - Night Run.wav").exists());
+        assert!(b.join("README.md").exists() && b.join("Ben - Night Run.wav").exists() && b.join("snippets").join("Hook 7s.wav").exists());
+        // Song B re-exports: still its own folder.
+        assert_eq!(export_kit(&out, &src, "/p/b.flp", "Night Run", "Ben - Night Run", "Hook 7s", Some("Night Run (2)")), b);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_cover_is_never_read() {
+        use std::os::unix::fs::symlink;
+        let dir = temp("coverlink");
+        let out = dir.join("out");
+        let kit = crate::kits::resolve_kit_dir(&out, "Night", &crate::kits::kit_owner("/p/a.flp"), None).unwrap();
+        fs::write(dir.join("secret.jpg"), b"secret").unwrap();
+        symlink(dir.join("secret.jpg"), kit.join(crate::cover::COVER_FILE)).unwrap();
+        assert_eq!(find_kit_cover(&out, None, "Night"), None);
+        // A saved path outside the kits is refused too.
+        let outside = dir.join(crate::cover::COVER_FILE);
+        fs::write(&outside, b"jpg").unwrap();
+        assert_eq!(find_kit_cover(&out, Some(&outside.to_string_lossy()), "Night"), None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_entries_stay_in_the_kit_folder() {
+        use crate::kits::kit_entry;
+        for ok in ["README.md", "Ana - Night.wav", "snippets/Hook 15s.wav"] {
+            assert!(kit_entry(ok), "{ok}");
+        }
+        for bad in ["../x.md", "snippets/../../x.wav", "a/b.md", "/etc/x.md", "cover-concept.jpg", "run.sh", "snippets", "..", "x\\..\\y.md"] {
+            assert!(!kit_entry(bad), "{bad}");
+        }
     }
 
     #[test]

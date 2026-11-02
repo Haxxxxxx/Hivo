@@ -10,6 +10,15 @@ export const RELEASES_BASE = "https://chrbpaoljulntuvousnz.supabase.co/storage/v
 export const MANIFEST_URL = `${RELEASES_BASE}mobile-latest.json`;
 export const CHECK_EVERY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Only a build explicitly marked "direct" (the website APK, built with
+ * HIVO_DISTRIBUTION=direct) checks. Play builds, dev builds and a build
+ * whose flag is missing never do: fail closed.
+ */
+export function checksForDistribution(distribution: unknown): boolean {
+  return distribution === "direct";
+}
+
 export type Semver = readonly [major: number, minor: number, patch: number];
 
 /** "0.6.1" or "v0.6.1" → [0, 6, 1]; anything else (pre-releases included) → null. */
@@ -66,4 +75,17 @@ export const PLAY_URL = "https://play.google.com/store/apps/details?id=fr.hivo.m
 export function checkDue(lastCheckAt: number | null, now: number): boolean {
   if (lastCheckAt === null || !Number.isFinite(lastCheckAt)) return true;
   return now - lastCheckAt >= CHECK_EVERY_MS || now < lastCheckAt;
+}
+
+/**
+ * The computer's Hivo (`hivoVersion` from /v1/hello) is older than this
+ * phone's by major.minor (patches always talk to each other): the phone
+ * says "Update Hivo on the computer". False when either is unknown.
+ */
+export function desktopIsOlder(desktop: unknown, phone: string): boolean {
+  const d = typeof desktop === "string" ? /^v?(\d{1,6})\.(\d{1,6})/.exec(desktop.trim()) : null;
+  const p = /^v?(\d{1,6})\.(\d{1,6})/.exec(phone.trim());
+  if (!d || !p) return false;
+  const [dm, dn, pm, pn] = [d[1], d[2], p[1], p[2]].map(Number);
+  return dm < pm || (dm === pm && dn < pn);
 }

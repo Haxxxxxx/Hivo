@@ -19,9 +19,11 @@ fn window_title(title: &str) -> String {
     }
 }
 
-/// Opens the session window (or brings it back, retitled).
+/// Opens the session window (or brings it back, retitled). `async` on
+/// purpose: a synchronous command that builds a window deadlocks on Windows
+/// (it runs on the main thread, which the window creation waits for).
 #[tauri::command]
-pub fn open_session_window(app: AppHandle, title: String) -> Result<(), String> {
+pub async fn open_session_window(app: AppHandle, title: String) -> Result<(), String> {
     let title = window_title(&title);
     if let Some(w) = app.get_webview_window(LABEL) {
         let _ = w.set_title(&title);
@@ -39,6 +41,14 @@ pub fn open_session_window(app: AppHandle, title: String) -> Result<(), String> 
         .build()
         .map_err(|e| format!("could not open the session window: {e}"))?;
     Ok(())
+}
+
+/// The main window is gone: the session window goes too, or it would keep
+/// the app running with no way back to the library.
+pub fn close_with_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window(LABEL) {
+        let _ = w.destroy();
+    }
 }
 
 #[cfg(test)]

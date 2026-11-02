@@ -26,7 +26,7 @@ const input = (meta: SongMeta = {}, over: Partial<KitInput> = {}): KitInput => (
   albums: [],
   analysis: null,
   today,
-  language: "French",
+  lastLanguage: "French",
   labelName: "Night Crew",
   ...over,
 });
@@ -93,11 +93,18 @@ describe("songwriter splits", () => {
 });
 
 describe("distribution defaults", () => {
-  it("label is the crew, ℗ line is release year + label, language from settings", () => {
+  it("label is the crew, ℗ line is release year + label", () => {
     const kit = buildKit(input());
     expect(value(kit, "label")).toBe("Night Crew");
     expect(value(kit, "copyright")).toBe("℗ 2026 Night Crew");
-    expect(value(kit, "language")).toBe("French");
+  });
+
+  it("never prefills the lyrics language: the last one used is only a hint (B12)", () => {
+    const lang = buildKit(input({}, { captionLanguage: "en" })).find((f) => f.id === "language")!;
+    expect(lang.value).toBe("");
+    expect(lang.source).toBe("missing");
+    expect(lang.check?.level).toBe("missing");
+    expect(lang.note).toMatch(/mostly say French/);
   });
 
   it("a single is its own release, track 1", () => {
@@ -262,5 +269,16 @@ describe("localDayMs", () => {
     expect(localDayMs("")).toBeNull();
     expect(localDayMs("2026-02-30")).toBeNull();
     expect(localDayMs("6 Nov")).toBeNull();
+  });
+});
+
+describe("pre-save line", () => {
+  it("captions mention a pre-save only when a link is set", () => {
+    for (const captionLanguage of ["fr", "en"] as const) {
+      const without = value(buildKit(input({}, { captionLanguage })), "captions");
+      const withLink = value(buildKit(input({ launchKit: { preSaveUrl: "https://example.com/presave" } }, { captionLanguage })), "captions");
+      expect(without).not.toMatch(/pr[eé]-save/i);
+      expect(withLink).toMatch(/pr[eé]-save/i);
+    }
   });
 });

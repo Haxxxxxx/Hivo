@@ -3,7 +3,7 @@ import type { BeatFile, ProjectInfo, SavedLead, Workspace } from "../types";
 import { applyLang } from "../i18n";
 import { fnv1a32, leadHash } from "./digger";
 import { MAX_NOTE_CHARS } from "./notes";
-import { applyNoteChanges, buildSnapshot, mergeConflict, noteHash, noteLookup, parseChanges, storedNote, type SyncSources } from "./phoneSync";
+import { addRenames, applyNoteChanges, buildSnapshot, mergeConflict, noteHash, noteLookup, parseChanges, RENAMES_KEEP_MS, refusal, storedNote, type SyncSources } from "./phoneSync";
 
 afterEach(() => applyLang("en"));
 
@@ -93,6 +93,38 @@ describe("snapshot", () => {
   });
 });
 
+describe("renamed (pending phone edits follow a moved song or beat)", () => {
+  it("records moves, collapses chains, drops old ones and lists them in the snapshot", () => {
+    const day = 24 * 3600 * 1000;
+    let list = addRenames(undefined, [{ kind: "song", from: "/p/a.flp", to: "/p/b.flp" }], 1000);
+    list = addRenames(list, [{ kind: "song", from: "/p/b.flp", to: "/p/c.flp" }, { kind: "prod", from: "x", to: "y" }], 2000);
+    expect(list.map((r) => [r.from, r.to])).toEqual([
+      ["/p/a.flp", "/p/c.flp"],
+      ["/p/b.flp", "/p/c.flp"],
+    ]);
+    const snap = buildSnapshot(sources({ phoneRenames: list }), 3000);
+    expect(snap.renamed).toEqual([
+      { kind: "song", from: "/p/a.flp", to: "/p/c.flp" },
+      { kind: "song", from: "/p/b.flp", to: "/p/c.flp" },
+    ]);
+    expect(buildSnapshot(sources({ phoneRenames: list }), 2000 + RENAMES_KEEP_MS + day).renamed).toEqual([]);
+    expect(addRenames(list, [], 2000 + RENAMES_KEEP_MS + day)).toEqual([]);
+    expect(buildSnapshot(sources(), 0).renamed).toEqual([]);
+  });
+});
+
+describe("refusal (why the desktop can't answer)", () => {
+  const ok = { demoMode: false, workspaceWritable: true, hasIssue: false, scanning: false, projectCount: 3 };
+  it("read only for an unreadable or newer workspace, busy while loading, demo for sample data", () => {
+    expect(refusal(ok)).toBeNull();
+    expect(refusal({ ...ok, workspaceWritable: false, hasIssue: true })).toBe("read only");
+    expect(refusal({ ...ok, workspaceWritable: false })).toBe("busy");
+    expect(refusal({ ...ok, scanning: true, projectCount: 0 })).toBe("busy");
+    expect(refusal({ ...ok, scanning: true })).toBeNull();
+    expect(refusal({ ...ok, demoMode: true, workspaceWritable: false, hasIssue: true })).toBe("demo");
+  });
+});
+
 describe("parse changes", () => {
   it("accepts the contract's shape and refuses the rest", () => {
     expect(parseChanges({ changes: [{ kind: "song", id: "/p/a.flp", text: "x", baseHash: "811c9dc5" }] })).toHaveLength(1);
@@ -120,6 +152,53 @@ describe("apply changes", () => {
     expect(mergeConflict("[Hook]\nla la", "Pixel 9", "phone hook")).toBe(merged);
     expect(results[0]).toEqual({ kind: "song", id: "/p/Song one.flp", status: "conflict", note: merged, noteHash: fnv1a32(merged) });
     expect(writes).toEqual([{ kind: "song", id: "/p/Song one.flp", text: merged }]);
+  });
+
+  it("a conflict merges on lines: the original body is never doubled", () => {
+    const desktop = "[Verse 1]\nline one\nline two\n\n[Hook]\nhook a";
+    // The phone edited the same note: kept its lines, added a verse.
+    const phone = "[Verse 1]\nline one\nline two\n\n[Verse 2]\nnew bar\nnew bar 2\n\n\n[Hook]\nhook a";
+    const merged = mergeConflict(desktop, "Pixel", phone);
+    expect(merged).toBe(`${desktop}\n\n--- from Pixel ---\n[Verse 2]\nnew bar\nnew bar 2`);
+    expect(merged.split("line one")).toHaveLength(2);
+    // Nothing new on the phone's side: the desktop's note as it is.
+    expect(mergeConflict(desktop, "Pixel", "line two\n  hook a  ")).toBe(desktop);
+    expect(mergeConflict("", "Pixel", "a\n\n\nb")).toBe("a\n\nb");
+  });
+
+  it("a conflict keeps a hook the phone repeated (a line diff, not a set of lines)", () => {
+    const desktop = "[Hook]\nla la\n\n[Verse 1]\nbar one";
+    const phone = "[Hook]\nla la\n\n[Verse 1]\nbar one\n\n[Hook]\nla la";
+    expect(mergeConflict(desktop, "Pixel", phone)).toBe(`${desktop}\n\n--- from Pixel ---\n[Hook]\nla la`);
+    // The desktop holds it twice already: nothing new.
+    expect(mergeConflict(phone, "Pixel", phone)).toBe(phone);
+    // A chorus between verses on the phone, the desktop with one hook only.
+    const phone2 = "[Hook]\nla la\n[Verse 1]\nbar one\n[Hook]\nla la\n[Verse 2]\nbar two";
+    expect(mergeConflict("[Hook]\nla la\n[Verse 1]\nbar one", "Pixel", phone2)).toBe("[Hook]\nla la\n[Verse 1]\nbar one\n\n--- from Pixel ---\n[Hook]\nla la\n[Verse 2]\nbar two");
+  });
+
+  it("a merge of very long notes counts lines instead of diffing (bounded memory)", () => {
+    const desktop = Array.from({ length: 2500 }, (_, i) => `d${i}`).join("\n");
+    const phone = `${Array.from({ length: 2500 }, (_, i) => `p${i}`).join("\n")}\nhook\nhook`;
+    const merged = mergeConflict(`${desktop}\nhook`, "Pixel", phone);
+    expect(merged.endsWith("p2499\nhook")).toBe(true);
+    expect(merged.split("\nhook").length - 1).toBe(2);
+  });
+
+  it("a merge past the cap is refused, never cut: nothing written, both texts kept", () => {
+    const desktopNote = "d".repeat(MAX_NOTE_CHARS - 10);
+    const current = () => desktopNote;
+    const phoneText = "a brand new verse line that does not fit";
+    const { results, writes } = applyNoteChanges([{ kind: "song", id: "/p/x.flp", text: phoneText, baseHash: "deadbeef" }], current, "Pixel");
+    expect(results[0]).toEqual({ kind: "song", id: "/p/x.flp", status: "too long", note: desktopNote, noteHash: fnv1a32(desktopNote) });
+    expect(writes).toEqual([]);
+    // A clean change longer than the cap (UTF-16 units) is refused too, not cut.
+    const long = applyNoteChanges([{ kind: "song", id: "/p/x.flp", text: "😀".repeat(MAX_NOTE_CHARS / 2 + 1), baseHash: fnv1a32(desktopNote) }], current, "Pixel");
+    expect(long.results[0].status).toBe("too long");
+    expect(long.writes).toEqual([]);
+    // Just under: merged in full.
+    const fits = applyNoteChanges([{ kind: "song", id: "/p/x.flp", text: "ok", baseHash: "deadbeef" }], () => "d".repeat(100), "P");
+    expect(fits.results[0].note).toBe(`${"d".repeat(100)}\n\n--- from P ---\nok`);
   });
 
   it("a retry of an already applied change, or an empty desktop note, is applied without a merge", () => {

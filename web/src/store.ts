@@ -4,6 +4,8 @@ import { create } from "zustand";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import type { CrewColumnRow, CrewInvite, CrewMemberRow, CrewReleaseRow, CrewSongRow, CrewSummary, SongStatus } from "@shared/types";
 import { applyCardMove, crewMove, crewPipeline, restoreSongs } from "@shared/lib/crewBoard";
+import { applyPlaced, fetchAllPages, isMissingOnServer, placeCards } from "@shared/lib/crewFetch";
+import { newlyOwned, rememberNames, withMyRole, type KnownNames } from "@shared/lib/crewSync";
 import { errorMessage, supabase } from "./supabase";
 import { tr } from "@shared/i18n";
 import { W } from "./dashboardCopy";
@@ -12,6 +14,8 @@ import { W } from "./dashboardCopy";
 // and members, live updates. Same rules as the desktop app; no local files.
 
 const ACTIVE_CREW_KEY = "flm-crew-web-active";
+/** Last known display name per user id (a former member keeps a name). */
+const NAMES_KEY = "flm-crew-web-names";
 const SAFETY_REFRESH_MS = 5 * 60_000;
 
 interface WebState {
@@ -31,6 +35,11 @@ interface WebState {
   error: string | null;
   /** Realtime is connected; false after a channel error or timeout, until it reconnects. */
   live: boolean;
+  /** Crews I became the owner of while the page was open (shown once). */
+  nowOwnerOf: string[];
+  dismissOwnerNotice: () => void;
+  /** Last known display names by user id, kept in this browser. */
+  knownNames: KnownNames;
 
   init: () => Promise<void>;
   sendCode: (email: string) => Promise<void>;
@@ -53,6 +62,8 @@ interface WebState {
   revokeInvite: (code: string) => Promise<void>;
   removeMember: (userId: string) => Promise<void>;
   renameCrew: (name: string) => Promise<void>;
+  /** Owner: make another member the owner (you become a member). */
+  transferOwnership: (userId: string) => Promise<void>;
   /** Owner: delete the active crew for everyone (the name typed back). */
   deleteCrew: (confirmName: string) => Promise<void>;
   leaveCrew: () => Promise<void>;
@@ -69,6 +80,29 @@ const remember = (id: string | null) => {
     /* convenience only */
   }
 };
+const readNames = (): KnownNames => {
+  try {
+    const v = JSON.parse(localStorage.getItem(NAMES_KEY) ?? "{}") as unknown;
+    return v && typeof v === "object" ? (v as KnownNames) : {};
+  } catch {
+    return {};
+  }
+};
+const writeNames = (names: KnownNames) => {
+  try {
+    localStorage.setItem(NAMES_KEY, JSON.stringify(names));
+  } catch {
+    /* display convenience only */
+  }
+};
+const toSummaries = (rows: Record<string, unknown>[]): CrewSummary[] =>
+  rows.map((r) => ({
+    id: r.crew_id as string,
+    name: (r.crews as { name: string } | null)?.name ?? "Crew",
+    role: r.role as CrewSummary["role"],
+    displayName: r.display_name as string,
+  }));
+
 const remembered = () => {
   try {
     return localStorage.getItem(ACTIVE_CREW_KEY);
@@ -78,14 +112,31 @@ const remembered = () => {
 };
 
 export const useWeb = create<WebState>((set, get) => {
+  /** A new crew list; says once which crews I now own. */
+  function setCrews(crews: CrewSummary[]) {
+    const before = get().crews;
+    if (crews === before) return;
+    const owned = newlyOwned(before, crews).map((c) => c.name);
+    set({ crews, ...(owned.length ? { nowOwnerOf: [...new Set([...get().nowOwnerOf, ...owned])] } : {}) });
+  }
+
+  /** My role changed (a handover, or the owner left): reload the list in place. */
+  async function refreshCrews() {
+    if (!supabase || !get().userId) return;
+    const { data, error } = await supabase.from("crew_members").select("crew_id, role, display_name, crews(name)").eq("user_id", get().userId!);
+    if (!error) setCrews(toSummaries(data ?? []));
+  }
+
   async function loadCrewData() {
     const id = get().activeCrewId;
-    if (!supabase || !id) return set({ songs: [], members: [], columns: [], releases: [] });
+    const db = supabase;
+    if (!db || !id) return set({ songs: [], members: [], columns: [], releases: [] });
+    // Every page (the API stops at 1000 rows per request without saying so).
     const [songs, members, columns, releases] = await Promise.all([
-      supabase.from("songs").select("*").eq("crew_id", id).order("updated_at", { ascending: false }),
-      supabase.from("crew_members").select("*").eq("crew_id", id).order("joined_at"),
-      supabase.from("crew_columns").select("*").eq("crew_id", id).order("position"),
-      supabase.from("releases").select("*").eq("crew_id", id),
+      fetchAllPages<CrewSongRow>((from, to) => db.from("songs").select("*").eq("crew_id", id).order("id").range(from, to)),
+      db.from("crew_members").select("*").eq("crew_id", id).order("joined_at"),
+      db.from("crew_columns").select("*").eq("crew_id", id).order("position"),
+      fetchAllPages<CrewReleaseRow>((from, to) => db.from("releases").select("*").eq("crew_id", id).order("id").range(from, to)),
     ]);
     if (get().activeCrewId !== id) return;
     if (songs.error) throw songs.error;
@@ -95,7 +146,21 @@ export const useWeb = create<WebState>((set, get) => {
       // Removed from the crew (or it was deleted): back to the crew list.
       return void get().loadCrews().catch((e) => set({ error: errorMessage(e) }));
     }
-    set({ songs: songs.data as CrewSongRow[], members: memberRows, columns: columns.error ? [] : (columns.data as CrewColumnRow[]), releases: releases.error ? [] : (releases.data as CrewReleaseRow[]), error: null });
+    // Only a crew server without these tables means "none"; anything else is an error.
+    if (columns.error && !isMissingOnServer(columns.error)) throw columns.error;
+    if (releases.error && !isMissingOnServer(releases.error)) throw releases.error;
+    const names = rememberNames(get().knownNames, memberRows);
+    if (names) writeNames(names);
+    set({
+      songs: [...songs.data].sort((a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? "") || a.id.localeCompare(b.id)),
+      members: memberRows,
+      columns: columns.error ? [] : (columns.data as CrewColumnRow[]),
+      releases: releases.error ? [] : releases.data,
+      error: null,
+      ...(names ? { knownNames: names } : {}),
+    });
+    // My role here changed: owner tools follow without a reload.
+    setCrews(withMyRole(get().crews, id, memberRows.find((m) => m.user_id === get().userId)?.role));
   }
 
   function upsertRelease(row: CrewReleaseRow) {
@@ -155,7 +220,11 @@ export const useWeb = create<WebState>((set, get) => {
         if (old && get().columns.some((c) => c.id === old)) void reloadColumns(id);
       })
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "crew_members", filter: `crew_id=eq.${id}` }, reloadMembers)
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "crew_members", filter: `crew_id=eq.${id}` }, reloadMembers)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "crew_members", filter: `crew_id=eq.${id}` }, (p) => {
+        // My own row: my role may have changed, so the crew list too.
+        if ((p.new as Partial<CrewMemberRow>)?.user_id === get().userId) void refreshCrews().catch(() => {});
+        reloadMembers();
+      })
       .on("postgres_changes", { event: "DELETE", schema: "public", table: "crew_members" }, (p) => {
         const old = p.old as Partial<CrewMemberRow>;
         if (get().activeCrewId !== id || old.crew_id !== id) return;
@@ -189,6 +258,9 @@ export const useWeb = create<WebState>((set, get) => {
     error: null,
     live: true,
     invites: [],
+    nowOwnerOf: [],
+    knownNames: readNames(),
+    dismissOwnerNotice: () => set({ nowOwnerOf: [] }),
 
     init: async () => {
       if (initialized) return;
@@ -244,13 +316,9 @@ export const useWeb = create<WebState>((set, get) => {
         set({ loadError: errorMessage(error) });
         throw new Error(errorMessage(error));
       }
-      const crews: CrewSummary[] = (data ?? []).map((r) => ({
-        id: r.crew_id as string,
-        name: (r.crews as unknown as { name: string } | null)?.name ?? "Crew",
-        role: r.role as CrewSummary["role"],
-        displayName: r.display_name as string,
-      }));
-      set({ crews, loadError: null });
+      set({ loadError: null });
+      setCrews(toSummaries(data ?? []));
+      const crews = get().crews;
       const pick = crews.find((c) => c.id === remembered())?.id ?? crews[0]?.id ?? null;
       await get().selectCrew(pick);
     },
@@ -344,17 +412,15 @@ export const useWeb = create<WebState>((set, get) => {
         set({ songs: restoreSongs(get().songs, before, move.renumber.map((x) => x.songId)), error: message });
         throw new Error(message);
       }
-      for (const x of move.renumber) {
-        const row = get().songs.find((s) => s.id === x.songId);
-        if (!row) continue;
-        try {
-          settle(x.songId, await call(x.songId, x.order, row.stage_updated_at));
-        } catch (e) {
-          // Part of the column was placed: show the server's order again.
-          set({ error: errorMessage(e) });
-          void loadCrewData().catch(() => {});
-          throw new Error(errorMessage(e));
-        }
+      // The column's other cards, in one request.
+      try {
+        const placed = await placeCards((fn, args) => supabase!.rpc(fn, args), columnId, move.renumber, (id) => get().songs.find((s) => s.id === id)?.stage_updated_at);
+        if (get().activeCrewId === crewId) set({ songs: applyPlaced(get().songs, placed) });
+      } catch (e) {
+        // Maybe part of the column was placed: show the server's order again.
+        set({ error: errorMessage(e) });
+        void loadCrewData().catch(() => {});
+        throw new Error(errorMessage(e));
       }
       set({ error: null });
     },
@@ -406,6 +472,15 @@ export const useWeb = create<WebState>((set, get) => {
       if (error) throw new Error(errorMessage(error));
       if (!data?.length) throw new Error(crewText("ownerOnly"));
       set({ crews: get().crews.map((c) => (c.id === crewId ? { ...c, name: name.trim() } : c)) });
+    },
+
+    transferOwnership: async (userId) => {
+      const crewId = get().activeCrewId;
+      if (!supabase || !crewId || userId === get().userId) return;
+      const { error } = await supabase.rpc("transfer_crew_ownership", { p_crew: crewId, p_to: userId });
+      if (error) throw new Error(errorMessage(error));
+      set({ crews: get().crews.map((c) => (c.id === crewId ? { ...c, role: "member" as const } : c)) });
+      await loadCrewData();
     },
 
     deleteCrew: async (confirmName) => {

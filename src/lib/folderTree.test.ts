@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildFolderTree, folderPath, inFolder } from "./folderTree";
+import { buildFolderTree, folderPath, hasFolderNode, inFolder } from "./folderTree";
 import type { ProjectInfo } from "../types";
 
 function song(root: string, folder: string, name: string, over: Partial<ProjectInfo> = {}): ProjectInfo {
@@ -79,5 +79,20 @@ describe("folderPath", () => {
     // A song folder below a node: the breadcrumb ends at the node.
     expect(folderPath(tree, `${R}/2026/Winter/Envy`).map((n) => n.name)).toEqual(["Prods", "2026", "Winter"]);
     expect(folderPath(tree, "/elsewhere")).toEqual([]);
+  });
+});
+
+describe("hasFolderNode", () => {
+  it("tells a stale folder filter apart from a live one", () => {
+    const songs = [song(R, `${R}/2026/Envy`, "Envy"), song(R, `${R}/2026/Sun`, "Sun"), song(R, `${R}/Loose`, "Loose")];
+    const tree = buildFolderTree(songs);
+    expect(hasFolderNode(tree, `${R}/2026`)).toBe(true);
+    expect(hasFolderNode(tree, `${R}/2026/`)).toBe(true);
+    // A song's own folder was never a node; a folder whose songs moved away is gone.
+    expect(hasFolderNode(tree, `${R}/2026/Envy`)).toBe(false);
+    const after = buildFolderTree([song(R, `${R}/2026/Envy`, "Envy"), song(R, `${R}/Loose`, "Loose")]);
+    expect(hasFolderNode(after, `${R}/2026`)).toBe(false);
+    // Nothing to branch into: no node at all.
+    expect(hasFolderNode([], R)).toBe(false);
   });
 });

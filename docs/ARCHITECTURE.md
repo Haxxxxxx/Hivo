@@ -28,7 +28,7 @@ Sharing is **opt-in per song** (and per release). For a shared song the crew see
 | Title (editable for the crew), stage, BPM, key, tags | Audio, mixdowns, stems, snippets |
 | Credits (who's on it, role, split) | File paths, folder names, usernames |
 | Release date, release membership | Sample and plugin lists |
-| "Has a mixdown", "Launch Kit accepted" | Notes (private by default) |
+| "Has a mixdown" and whether it's up to date (`mixdown_fresh`), "Launch Kit accepted" | Notes (private by default) |
 | Last FL save date | Mixer track names |
 | Crew and display names (sign-in email stays in Supabase Auth) | |
 

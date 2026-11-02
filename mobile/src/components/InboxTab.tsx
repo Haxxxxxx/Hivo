@@ -1,7 +1,10 @@
-import { useMemo } from "react";
+import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
+import { useEffect, useMemo, useState } from "react";
 import { Alert, Pressable, SectionList, StyleSheet, Text, View } from "react-native";
 import { s } from "../inboxStrings";
+import { filedTitle } from "../lib/filedTo";
 import { visibleIdeas, type Idea } from "../lib/ideas";
+import { findItem, type Item, type Kind } from "../lib/sync";
 import { progress, type OutItem } from "../lib/outbox";
 import { removeOut, requestSync, retryOut, useApp } from "../store";
 import { C, RADIUS } from "../theme";
@@ -20,19 +23,27 @@ export function useInboxPending(): number {
   return ideas.filter((i) => !i.deleted && (i.sentAt === null || i.updatedAt > i.sentAt) && (i.title.trim() || i.text.trim())).length + outbox.filter((o) => o.state !== "sent").length;
 }
 
-function ideaState(i: Idea): { text: string; color: string } {
-  if (i.status === "filed") return { text: s().filedOnComputer, color: C.ok };
+type Find = (kind: Kind, id: string) => Item | undefined;
+
+/** "Filed to <where>", or the plain "Filed on the computer" when it can't say. */
+function filedText(filedTo: string | null, find: Find): string {
+  const where = filedTitle(filedTo, find);
+  return where ? s().filedTo(where) : s().filedOnComputer;
+}
+
+function ideaState(i: Idea, find: Find): { text: string; color: string } {
+  if (i.status === "filed") return { text: filedText(i.filedTo, find), color: C.ok };
   if (i.status === "dismissed") return { text: s().dismissedOnComputer, color: C.engrave };
   if (i.sentAt !== null && i.updatedAt <= i.sentAt) return { text: s().onComputer, color: C.ok };
   return { text: s().waiting, color: C.warn };
 }
 
-function outState(o: OutItem, sending: boolean): { text: string; color: string } {
+function outState(o: OutItem, sending: boolean, find: Find): { text: string; color: string } {
   if (o.state === "failed") return { text: `${s().failed}: ${o.error ? s().outErrors[o.error] : ""}`, color: C.missing };
   if (o.state === "sent") {
-    if (o.status === "filed") return { text: s().filedOnComputer, color: C.ok };
+    if (o.status === "filed") return { text: filedText(o.filedTo, find), color: C.ok };
     if (o.status === "dismissed") return { text: s().dismissedOnComputer, color: C.engrave };
-    return { text: s().onComputer, color: C.ok };
+    return { text: o.type === "sketch" ? s().inInboxSketch : s().onComputer, color: C.ok };
   }
   if (sending) return { text: s().sending(Math.round(progress(o) * 100)), color: C.hot };
   return { text: s().waiting, color: C.warn };
@@ -46,6 +57,25 @@ export function InboxTab({ onIdea, onRecord, onPick }: Props) {
   const outbox = useApp((st) => st.outbox);
   const sending = useApp((st) => st.sending);
   const extrasError = useApp((st) => st.extrasError);
+  const library = useApp((st) => st.sync);
+  const find: Find = (kind, id) => findItem(library, kind, id);
+  // One player for the kept memos (only one plays at a time).
+  const player = useAudioPlayer(null);
+  const playerStatus = useAudioPlayerStatus(player);
+  const [playingId, setPlayingId] = useState<string | null>(null);
+  useEffect(() => {
+    if (playingId && playerStatus.didJustFinish) setPlayingId(null);
+  }, [playerStatus.didJustFinish, playingId]);
+  function togglePlay(o: OutItem) {
+    if (playingId === o.id) {
+      player.pause();
+      setPlayingId(null);
+      return;
+    }
+    player.replace({ uri: o.files[0].uri });
+    player.play();
+    setPlayingId(o.id);
+  }
 
   type Row = { kind: "idea"; idea: Idea } | { kind: "out"; out: OutItem };
   const sections: { key: string; title: string; data: Row[] }[] = [
@@ -56,7 +86,17 @@ export function InboxTab({ onIdea, onRecord, onPick }: Props) {
   function confirmRemove(o: OutItem) {
     Alert.alert(s().removeConfirmTitle, s().removeConfirmBody, [
       { text: s().cancel, style: "cancel" },
-      { text: s().remove, style: "destructive", onPress: () => removeOut(o.id) },
+      {
+        text: s().remove,
+        style: "destructive",
+        onPress: () => {
+          if (playingId === o.id) {
+            player.pause();
+            setPlayingId(null);
+          }
+          removeOut(o.id);
+        },
+      },
     ]);
   }
 
@@ -82,7 +122,7 @@ export function InboxTab({ onIdea, onRecord, onPick }: Props) {
         stickySectionHeadersEnabled={false}
         renderItem={({ item: row }) => {
           if (row.kind === "idea") {
-            const st = ideaState(row.idea);
+            const st = ideaState(row.idea, find);
             const label = row.idea.title.trim() || row.idea.text.trim().split("\n")[0] || "…";
             return (
               <Pressable onPress={() => onIdea(row.idea.id)} style={({ pressed }) => [styles.row, pressed && { backgroundColor: C.raised }]}>
@@ -98,7 +138,8 @@ export function InboxTab({ onIdea, onRecord, onPick }: Props) {
             );
           }
           const o = row.out;
-          const st = outState(o, sending === o.id);
+          const st = outState(o, sending === o.id, find);
+          const playable = o.type === "memo" && !o.purged && o.files.length > 0;
           const length = o.durationMs ? ` · ${Math.floor(o.durationMs / 60000)}:${String(Math.round(o.durationMs / 1000) % 60).padStart(2, "0")}` : "";
           const label = o.title.trim() || (o.type === "memo" ? `${s().memoLabel}${length}` : o.files[0]?.name || s().sketchLabel);
           return (
@@ -115,6 +156,7 @@ export function InboxTab({ onIdea, onRecord, onPick }: Props) {
                 </View>
               ) : null}
               <View style={{ flexDirection: "row", gap: 8, marginTop: 6 }}>
+                {playable ? <Button label={playingId === o.id ? s().stopMemo : s().playMemo} onPress={() => togglePlay(o)} style={styles.small} /> : null}
                 {o.state === "failed" ? (
                   <Button
                     label={s().retry}

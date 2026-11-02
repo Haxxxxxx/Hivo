@@ -1,23 +1,15 @@
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Button, Engrave } from "../components/ui";
 import { UpdateCheck } from "../components/UpdateCheck";
 import { tr } from "../lib/i18n";
-import { appVersion, phoneName, unpair, useApp } from "../store";
+import { confirmUnpair } from "../components/confirmUnpair";
+import { appVersion, phoneName, useApp } from "../store";
 import { T } from "../strings";
 import { C, FONT, RADIUS } from "../theme";
 
 export function SettingsScreen({ onBack }: { onBack: () => void }) {
   const pairing = useApp((s) => s.pairing);
-  const pendingMap = useApp((s) => s.sync.pending);
-  const pending = Object.keys(pendingMap).length;
   const t = tr(T);
-
-  function confirmUnpair() {
-    Alert.alert(t.forgetTitle, pending > 0 ? `${t.forgetBody}\n\n${t.forgetBodyPending(pending)}` : t.forgetBody, [
-      { text: t.cancel, style: "cancel" },
-      { text: t.confirmForget, style: "destructive", onPress: () => void unpair() },
-    ]);
-  }
 
   return (
     <ScrollView contentContainerStyle={{ padding: 16 }}>

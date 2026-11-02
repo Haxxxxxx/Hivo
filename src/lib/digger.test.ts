@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_EXCLUDE, MAX_FOUND_TITLES, MAX_LIKED, MAX_QUERY_CHARS, beatFactsLine, beatQuery, converterLink, converterNeedsPaste, deeperExclude, embedUrl, foundKey, matchBeat, titleKey, foundTitles, googleSearchUrl, leadFacts, leadHash, likedTitles, searchesDone, seedList, toggleLiked, youtubeId, youtubeSearchUrl } from "./digger";
+import { MAX_EXCLUDE, MAX_FOUND_TITLES, MAX_LIKED, MAX_QUERY_CHARS, beatFactsLine, beatQuery, canonicalUrl, converterLink, converterNeedsPaste, deeperExclude, embedUrl, foundKey, matchBeat, nameQueries, relinkBeatNotes, restoreDig, sortBeats, titleFacts, titleKey, foundTitles, googleSearchUrl, leadFacts, leadHash, likedTitles, searchesDone, seedList, toggleLiked, withFallbackQueries, youtubeId, youtubeSearchUrl } from "./digger";
 
 describe("digger links", () => {
   it("builds a YouTube search page link", () => {
@@ -10,6 +10,8 @@ describe("digger links", () => {
     expect(googleSearchUrl("dark trap  beat")).toBe("https://www.google.com/search?q=dark%20trap%20beat");
     expect(beatFactsLine({ bpm: 140, bpmSource: "name", key: "Am", durationSec: 185.4 })).toBe("140 BPM · Am · 3:05");
     expect(beatFactsLine({ bpm: 69.5, bpmSource: "audio", key: null, durationSec: 59.6 })).toBe("≈70 BPM · 1:00");
+    // The analysis stops at 10 minutes: the length is a floor.
+    expect(beatFactsLine({ bpm: null, bpmSource: null, key: null, durationSec: 600, durationCapped: true })).toBe("10:00+");
   });
 
   it("turns beat file names into searches", () => {
@@ -24,6 +26,9 @@ describe("digger links", () => {
   it("lists the beats a deeper round must skip by title and site, once each, capped", () => {
     const l = (text: string, site = "BeatStars") => ({ text, site });
     expect(foundKey(l(" Night Drive ", " beatstars.com "))).toBe("night drive | beatstars.com");
+    // Untitled links key on their url (same as found_key in Rust), never on " | site" alone.
+    expect(foundKey({ text: " ", site: "youtube.com", url: "https://www.youtube.com/watch?v=aaaaaaaaaaa" })).toBe("https://www.youtube.com/watch?v=aaaaaaaaaaa | youtube.com");
+    expect(deeperExclude([{ text: "", site: "youtube.com", url: "https://a.example/1" }, { text: "", site: "youtube.com", url: "https://a.example/2" }], []).length).toBe(2);
     expect(foundKey(l("x".repeat(300))).length).toBe(120);
     expect(deeperExclude([l("A"), l("B")], [[l("b"), l("C")], [l("D")]])).toEqual(["a | beatstars", "b | beatstars", "c | beatstars", "d | beatstars"]);
     const many = Array.from({ length: 70 }, (_, i) => l(`Beat ${i}`));
@@ -75,13 +80,139 @@ describe("digger links", () => {
       { name: "Sun" },
     ];
     expect(matchBeat({ title: '[FREE] Dark Trap Type Beat - "Night" (prod. X)' }, beats)).toBe(beats[0]);
-    expect(matchBeat({ title: "Dark Trap Type Beat - Night" }, beats)).toBe(beats[0]);
     expect(matchBeat({ title: "Kick 808" }, beats)).toBe(beats[2]);
+    // Containment only when the lengths are close: a converter's suffix…
+    expect(matchBeat({ title: "Night Drive Dark Trap Beat" }, [{ name: "Night Drive Dark Trap Beat (128k)" }])).not.toBeNull();
+    // …not a generic name inside a longer title (the W4 false positive).
+    expect(matchBeat({ title: "[FREE] Dark Trap Type Beat - Night (prod. X)" }, [{ name: "dark trap type beat" }])).toBeNull();
+    expect(matchBeat({ title: "Dark Trap Type Beat - Night" }, beats)).toBeNull();
     // Short keys only match exactly: "Sun" is not "Sunday Beat".
     expect(matchBeat({ title: "Sun" }, [{ name: "Sunday Beat" }])).toBeNull();
     expect(matchBeat({ title: "Something else entirely" }, beats)).toBeNull();
     expect(matchBeat({ title: "" }, beats)).toBeNull();
     expect(titleKey("Éclair_Prod (2024)!")).toBe("éclair prod 2024");
+  });
+
+  it("lets the user's own link win over the name match", () => {
+    const beats = [{ name: "Night", path: "/b/night.mp3" }, { name: "Other", path: "/b/other.mp3" }];
+    expect(matchBeat({ title: "Night" }, beats)).toBe(beats[0]);
+    expect(matchBeat({ title: "Night" }, beats, null)).toBeNull();
+    expect(matchBeat({ title: "Night" }, beats, "/b/other.mp3")).toBe(beats[1]);
+    // The linked file is gone from the scan: back to the name match.
+    expect(matchBeat({ title: "Night" }, beats, "/b/gone.mp3")).toBe(beats[0]);
+    expect(matchBeat({ title: "Elsewhere" }, beats, "/b/gone.mp3")).toBeNull();
+  });
+
+  it("normalises YouTube addresses so one video is one lead", () => {
+    const watch = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+    for (const u of ["https://youtu.be/dQw4w9WgXcQ", "https://youtu.be/dQw4w9WgXcQ?si=abc", "https://m.youtube.com/watch?feature=share&v=dQw4w9WgXcQ", "https://www.youtube.com/shorts/dQw4w9WgXcQ", ` ${watch}&t=42s `]) {
+      expect(canonicalUrl(u)).toBe(watch);
+    }
+    expect(leadHash(canonicalUrl("https://youtu.be/dQw4w9WgXcQ"))).toBe(leadHash(watch));
+    expect(canonicalUrl(" https://www.beatstars.com/beat/night-123 ")).toBe("https://www.beatstars.com/beat/night-123");
+  });
+
+  describe("notes and lead links follow a moved beat", () => {
+    const b = (path: string, sizeBytes: number) => ({ path, name: path.split("/").pop()!.replace(/\.[^.]+$/, ""), sizeBytes });
+    const links = { beatNotes: { "/b/Untitled.mp3": "hook idea", "/b/kept.mp3": "x" }, beatNoteSizes: { "/b/Untitled.mp3": 1234, "/b/kept.mp3": 9 } };
+
+    it("moves on the same name AND size, keeping a tombstone", () => {
+      const next = relinkBeatNotes(links, [b("/b/kept.mp3", 9), b("/b/sub/Untitled.mp3", 1234)], true);
+      expect(next?.beatNotes).toEqual({ "/b/sub/Untitled.mp3": "hook idea", "/b/kept.mp3": "x" });
+      expect(next?.beatNoteSizes).toEqual({ "/b/sub/Untitled.mp3": 1234, "/b/kept.mp3": 9 });
+      expect(next?.beatNoteMoves).toEqual({ "/b/Untitled.mp3": { to: "/b/sub/Untitled.mp3", size: 1234, text: "hook idea" } });
+    });
+
+    it("never guesses on the name or the size alone", () => {
+      // Another "Untitled" of another size, a same-size file of another name.
+      expect(relinkBeatNotes(links, [b("/b/kept.mp3", 9), b("/b/other/Untitled.mp3", 999), b("/b/renamed.mp3", 1234)], true)).toBeNull();
+      // Two files fit: no guess.
+      expect(relinkBeatNotes(links, [b("/b/kept.mp3", 9), b("/b/x/Untitled.mp3", 1234), b("/b/y/Untitled.mp3", 1234)], true)).toBeNull();
+      // A noted beat is never a target.
+      const both = { beatNotes: { "/b/Untitled.mp3": "a", "/b/x/Untitled.mp3": "b" }, beatNoteSizes: { "/b/Untitled.mp3": 1, "/b/x/Untitled.mp3": 1 } };
+      expect(relinkBeatNotes(both, [b("/b/x/Untitled.mp3", 1)], true)).toBeNull();
+    });
+
+    it("does nothing after a capped scan or with a beats folder unreachable", () => {
+      // `complete` is false for both (useDigger: !capped && !unreachable).
+      expect(relinkBeatNotes(links, [b("/b/kept.mp3", 9), b("/b/sub/Untitled.mp3", 1234)], false)).toBeNull();
+    });
+
+    it("restores the note when the old path comes back, forgets the tombstone once confirmed", () => {
+      const moved = relinkBeatNotes(links, [b("/b/kept.mp3", 9), b("/b/sub/Untitled.mp3", 1234)], true)!;
+      // The old file is back (it was a copy, or a drive came back): its note too.
+      const back = relinkBeatNotes(moved, [b("/b/kept.mp3", 9), b("/b/sub/Untitled.mp3", 1234), b("/b/Untitled.mp3", 1234)], false);
+      expect(back?.beatNotes["/b/Untitled.mp3"]).toBe("hook idea");
+      expect(back?.beatNotes["/b/sub/Untitled.mp3"]).toBe("hook idea");
+      expect(back?.beatNoteMoves).toEqual({});
+      // A partial scan never confirms; a complete one that sees the new path does.
+      expect(relinkBeatNotes(moved, [b("/b/sub/Untitled.mp3", 1234)], false)).toBeNull();
+      expect(relinkBeatNotes(moved, [b("/b/kept.mp3", 9), b("/b/sub/Untitled.mp3", 1234)], true)?.beatNoteMoves).toEqual({});
+    });
+
+    it("moves a hand-made lead link with the beat, even without a note", () => {
+      const l = { leadBeats: { h1: "/b/Night.mp3", h2: null }, beatNoteSizes: { "/b/Night.mp3": 77 } };
+      const next = relinkBeatNotes(l, [b("/b/2026/Night.mp3", 77)], true);
+      expect(next?.leadBeats).toEqual({ h1: "/b/2026/Night.mp3", h2: null });
+      expect(next?.beatNoteMoves["/b/Night.mp3"]).toEqual({ to: "/b/2026/Night.mp3", size: 77 });
+      // Sizes are learnt for linked beats too, so the next move can follow.
+      expect(relinkBeatNotes({ leadBeats: { h1: "/b/Night.mp3" } }, [b("/b/Night.mp3", 77)], true)?.beatNoteSizes).toEqual({ "/b/Night.mp3": 77 });
+    });
+
+    it("leaves everything alone when nothing moved", () => {
+      expect(relinkBeatNotes(links, [b("/b/Untitled.mp3", 1234), b("/b/kept.mp3", 9)], true)).toBeNull();
+      // A noted beat missing from the scan keeps its note and its last size.
+      expect(relinkBeatNotes(links, [b("/b/kept.mp3", 9)], true)).toBeNull();
+      expect(relinkBeatNotes({}, [], true)).toBeNull();
+    });
+  });
+
+  it("sorts beats by name, tempo or key, unmeasured last", () => {
+    const b = (path: string, name: string) => ({ path, name, folder: "", sizeBytes: 1, modifiedAtMs: 0 });
+    const beats = [b("1", "b"), b("2", "a"), b("3", "c")];
+    const f = (bpm: number | null, key: string | null) => ({ name: "", durationSec: 1, bpm, bpmSource: null, key, loudnessDb: null, hitsPerSec: null });
+    const facts = { "1": f(140, "Am"), "2": null, "3": f(90, "C") };
+    expect(sortBeats(beats, facts, "newest")).toBe(beats);
+    expect(sortBeats(beats, facts, "name").map((x) => x.name)).toEqual(["a", "b", "c"]);
+    expect(sortBeats(beats, facts, "bpm").map((x) => x.path)).toEqual(["3", "1", "2"]);
+    expect(sortBeats(beats, facts, "key").map((x) => x.path)).toEqual(["1", "3", "2"]);
+  });
+
+  it("falls back to searches from the beat names when the dig wrote none", () => {
+    const dig = { analysis: { queries: [] as string[] } };
+    expect(withFallbackQueries(dig, ["[FREE] Dark Trap Type Beat - Night", "dark trap type beat night", "Cold Room"]).analysis.queries).toEqual(["Dark Trap Type Beat Night", "Cold Room type beat"]);
+    const has = { analysis: { queries: ["x"] } };
+    expect(withFallbackQueries(has, ["Cold Room"])).toBe(has);
+    expect(nameQueries(["", "[FREE]"])).toEqual([]);
+  });
+
+  it("reads a kept dig back, keeping only well-formed fields", () => {
+    const raw = {
+      dig: {
+        model: "m",
+        audioSent: false,
+        beats: [{ name: "Night", durationSec: 100, bpm: 140, bpmSource: "name", key: "Am", loudnessDb: -10, hitsPerSec: 2 }],
+        analysis: { summary: "Dark", traits: ["808"], tempo: "140", queries: ["q"] },
+        web: [{ url: "https://www.beatstars.com/a", site: "beatstars.com", text: "A", resolved: true }, { url: "javascript:alert(1)", site: "x", text: "bad", resolved: true }],
+        webSearches: [],
+        webError: null,
+      },
+      dugFor: ["/b/night.mp3"],
+      rounds: [{ links: [], queries: ["q2"], seeds: [] }],
+      roundResults: [{ query: "q", videos: [{ id: "dQw4w9WgXcQ", title: "T", channel: "C", publishedAt: "2024", url: "https://evil.example", thumbnail: "https://evil.example/x.jpg" }, { id: "bad" }] }],
+      liked: [{ id: "dQw4w9WgXcQ", title: "T" }],
+      shownRound: 9,
+      webQuery: "q",
+    };
+    const k = restoreDig(raw)!;
+    expect(k.dig.web.map((l) => l.url)).toEqual(["https://www.beatstars.com/a"]);
+    expect(k.roundResults[0].videos).toEqual([{ id: "dQw4w9WgXcQ", title: "T", channel: "C", publishedAt: "2024", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", thumbnail: "https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg" }]);
+    expect(k.shownRound).toBe(1);
+    expect(k.dig.failed).toEqual([]);
+    expect(k.dig.beats[0].bpm).toBe(140);
+    expect(restoreDig(null)).toBeNull();
+    expect(restoreDig({ dig: { analysis: { summary: "" } } })).toBeNull();
+    expect(restoreDig([1])).toBeNull();
   });
 
   it("frames the website's player page with a strict video id only", () => {
@@ -118,12 +249,23 @@ describe("digger leads", () => {
     expect(leadHash("prod é")).toMatch(/^[0-9a-f]{8}$/);
   });
 
-  it("carries the dig's facts, the one beat's key and bpm only when one was dug", () => {
+  it("carries the dig's summary and traits, and only the result's own bpm and key", () => {
+    // The picked beat's measured 140 / Am is never written onto the lead (W1).
     const dig = { analysis: { summary: " Dark, slow trap. ", traits: ["dark", " 808 slides "], tempo: "140 BPM" }, beats: [{ bpm: 140, key: "Am" }] };
-    expect(leadFacts(dig)).toEqual({ summary: "Dark, slow trap.", traits: ["140 BPM", "dark", "808 slides"], bpm: 140, key: "Am" });
-    expect(leadFacts({ ...dig, beats: [{ bpm: 140, key: "Am" }, { bpm: 90, key: "C" }] })).toMatchObject({ bpm: null, key: null });
-    expect(leadFacts({ analysis: { summary: "", traits: [], tempo: "" }, beats: [] })).toEqual({ summary: null, traits: [], bpm: null, key: null });
-    expect(leadFacts(null)).toEqual({ summary: null, traits: [], bpm: null, key: null });
+    expect(leadFacts(dig, "Night - Dark Trap Type Beat")).toEqual({ summary: "Dark, slow trap.", traits: ["140 BPM", "dark", "808 slides"], bpm: null, key: null });
+    expect(leadFacts(dig, "Night | 92 BPM | F#m")).toMatchObject({ bpm: 92, key: "F#m" });
+    expect(leadFacts({ analysis: { summary: "", traits: [], tempo: "" } }, "")).toEqual({ summary: null, traits: [], bpm: null, key: null });
+    expect(leadFacts(null, "Cold Room 140bpm (C minor)")).toEqual({ summary: null, traits: [], bpm: 140, key: "Cm" });
+  });
+
+  it("reads a tempo and a key from a title when it says them", () => {
+    expect(titleFacts("[FREE] Dark Trap Type Beat - Night 140 BPM")).toEqual({ bpm: 140, key: null });
+    expect(titleFacts("Night (bpm 92) Bb minor")).toEqual({ bpm: 92, key: "Bbm" });
+    expect(titleFacts("Night | A Major | 2024")).toEqual({ bpm: null, key: "A" });
+    expect(titleFacts("Night - Am - 150bpm")).toEqual({ bpm: 150, key: "Am" });
+    expect(titleFacts("Beat 9000 bpm")).toEqual({ bpm: null, key: null });
+    expect(titleFacts("Dark Trap Beat by Amber")).toEqual({ bpm: null, key: null });
+    expect(titleFacts("make a major hit")).toEqual({ bpm: null, key: null });
   });
 
   it("builds the converter link from an https template with a {url} slot only", () => {

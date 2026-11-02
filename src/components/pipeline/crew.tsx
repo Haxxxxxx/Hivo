@@ -4,7 +4,7 @@ import { useCrewStore } from "../../store/useCrewStore";
 import { useAppStore } from "../../store/useAppStore";
 import { usePipelineView } from "../../store/usePipelineView";
 import { crewEdits, crewPipeline, groupCrewSongs } from "../../lib/crewBoard";
-import { pathsByShareId } from "../../lib/crewSync";
+import { crewCreditsText, crewMixdown, nameOf, pathsByShareId } from "../../lib/crewSync";
 import { formatRelative } from "../../lib/format";
 import type { CrewSongRow, PipelineConfig } from "../../types";
 import { T_PIPELINE, type PipelineItem, type PipelineSource } from "./shared";
@@ -27,6 +27,7 @@ export function useCrewSource(): PipelineSource {
   const songs = useCrewStore((s) => s.songs);
   const columns = useCrewStore((s) => s.columns);
   const members = useCrewStore((s) => s.members);
+  const knownNames = useCrewStore((s) => s.knownNames);
   const userId = useCrewStore((s) => s.userId);
   const owner = useCrewStore((s) => s.crews.find((c) => c.id === s.activeCrewId)?.role === "owner");
   const saveCrewColumns = useCrewStore((s) => s.saveCrewColumns);
@@ -41,7 +42,8 @@ export function useCrewSource(): PipelineSource {
 
   return useMemo(() => {
     const { cfg } = crewPipeline(columns);
-    const nameOf = new Map(members.map((m) => [m.user_id, m.display_name]));
+    // Current members first, else the last name seen here (a former member).
+    const name = (id: string | null | undefined) => nameOf(id, members, knownNames);
     const localPath = pathsByShareId(workspace);
     const fail = (e: unknown) => setError(e instanceof Error ? e.message : String(e));
     const save = (next: PipelineConfig) => {
@@ -52,7 +54,9 @@ export function useCrewSource(): PipelineSource {
     const item = (s: CrewSongRow): PipelineItem => {
       const mine = s.owner_id === userId;
       const path = mine ? localPath.get(s.id) : undefined;
-      const who = mine ? t.you : (nameOf.get(s.owner_id) ?? t.crewmate);
+      const who = mine ? t.you : (name(s.owner_id) ?? t.crewmate);
+      const mix = crewMixdown(s);
+      const credits = crewCreditsText(s.credits);
       return {
         key: s.id,
         title: s.title,
@@ -71,12 +75,25 @@ export function useCrewSource(): PipelineSource {
               {s.last_saved_at && <span>{t.savedAgo(formatRelative(Date.parse(s.last_saved_at)))}</span>}
               {s.release_date && <span>{t.out(s.release_date)}</span>}
               <span className="ml-auto flex items-center gap-1">
-                {s.has_mixdown && <Disc3 size={10} aria-label={t.hasMixdown} />}
+                {mix !== "none" && (
+                  <Disc3
+                    size={10}
+                    className={mix === "stale" ? "text-warn" : undefined}
+                    aria-label={mix === "fresh" ? t.mixdownFresh : mix === "stale" ? t.mixdownStale : t.hasMixdown}
+                  >
+                    <title>{mix === "fresh" ? t.mixdownFresh : mix === "stale" ? t.mixdownStale : t.hasMixdown}</title>
+                  </Disc3>
+                )}
                 {s.kit_accepted && <CheckCircle2 size={10} className="text-emerald-300/80" aria-label={t.kitAccepted} />}
               </span>
             </div>
             {s.stage_updated_by && s.stage_updated_by !== s.owner_id && (
-              <div className="mt-1 text-[10px] text-engrave">{t.movedBy(s.stage_updated_by === userId ? t.youLower : (nameOf.get(s.stage_updated_by) ?? t.aCrewmate))}</div>
+              <div className="mt-1 text-[10px] text-engrave">{t.movedBy(s.stage_updated_by === userId ? t.youLower : (name(s.stage_updated_by) ?? t.aCrewmate))}</div>
+            )}
+            {credits && (
+              <div className="mt-1 truncate text-[10px] text-engrave" title={credits}>
+                {t.credits}: {credits}
+              </div>
             )}
           </>
         ),
@@ -104,5 +121,5 @@ export function useCrewSource(): PipelineSource {
         moveCrewCard(key, columnId, beforeKey).catch(fail);
       },
     } satisfies PipelineSource;
-  }, [songs, columns, members, userId, owner, workspace, query, error, saveCrewColumns, moveCrewCard, openDetail]);
+  }, [songs, columns, members, knownNames, userId, owner, workspace, query, error, saveCrewColumns, moveCrewCard, openDetail]);
 }

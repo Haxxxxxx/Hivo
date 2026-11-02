@@ -1,6 +1,8 @@
-import type { Album, AlbumKind, CrewCredit, CrewReleaseRow, CrewSongRow, ProjectInfo, SongMeta, SongStatus, StageConflict, Workspace } from "../types";
+import type { Album, AlbumKind, CrewCredit, CrewMemberRow, CrewReleaseRow, CrewSongRow, CrewSummary, ProjectInfo, SongMeta, SongStatus, StageConflict, Workspace } from "../types";
 import { cleanTitle } from "./launchKit";
-import { lastSaveMs } from "./songs";
+import { datedRelease } from "./releaseDates";
+import { isKitAccepted } from "./kitState";
+import { lastSaveMs, renderFreshness } from "./songs";
 import { dict, tr } from "../i18n";
 
 // Sync between the local workspace and the crew database (docs/ARCHITECTURE.md).
@@ -40,8 +42,8 @@ function inScope(meta: SongMeta, scope: ShareScope): boolean {
 
 /** The release date the crew should see: the song's release, else its Launch Kit date. */
 function releaseDateFor(path: string, meta: SongMeta, ws: Workspace): string | null {
-  const album = ws.albums.find((a) => a.trackPaths.includes(path) && a.releaseDate);
-  const date = album?.releaseDate ?? meta.launchKit?.edits?.releaseDate ?? null;
+  // The same rule as the Launch Kit and the Calendar (releaseDates.ts).
+  const date = datedRelease(path, meta, ws.albums);
   return date && isRealDate(date) ? date : null;
 }
 
@@ -137,7 +139,8 @@ export function sharedSongPayload(project: ProjectInfo, meta: SongMeta, ws: Work
     ),
     release_date: releaseDateFor(project.path, meta, ws),
     has_mixdown: project.renders.length > 0,
-    kit_accepted: !!meta.launchKit?.acceptedAtMs,
+    mixdown_fresh: project.renders.length > 0 ? renderFreshness(project) === "fresh" : null,
+    kit_accepted: isKitAccepted(project, meta, ws.albums),
     last_saved_at: lastSaveMs(project) > 0 ? iso(lastSaveMs(project)) : null,
   };
 }
@@ -168,10 +171,11 @@ export function pathsByShareId(ws: Workspace): Map<string, string> {
 
 /** What to do about one of my shared songs' stage. */
 export type StageSync =
-  /** The crew moved it (on the board, or my other computer): take that. */
-  | { kind: "adopt"; path: string; stage: SongStatus | undefined; at: string }
-  /** Both sides agree: just remember the row's version. */
-  | { kind: "settle"; path: string; at: string }
+  /** The crew moved it (on the board, or my other computer): take that.
+   * `by`: who made the move (user id), when known. */
+  | { kind: "adopt"; path: string; stage: SongStatus | undefined; at: string; by: string | null }
+  /** Both sides agree: just remember the row's version (and who moved it). */
+  | { kind: "settle"; path: string; at: string; by: string | null }
   /** My move, made on version `base`: send it (the server refuses it if
    * someone moved the song since). */
   | { kind: "push"; path: string; id: string; stage: SongStatus | null; base: string }
@@ -193,9 +197,10 @@ export function stageSync(rows: CrewSongRow[], ws: Workspace, scope: ShareScope)
     const local = meta.status ?? null;
     const remote = row.stage ?? null;
     const at = row.stage_updated_at;
+    const by = row.stage_updated_by ?? null;
     const sameVersion = meta.stageBaseAt !== undefined && Date.parse(meta.stageBaseAt) === Date.parse(at);
     if (remote === local) {
-      if (!sameVersion || meta.stagePending || meta.stageConflict) out.push({ kind: "settle", path, at });
+      if (!sameVersion || meta.stagePending || meta.stageConflict) out.push({ kind: "settle", path, at, by });
       continue;
     }
     if (meta.stageConflict) {
@@ -208,7 +213,7 @@ export function stageSync(rows: CrewSongRow[], ws: Workspace, scope: ShareScope)
     if (meta.stageBaseAt === undefined) {
       // Shared before stage versions: one last time, the newer stamp wins.
       if ((meta.stageUpdatedAtMs ?? 0) > (Date.parse(at) || 0)) out.push({ kind: "push", path, id: row.id, stage: local, base: at });
-      else out.push({ kind: "adopt", path, stage: remote ?? undefined, at });
+      else out.push({ kind: "adopt", path, stage: remote ?? undefined, at, by });
       continue;
     }
     if (meta.stagePending) {
@@ -216,7 +221,7 @@ export function stageSync(rows: CrewSongRow[], ws: Workspace, scope: ShareScope)
       else out.push({ kind: "conflict", path, conflict: { mine: local, theirs: remote, by: row.stage_updated_by ?? null, at } });
       continue;
     }
-    if (!sameVersion) out.push({ kind: "adopt", path, stage: remote ?? undefined, at });
+    if (!sameVersion) out.push({ kind: "adopt", path, stage: remote ?? undefined, at, by });
   }
   return out;
 }
@@ -351,3 +356,231 @@ export function releaseTracks(r: CrewReleaseRow, songs: CrewSongRow[]): CrewSong
   return r.song_ids.flatMap((id) => (byId.has(id) ? [byId.get(id)!] : []));
 }
 
+
+// ---- Push planning: quotas, unchanged rows, removal, my rows on the server ----
+
+/** The server's limits (enforce_quotas): songs per person per crew, releases per crew. */
+export const SONGS_PER_CREW = 1000;
+export const RELEASES_PER_CREW = 500;
+/** Rows per upsert request. */
+export const UPSERT_CHUNK = 200;
+
+/** A share or release limit refused a new row (enforce_quotas, P0001). */
+export function isQuotaError(e: unknown): boolean {
+  const err = e as { code?: string; message?: string } | null;
+  return err?.code === "P0001" && /share limit|release limit/i.test(err.message ?? "");
+}
+
+export function chunks<T>(rows: T[], size = UPSERT_CHUNK): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < rows.length; i += size) out.push(rows.slice(i, i + size));
+  return out;
+}
+
+const sameTime = (a: string | null, b: string | null) => (a == null || b == null ? a == b : Date.parse(a) === Date.parse(b));
+const sameCredits = (a: CrewCredit[], b: CrewCredit[]) =>
+  a.length === b.length && a.every((c, i) => c.name === b[i]?.name && (c.role ?? "") === (b[i]?.role ?? "") && (c.split ?? null) === (b[i]?.split ?? null));
+const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+/** The server already has these details (the stage is never compared: it
+ * moves through move_song_stage). Unchanged rows aren't sent again, so a
+ * restart doesn't rewrite every shared song. */
+export function songRowMatches(p: Omit<SharedSongPayload, "stage">, row: CrewSongRow): boolean {
+  return (
+    p.title === row.title &&
+    (p.bpm ?? null) === (row.bpm == null ? null : Number(row.bpm)) &&
+    (p.musical_key ?? null) === (row.musical_key ?? null) &&
+    sameList(p.tags, row.tags ?? []) &&
+    sameCredits(p.credits, row.credits ?? []) &&
+    (p.release_date ?? null) === (row.release_date ?? null) &&
+    p.has_mixdown === row.has_mixdown &&
+    // A server without the column (before its migration) never reports it.
+    (!("mixdown_fresh" in row) || (p.mixdown_fresh ?? null) === (row.mixdown_fresh ?? null)) &&
+    p.kit_accepted === row.kit_accepted &&
+    sameTime(p.last_saved_at, row.last_saved_at)
+  );
+}
+
+export function releaseRowMatches(p: SharedReleasePayload, row: CrewReleaseRow): boolean {
+  return (
+    p.title === row.title &&
+    p.kind === row.kind &&
+    (p.color ?? null) === (row.color ?? null) &&
+    (p.release_date ?? null) === (row.release_date ?? null) &&
+    sameList(p.song_ids, (row.song_ids ?? []).map((id) => id.toLowerCase()))
+  );
+}
+
+/** How many more songs I can share with this crew: the limit minus my rows
+ * there and my shares here that aren't there yet. */
+export function shareRoom(rows: CrewSongRow[], ws: Workspace, scope: ShareScope): number {
+  const ids = new Set(rows.filter((r) => r.owner_id === scope.userId && r.crew_id === scope.crewId).map((r) => r.id));
+  for (const m of Object.values(ws.songs)) if (sharedHere(m, scope)) ids.add(m.shareId!);
+  return Math.max(0, SONGS_PER_CREW - ids.size);
+}
+
+/** Crews my shares on this computer point to that I'm no longer in (removed
+ * by the owner, or the crew was deleted): the server already dropped my rows
+ * there, so these shares are forgotten, never silently republished if I
+ * rejoin. Only shares stamped with a crew and this account count. */
+export function goneCrewIds(ws: Workspace, userId: string, myCrewIds: string[]): string[] {
+  const mine = new Set(myCrewIds);
+  const out = new Set<string>();
+  const check = (crewId: string | undefined, owner: string | undefined, shareId: string | undefined) => {
+    if (shareId && crewId && owner === userId && !mine.has(crewId)) out.add(crewId);
+  };
+  for (const m of Object.values(ws.songs)) check(m.shareCrewId, m.shareUserId, m.shareId);
+  for (const a of ws.albums) check(a.shareCrewId, a.shareUserId, a.shareId);
+  for (const d of ws.deletedReleaseShares ?? []) check(d.crewId, d.userId, d.id);
+  return [...out];
+}
+
+/** One of my rows on the crew server. `local`: this computer knows it (a
+ * song here carries its id). `duplicate`: not known here, and another of my
+ * rows in this crew that this computer doesn't know either has the same
+ * title (the same song shared twice before a reinstall). A row with the
+ * same title as a song shared from here is not flagged: my other computer
+ * may share a different song under that title. Never removed by itself. */
+export interface MyServerShare {
+  id: string;
+  title: string;
+  stage: SongStatus | null;
+  local: boolean;
+  duplicate: boolean;
+}
+
+const titleKey = (t: string) => t.trim().toLocaleLowerCase();
+
+/** My rows in this crew, the ones this computer doesn't know first. */
+export function myServerShares(rows: CrewSongRow[], ws: Workspace, scope: ShareScope): MyServerShare[] {
+  const known = pathsByShareId(ws);
+  const mine = rows.filter((r) => r.owner_id === scope.userId && r.crew_id === scope.crewId);
+  const unknownTitles = new Map<string, number>();
+  for (const r of mine) if (!known.has(r.id)) unknownTitles.set(titleKey(r.title), (unknownTitles.get(titleKey(r.title)) ?? 0) + 1);
+  return mine
+    .map((r) => {
+      const local = known.has(r.id);
+      return { id: r.id, title: r.title, stage: r.stage ?? null, local, duplicate: !local && (unknownTitles.get(titleKey(r.title)) ?? 0) > 1 };
+    })
+    .sort((a, b) => Number(a.local) - Number(b.local) || a.title.localeCompare(b.title));
+}
+
+/** Everything a push depends on, in one string: a local change that leaves
+ * it the same (typing a note, a window size) doesn't start a sync. */
+export function syncFingerprint(projects: ProjectInfo[], ws: Workspace, scope: ShareScope): string {
+  const stages = Object.values(ws.songs)
+    .filter((m) => m.shareId && inScope(m, scope))
+    .map((m) => [m.shareId, m.shared ?? null, m.status ?? null, m.stagePending ?? null, m.stageBaseAt ?? null, m.stageConflict?.at ?? null]);
+  const albums = ws.albums.filter((a) => a.shareId).map((a) => [a.shareId, a.shared ?? null, a.shareCrewId ?? null, a.shareUserId ?? null]);
+  return JSON.stringify([sharedPayloads(projects, ws, scope), releasePayloads(ws, scope), stages, albums, ws.deletedReleaseShares ?? []]);
+}
+
+const T_LIMIT = dict(
+  {
+    share: (n: number) =>
+      `${n} song${n === 1 ? " wasn't" : "s weren't"} shared: a crew takes up to ${SONGS_PER_CREW} songs from each person. Stop sharing some first (Settings → Crew lists what's on the server).`,
+    pushSongs: (n: number) => ` · ${n} new song${n === 1 ? "" : "s"} not shared (share limit reached: stop sharing some to make room)`,
+    pushReleases: (n: number) => ` · ${n} release${n === 1 ? "" : "s"} not shared (the crew has ${RELEASES_PER_CREW}, the most allowed)`,
+  },
+  {
+    share: (n: number) =>
+      `${n} son${n === 1 ? " n'a pas été partagé" : "s n'ont pas été partagés"} : un crew prend jusqu'à ${SONGS_PER_CREW} sons par personne. Arrête d'en partager d'abord (Réglages → Crew liste ce qui est sur le serveur).`,
+    pushSongs: (n: number) => ` · ${n} nouveau${n === 1 ? " son non partagé" : "x sons non partagés"} (limite de partage atteinte : arrête d'en partager pour faire de la place)`,
+    pushReleases: (n: number) => ` · ${n} sortie${n === 1 ? " non partagée" : "s non partagées"} (le crew en a ${RELEASES_PER_CREW}, le maximum)`,
+  },
+);
+
+/** Said after a share that hit the limit (null when nothing was left out). */
+export function shareLimitNote(overLimit: number): string | null {
+  return overLimit > 0 ? tr(T_LIMIT).share(overLimit) : null;
+}
+
+/** Appended to the sync line when the limits left new shares out. */
+export function pushLimitNote(songs: number, releases: number): string {
+  const t = tr(T_LIMIT);
+  return (songs > 0 ? t.pushSongs(songs) : "") + (releases > 0 ? t.pushReleases(releases) : "");
+}
+
+
+// ---- Round 2 (crew review): freshness, moved-by, names, credits, owner, share moves ----
+
+/** What a crew card says about the mixdown. `unknown`: there is one, sent
+ * by a Hivo from before freshness was shared. */
+export type CrewMixdown = "fresh" | "stale" | "none" | "unknown";
+
+export function crewMixdown(row: Pick<CrewSongRow, "has_mixdown" | "mixdown_fresh">): CrewMixdown {
+  if (!row.has_mixdown) return "none";
+  if (row.mixdown_fresh === true) return "fresh";
+  if (row.mixdown_fresh === false) return "stale";
+  return "unknown";
+}
+
+/** Crew credits as the crew surfaces show them: names and roles, never splits. */
+export function crewCreditsText(credits: CrewCredit[] | null | undefined): string {
+  return (credits ?? [])
+    .filter((c) => c.name?.trim())
+    .map((c) => (c.role?.trim() ? `${c.name.trim()} (${c.role.trim()})` : c.name.trim()))
+    .join(" · ");
+}
+
+/** Last known display name per user id, kept on this device so a former
+ * member's moves and releases still show a name. */
+export type KnownNames = Record<string, string>;
+
+/** The cache with these members' current names in it (null: nothing new). */
+export function rememberNames(known: KnownNames, members: Pick<CrewMemberRow, "user_id" | "display_name">[]): KnownNames | null {
+  let next: KnownNames | null = null;
+  for (const m of members) {
+    const name = m.display_name?.trim();
+    if (!m.user_id || !name || known[m.user_id] === name) continue;
+    next ??= { ...known };
+    next[m.user_id] = name;
+  }
+  return next;
+}
+
+/** A user's name: the current member's, else the last one seen here. */
+export function nameOf(userId: string | null | undefined, members: Pick<CrewMemberRow, "user_id" | "display_name">[], known: KnownNames): string | undefined {
+  if (!userId) return undefined;
+  return members.find((m) => m.user_id === userId)?.display_name ?? known[userId];
+}
+
+/** The crews I just became the owner of (a handover, or the owner left),
+ * comparing the crew list before and after. */
+export function newlyOwned(before: CrewSummary[], after: CrewSummary[]): CrewSummary[] {
+  return after.filter((c) => c.role === "owner" && before.some((b) => b.id === c.id && b.role !== "owner"));
+}
+
+/** The crew list with my role in one crew updated from my member row. */
+export function withMyRole(crews: CrewSummary[], crewId: string, role: CrewSummary["role"] | undefined): CrewSummary[] {
+  if (!role || !crews.some((c) => c.id === crewId && c.role !== role)) return crews;
+  return crews.map((c) => (c.id === crewId ? { ...c, role } : c));
+}
+
+/** The share fields that move with a crew card. */
+const SHARE_FIELDS = ["shared", "shareId", "shareCrewId", "shareUserId", "shareTitle", "stageBaseAt", "stagePending", "stageConflict", "stageMovedBy"] as const;
+
+/** Whether `to` can take over `from`'s share in this crew: `from` is shared
+ * here and `to` is another song with no share of its own (any crew). */
+export function canMoveShare(ws: Workspace, from: string, to: string, scope: ShareScope): boolean {
+  return from !== to && sharedHere(ws.songs[from], scope) && !ws.songs[to]?.shareId;
+}
+
+/** Move a crew card to another song (FL "Save As", a new version): the new
+ * song takes the share id, so the card keeps its column, order and history;
+ * the old song is no longer shared (and nothing is deleted on the server).
+ * The stage follows the card. Null when the move isn't allowed. */
+export function moveShare(ws: Workspace, from: string, to: string, scope: ShareScope): { from: Partial<SongMeta>; to: Partial<SongMeta> } | null {
+  if (!canMoveShare(ws, from, to, scope)) return null;
+  const old = ws.songs[from]!;
+  const next: Partial<SongMeta> = { status: old.status, stageUpdatedAtMs: old.stageUpdatedAtMs };
+  const cleared: Partial<SongMeta> = {};
+  for (const k of SHARE_FIELDS) {
+    (next as Record<string, unknown>)[k] = old[k];
+    (cleared as Record<string, unknown>)[k] = undefined;
+  }
+  // Explicit, so the store doesn't mark the stage as a new local move.
+  next.stagePending = old.stagePending ?? false;
+  cleared.stagePending = false;
+  return { from: cleared, to: next };
+}

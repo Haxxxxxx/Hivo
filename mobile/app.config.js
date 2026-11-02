@@ -2,8 +2,9 @@
 // derived from it or from the build's environment.
 // - android.versionCode from the version (plugins/versionCode.js).
 // - extra.distribution: "play" when HIVO_DISTRIBUTION=play (the AAB for
-//   Google Play), else "direct" (the APK on the website). Play installs get
-//   their updates from Play, so only "direct" builds check for a new APK.
+//   Google Play), "direct" when HIVO_DISTRIBUTION=direct (the APK on the
+//   website), else "dev". Play installs get their updates from Play, so only
+//   "direct" builds check for a new APK; a build without the flag never does.
 //   expo-constants re-reads this file at every Gradle build, so one prebuild
 //   serves both builds.
 // - the release signing plugin (plugins/withReleaseSigning.js).
@@ -11,9 +12,12 @@
 //   (plugins/withPlayServicesVisibility.js).
 const { versionCode } = require("./plugins/versionCode");
 
+/** @param {string | undefined} flag */
+const distribution = (flag) => (flag === "play" || flag === "direct" ? flag : "dev");
+
 module.exports = ({ config }) => ({
   ...config,
   android: { ...config.android, versionCode: versionCode(config.version) },
-  extra: { ...config.extra, distribution: process.env.HIVO_DISTRIBUTION === "play" ? "play" : "direct" },
+  extra: { ...config.extra, distribution: distribution(process.env.HIVO_DISTRIBUTION) },
   plugins: [...(config.plugins ?? []), "./plugins/withReleaseSigning", "./plugins/withPlayServicesVisibility"],
 });

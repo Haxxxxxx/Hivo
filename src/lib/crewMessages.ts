@@ -60,8 +60,20 @@ const TEXT = {
     fr: "Ta connexion a expiré. Reconnecte-toi.",
   },
   ownThree: {
-    en: "You already own 3 crews. Hand one over or delete one first.",
-    fr: "Tu possèdes déjà 3 crews. Passe-en un à quelqu'un d'autre ou supprimes-en un d'abord.",
+    en: "You already own 3 crews. Make someone else the owner of one (Members & invites → Make owner) or delete one first.",
+    fr: "Tu possèdes déjà 3 crews. Nomme quelqu'un d'autre propriétaire de l'un d'eux (Membres et invitations → Nommer propriétaire) ou supprimes-en un d'abord.",
+  },
+  theyOwnThree: {
+    en: "They already own 3 crews, the most allowed. Pick someone else, or ask them to hand one over first.",
+    fr: "Cette personne possède déjà 3 crews, le maximum. Choisis quelqu'un d'autre, ou demande-lui d'en passer un d'abord.",
+  },
+  pickMember: {
+    en: "Pick another member of the crew.",
+    fr: "Choisis un autre membre du crew.",
+  },
+  notInCrew: {
+    en: "You're no longer in this crew.",
+    fr: "Tu ne fais plus partie de ce crew.",
   },
   deleteName: {
     en: "Type the crew's name exactly to delete it.",
@@ -96,6 +108,10 @@ const TEXT = {
     fr: "{who} l'a déplacé dans {stage} juste avant toi. Redéplace-le si tu veux toujours.",
   },
   someone: { en: "A crewmate", fr: "Quelqu'un du crew" },
+  inviteMessage: {
+    en: "Join {crew} on Hivo.\n1. First send me the email you'll sign in with, so I can add it.\n2. Get the app or open {url}, then sign in with that email (you get a 6-digit code, no password).\n3. Enter this invite code: {code} (valid 7 days).",
+    fr: "Rejoins {crew} sur Hivo.\n1. Envoie-moi d'abord l'email avec lequel tu vas te connecter, pour que je l'ajoute.\n2. Télécharge l'app ou ouvre {url}, puis connecte-toi avec cet email (tu reçois un code à 6 chiffres, sans mot de passe).\n3. Entre ce code d'invitation\u202f: {code} (valable 7 jours).",
+  },
   signInHint: {
     en: "Your crew admin adds your email first. Then you get a 6-digit code here, no password.",
     fr: "L'admin de ton crew ajoute d'abord ton email. Ensuite tu reçois ici un code à 6 chiffres, sans mot de passe.",
@@ -106,6 +122,15 @@ export type CrewTextKey = keyof typeof TEXT;
 
 export function crewText(key: CrewTextKey, lang: UiLang = currentUiLang(), vars: Record<string, string> = {}): string {
   return TEXT[key][lang].replace(/\{(\w+)\}/g, (_, k: string) => vars[k] ?? "");
+}
+
+/** The website, where a new crewmate signs in and finds the downloads. */
+export const WEBSITE_URL = "https://www.hi-vo.fr";
+
+/** What an owner sends a new crewmate: the steps, the website and the code,
+ * in the app's (or page's) language. */
+export function inviteMessage(code: string, crew: string, lang: UiLang = currentUiLang()): string {
+  return crewText("inviteMessage", lang, { code, crew, url: `${WEBSITE_URL}/${lang}` });
 }
 
 /** Supabase and database errors in words the crew can act on. */
@@ -123,7 +148,11 @@ export function crewErrorMessage(e: unknown, lang: UiLang = currentUiLang()): st
   if (/share limit|release limit|too many open invites/i.test(msg)) return msg.charAt(0).toUpperCase() + msg.slice(1) + ".";
   if (/rate limit|too many/i.test(msg)) return t("tooManyTries");
   if (/jwt expired|invalid jwt|refresh token/i.test(msg)) return t("expired");
+  if (/they already own 3 crews/i.test(msg)) return t("theyOwnThree");
   if (/own 3 crews/i.test(msg)) return t("ownThree");
+  if (/pick another member/i.test(msg)) return t("pickMember");
+  if (/only the owner can hand/i.test(msg)) return t("ownerOnly");
+  if (/^not in this crew$/i.test(msg)) return t("notInCrew");
   if (/type the crew name/i.test(msg)) return t("deleteName");
   if (/only the owner can delete/i.test(msg)) return t("deleteOwnerOnly");
   if (/already in 10 crews/i.test(msg)) return t("inTen");

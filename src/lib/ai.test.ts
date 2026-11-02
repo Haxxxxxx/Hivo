@@ -14,7 +14,7 @@ vi.mock("./tauri", () => ({
   }),
 }));
 
-const { aiDisclosure, draftCopy, kitContext, reviewKit, reviewPayload, withoutNotesLine } = await import("./ai");
+const { aiDisclosure, draftCopy, kitContext, reviewKit, reviewPayload, sanitizeReview, withoutNotesLine } = await import("./ai");
 
 const NOTES = "secret lyric draft, deal with a label";
 const TRACKS = ["Kick - SomePack_Vol3", "Lead Voices - Ana", "E MAJOR"];
@@ -40,7 +40,7 @@ const input: KitInput = {
   albums: [],
   analysis: null,
   today: new Date(2026, 9, 13),
-  language: "English",
+  lastLanguage: "English",
   labelName: "Crew",
 };
 const settings = (aiIncludeNotes: boolean) => ({ aiModel: null, aiLanguage: null, aiIncludeNotes }) as unknown as Settings;
@@ -121,5 +121,25 @@ describe("AI payload", () => {
     expect(aiDisclosure(false)).toContain("never your notes");
     expect(aiDisclosure(true)).toContain("plus your notes when checking a kit");
     for (const on of [false, true]) expect(aiDisclosure(on)).toContain("Never audio, file paths, sample names or your track names");
+  });
+});
+
+describe("sanitizeReview", () => {
+  const fields = buildKit(input);
+  const review = (id: string, suggestion: string) =>
+    sanitizeReview({ fields: [{ id, verdict: "check", confidence: 0.8, reason: "r", suggestion }] }, fields)[id as "key"];
+
+  it("keeps a key suggestion only when it's a real key", () => {
+    expect(review("key", "F#m")?.suggestion).toBe("F#m");
+    expect(review("key", "F sharp minor")?.suggestion).toBeUndefined();
+    expect(review("key", "H")?.suggestion).toBeUndefined();
+  });
+
+  it("keeps a release type suggestion only from the list", () => {
+    expect(review("releaseType", "EP")?.suggestion).toBe("EP");
+    expect(review("releaseType", "LP")?.suggestion).toBeUndefined();
+    expect(review("releaseType", "Deluxe single")?.suggestion).toBeUndefined();
+    // The verdict itself is kept: the model may still flag the field.
+    expect(review("releaseType", "LP")?.verdict).toBe("check");
   });
 });

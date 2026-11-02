@@ -1,6 +1,8 @@
 // Signs the Android release build with the upload keystore when the
-// HIVO_UPLOAD_* environment variables are set (the release workflow), and
-// keeps the debug keystore otherwise (local test builds).
+// HIVO_UPLOAD_* environment variables are set, leaves it unsigned with
+// HIVO_UNSIGNED=1 (the release workflow, which signs it in a later step),
+// and keeps the debug keystore otherwise, for local test builds only: with
+// CI set and neither, the release build fails.
 //
 // The generated build.gradle reads the variables when Gradle runs, so no
 // path or password ever lands in android/ (generated, git-ignored) or in git.
@@ -33,7 +35,11 @@ const SIGNING_CONFIG = `
             }
         }`;
 
-const RELEASE_SIGNING = `signingConfig(System.getenv('HIVO_UPLOAD_STORE_FILE') ? signingConfigs.release : signingConfigs.debug) ${MARK}`;
+// The release build type: the upload key when the variables are set;
+// unsigned with HIVO_UNSIGNED=1 (the release workflow signs afterwards, in a
+// step Gradle never sees); never the debug key on CI (CI set), so a missing
+// secret fails the build instead of shipping a debug-signed release.
+const RELEASE_SIGNING = `signingConfig(System.getenv('HIVO_UPLOAD_STORE_FILE') ? signingConfigs.release : System.getenv('HIVO_UNSIGNED') == '1' ? null : System.getenv('CI') ? { throw new GradleException('CI release build without HIVO_UPLOAD_* or HIVO_UNSIGNED=1, refusing to sign it with the debug key') }() : signingConfigs.debug) ${MARK}`;
 
 /** @param {string} gradle the generated android/app/build.gradle */
 function applyReleaseSigning(gradle) {
