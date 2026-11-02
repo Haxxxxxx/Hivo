@@ -5,6 +5,8 @@ const T = dict(
     trash: navigator.userAgent.includes("Mac") ? "Trash" : "Recycle Bin",
     units: "B KB MB GB",
     today: "today",
+    yesterday: "yesterday",
+    tomorrow: "tomorrow",
     todayAt: (time: string) => `Today ${time}`,
     ago: (n: number, unit: "day" | "week" | "month") => `${n} ${unit}${plural(n, "", "s")} ago`,
     inTime: (n: number, unit: "day" | "week" | "month") => `in ${n} ${unit}${plural(n, "", "s")}`,
@@ -13,6 +15,8 @@ const T = dict(
     trash: "Corbeille",
     units: "o Ko Mo Go",
     today: "aujourd'hui",
+    yesterday: "hier",
+    tomorrow: "demain",
     todayAt: (time: string) => `Aujourd'hui ${time}`,
     ago: (n: number, unit: "day" | "week" | "month") => `il y a ${n} ${frUnit(n, unit)}`,
     inTime: (n: number, unit: "day" | "week" | "month") => `dans ${n} ${frUnit(n, unit)}`,
@@ -48,10 +52,17 @@ export function formatDateTime(ms: number): string {
 }
 
 /** "3 days ago", "in 5 weeks" (or French): release countdowns and recency. */
-export function formatRelative(ms: number): string {
-  const days = Math.round((ms - Date.now()) / (24 * 60 * 60 * 1000));
+export function formatRelative(ms: number, now = Date.now()): string {
+  // Calendar days, not 24-hour blocks: 23:50 yesterday is "yesterday" at 00:10.
+  const day = (t: number) => {
+    const d = new Date(t);
+    return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 864e5;
+  };
+  const days = Math.round(day(ms) - day(now));
   const abs = Math.abs(days);
   if (abs < 1) return tr(T).today;
+  if (days === -1) return tr(T).yesterday;
+  if (days === 1) return tr(T).tomorrow;
   const [n, unit]: [number, "day" | "week" | "month"] =
     abs < 14 ? [abs, "day"] : abs < 60 ? [Math.round(abs / 7), "week"] : [Math.round(abs / 30), "month"];
   return days < 0 ? tr(T).ago(n, unit) : tr(T).inTime(n, unit);

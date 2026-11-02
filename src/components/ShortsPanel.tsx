@@ -115,6 +115,7 @@ export function ShortsPanel({
     producers: value("producers"),
     key: value("key"),
     releaseDate: value("releaseDate"),
+    lang: meta?.launchKit?.captionLanguage ?? settings.captionLanguage ?? "fr",
   };
   const layoutKey = JSON.stringify(layoutInput);
   const art = useCoverArt(project.path, kitFolderName(meta, layoutInput.title));
