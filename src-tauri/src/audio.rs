@@ -437,19 +437,26 @@ pub fn convert_to_wav(src: &Path, dst: &Path) -> Result<f64, String> {
 
 /// File-system-safe version of a user-facing name.
 pub fn safe_name(name: &str) -> String {
+    safe_name_opt(name).unwrap_or_else(|| "Untitled".to_string())
+}
+
+/// `safe_name`, or None when nothing usable is left (only dots, spaces or
+/// nothing at all).
+pub fn safe_name_opt(name: &str) -> Option<String> {
     let cleaned: String = name
         .chars()
         .map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() { '_' } else { c })
         .collect();
-    let trimmed = cleaned.trim().trim_matches('.').to_string();
+    // Trailing spaces and dots too: Windows drops them from a name.
+    let trimmed = cleaned.trim().trim_matches('.').trim().to_string();
     if trimmed.is_empty() {
-        return "Untitled".to_string();
+        return None;
     }
     // Windows reserves these device names, with or without an extension.
     let stem = trimmed.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
     let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
         || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit());
-    if reserved { format!("_{trimmed}") } else { trimmed }
+    Some(if reserved { format!("_{trimmed}") } else { trimmed })
 }
 
 /// Cuts each clip out of `src` (one decode pass) into `<out_dir>/<label>.wav`

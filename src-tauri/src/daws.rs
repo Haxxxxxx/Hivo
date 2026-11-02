@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
@@ -260,12 +261,27 @@ fn strip_timestamp_suffix(base: &str) -> String {
     base.to_string()
 }
 
-/// (size, mtime) a cached read was made at.
-type Stamp = (u64, Option<SystemTime>);
+/// (size, mtime in nanoseconds since 1970) a cached read was made at.
+pub type Stamp = (u64, Option<u64>);
+
+/// The stamp of a file's metadata, as it's compared and saved.
+pub fn stamp_of(meta: &fs::Metadata) -> Stamp {
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+    (meta.len(), mtime)
+}
+
+type ReadCache = HashMap<PathBuf, (Stamp, Result<FlpMetadata, String>)>;
 
 /// Rescans run on every window focus; an unchanged file is read (or
-/// refused) once.
-static READ_CACHE: Mutex<Option<HashMap<PathBuf, (Stamp, Result<FlpMetadata, String>)>>> = Mutex::new(None);
+/// refused) once. Saved to the config dir after a scan (`save_read_cache`)
+/// and loaded before the first one, so a launch doesn't re-read every project.
+static READ_CACHE: Mutex<Option<ReadCache>> = Mutex::new(None);
+/// Whether the cache changed since it was loaded or saved.
+static READ_CACHE_DIRTY: AtomicBool = AtomicBool::new(false);
 
 /// Why a project couldn't be read.
 enum ReadError {
@@ -281,39 +297,187 @@ fn io(e: impl std::fmt::Display) -> ReadError {
     ReadError::Io(e.to_string())
 }
 
+/// Whether the DAW's files can be read at all (closed formats can't).
+fn readable(daw: Daw) -> bool {
+    matches!(daw, Daw::FlStudio | Daw::Reaper | Daw::Ableton | Daw::StudioOne)
+}
+
+/// A file whose contents are in the cloud, not on this disk (iCloud Drive
+/// "optimise storage", OneDrive / Dropbox files on demand): opening it would
+/// download it, so the scan doesn't. macOS: the `SF_DATALESS` flag. Windows:
+/// `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`, `_RECALL_ON_OPEN` or `_OFFLINE`.
+pub fn is_cloud_placeholder(meta: &fs::Metadata) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::macos::fs::MetadataExt;
+        const SF_DATALESS: u32 = 0x4000_0000;
+        meta.st_flags() & SF_DATALESS != 0
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const OFFLINE: u32 = 0x1000;
+        const RECALL_ON_OPEN: u32 = 0x4_0000;
+        const RECALL_ON_DATA_ACCESS: u32 = 0x40_0000;
+        meta.file_attributes() & (OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS) != 0
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = meta;
+        false
+    }
+}
+
+/// What reading a project gave (returned, never stored, so the size gap
+/// between the variants doesn't matter).
+#[allow(clippy::large_enum_variant)]
+pub enum ProjectRead {
+    Read(Result<FlpMetadata, String>),
+    /// A cloud placeholder that wasn't read before: not opened.
+    InCloud,
+}
+
 /// What can be read from inside a project (FL Studio included). Closed
 /// formats yield empty metadata; a file that can't be read is an error the
-/// scan reports.
+/// scan reports. A cloud placeholder is only read from the cache.
 pub fn read_project(daw: Daw, path: &Path) -> Result<FlpMetadata, String> {
-    if !matches!(daw, Daw::FlStudio | Daw::Reaper | Daw::Ableton | Daw::StudioOne) {
-        return Ok(FlpMetadata::default());
+    let meta = fs::metadata(path).ok();
+    let placeholder = meta.as_ref().is_some_and(is_cloud_placeholder);
+    match read_project_at(daw, path, meta.as_ref().map(stamp_of), placeholder) {
+        ProjectRead::Read(read) => read,
+        ProjectRead::InCloud => Err("the project is in the cloud, not downloaded to this computer".to_string()),
     }
-    let stamp: Option<Stamp> = fs::metadata(path).ok().map(|m| (m.len(), m.modified().ok()));
+}
+
+/// `read_project` with the file's stamp and placeholder state already known
+/// (the scan has them from its walk).
+pub fn read_project_at(daw: Daw, path: &Path, stamp: Option<Stamp>, placeholder: bool) -> ProjectRead {
+    if !readable(daw) {
+        return ProjectRead::Read(Ok(FlpMetadata::default()));
+    }
     if let Some(stamp) = stamp {
         let cache = READ_CACHE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((s, read)) = cache.as_ref().and_then(|c| c.get(path)) {
             if *s == stamp {
-                return read.clone();
+                return ProjectRead::Read(read.clone());
             }
         }
+    }
+    if placeholder {
+        return ProjectRead::InCloud;
     }
     let read = match read_uncached(daw, path) {
         Ok(meta) => Ok(meta),
         Err(ReadError::Refused(e)) => Err(e),
-        Err(ReadError::Io(e)) => return Err(e),
+        Err(ReadError::Io(e)) => return ProjectRead::Read(Err(e)),
     };
     if let Some(stamp) = stamp {
         let mut cache = READ_CACHE.lock().unwrap_or_else(|e| e.into_inner());
         cache.get_or_insert_with(HashMap::new).insert(path.to_path_buf(), (stamp, read.clone()));
+        READ_CACHE_DIRTY.store(true, Ordering::Relaxed);
     }
-    read
+    ProjectRead::Read(read)
 }
 
 /// Drop cached reads for projects the last scan didn't see (deleted or moved).
 pub fn prune_read_cache(keep: &std::collections::HashSet<PathBuf>) {
     let mut cache = READ_CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(c) = cache.as_mut() {
+        let before = c.len();
         c.retain(|p, _| keep.contains(p));
+        if c.len() != before {
+            READ_CACHE_DIRTY.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+/// The saved cache's format: bump it when `FlpMetadata` or a reader changes
+/// what it returns, so an old file is ignored instead of misread.
+const READ_CACHE_VERSION: u32 = 1;
+/// A saved cache bigger than this is ignored (thousands of projects with
+/// hundreds of samples each stay well under it).
+const READ_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+#[derive(Serialize, Deserialize)]
+struct SavedRead {
+    path: PathBuf,
+    size: u64,
+    mtime: Option<u64>,
+    read: Result<FlpMetadata, String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SavedCache {
+    version: u32,
+    reads: Vec<SavedRead>,
+}
+
+/// Loads the saved cache (the scan does it once, before the first scan of a
+/// launch); reads already in memory win. A missing, damaged or outdated file
+/// just means reading the projects again.
+pub fn load_read_cache(file: &Path) {
+    let small = fs::metadata(file).is_ok_and(|m| m.len() <= READ_CACHE_MAX_BYTES);
+    let saved = small.then(|| fs::read(file).ok()).flatten().and_then(|b| serde_json::from_slice::<SavedCache>(&b).ok());
+    let mut cache = READ_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let map = cache.get_or_insert_with(ReadCache::new);
+    for r in saved.filter(|s| s.version == READ_CACHE_VERSION).map(|s| s.reads).unwrap_or_default() {
+        // An edited file can't hand the scan more than a reader would.
+        let within = r.read.as_ref().map_or(true, |m| {
+            m.samples.len() <= crate::flp_metadata::MAX_SAMPLES
+                && m.plugins.len() <= crate::flp_metadata::MAX_PLUGINS
+                && m.mixer_names.len() <= crate::flp_metadata::MAX_TRACK_NAMES
+        });
+        if within {
+            map.entry(r.path).or_insert(((r.size, r.mtime), r.read));
+        }
+    }
+}
+
+/// Saves the cache when it changed since it was loaded or last saved
+/// (owner-only and atomic, see `cover::write_private`).
+pub fn save_read_cache(file: &Path) -> Result<(), String> {
+    if !READ_CACHE_DIRTY.swap(false, Ordering::Relaxed) {
+        return Ok(());
+    }
+    let bytes = {
+        let cache = READ_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let reads: Vec<SavedRead> = cache
+            .iter()
+            .flatten()
+            .map(|(path, ((size, mtime), read))| SavedRead { path: path.clone(), size: *size, mtime: *mtime, read: read.clone() })
+            .collect();
+        serde_json::to_vec(&SavedCache { version: READ_CACHE_VERSION, reads }).map_err(|e| e.to_string())?
+    };
+    // Too big to be loaded again: not worth writing (or keeping).
+    if bytes.len() as u64 > READ_CACHE_MAX_BYTES {
+        let _ = fs::remove_file(file);
+        return Ok(());
+    }
+    if let Some(dir) = file.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    crate::cover::write_private(file, &bytes).map_err(|e| {
+        READ_CACHE_DIRTY.store(true, Ordering::Relaxed);
+        format!("could not save the project read cache: {e}")
+    })
+}
+
+/// Empties the in-memory cache (a launch, for the gated launch benchmark).
+#[cfg(test)]
+pub(crate) fn clear_read_cache() {
+    *READ_CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+#[cfg(test)]
+pub(crate) fn mark_read_cache_dirty() {
+    READ_CACHE_DIRTY.store(true, Ordering::Relaxed);
+}
+
+/// Forgets one cached read (tests that load a saved cache).
+#[cfg(test)]
+pub(crate) fn forget_read(path: &Path) {
+    if let Some(c) = READ_CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        c.remove(path);
     }
 }
 
@@ -1007,6 +1171,55 @@ mod tests {
         let m = read_project(Daw::Reaper, &path).unwrap();
         let _ = fs::remove_dir_all(&dir);
         assert_eq!(m.tempo_bpm, Some(142.5));
+    }
+
+    #[test]
+    fn a_saved_read_cache_spares_the_next_launch_a_read() {
+        let dir = std::env::temp_dir().join(format!("flsm-saved-cache-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Tide.rpp");
+        fs::write(&path, "<REAPER_PROJECT 0.1 \"7.22/win64\" 1\n  TEMPO 97 4 4\n>\n").unwrap();
+        let (size, mtime) = stamp_of(&fs::metadata(&path).unwrap());
+        let stamp = Some((size, mtime));
+        assert!(matches!(read_project_at(Daw::Reaper, &path, stamp, false), ProjectRead::Read(Ok(_))));
+        let file = dir.join("read-cache.json");
+        save_read_cache(&file).unwrap();
+        assert!(file.is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        // A new launch: nothing in memory, the saved file is loaded.
+        forget_read(&path);
+        assert!(matches!(read_project_at(Daw::Reaper, &path, stamp, true), ProjectRead::InCloud), "not in memory any more");
+        load_read_cache(&file);
+        // Served from the saved cache: even a cloud placeholder isn't opened.
+        match read_project_at(Daw::Reaper, &path, stamp, true) {
+            ProjectRead::Read(Ok(m)) => assert_eq!(m.tempo_bpm, Some(97.0)),
+            _ => panic!("expected the saved read"),
+        }
+        // A changed file isn't served from it.
+        let changed = Some((size + 1, mtime));
+        assert!(matches!(read_project_at(Daw::Reaper, &path, changed, true), ProjectRead::InCloud));
+        // A damaged file is ignored, not an error.
+        fs::write(&file, b"{ not json").unwrap();
+        forget_read(&path);
+        load_read_cache(&file);
+        assert!(matches!(read_project_at(Daw::Reaper, &path, stamp, true), ProjectRead::InCloud));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cloud_placeholder_is_never_opened() {
+        // Not a real placeholder (tests can't make one): what the scan does
+        // when the flag says so. The path doesn't even exist.
+        let path = Path::new("/nonexistent/flsm/Envy.flp");
+        assert!(matches!(read_project_at(Daw::FlStudio, path, Some((10, Some(1))), true), ProjectRead::InCloud));
+        // Closed formats have nothing to read either way.
+        assert!(matches!(read_project_at(Daw::ProTools, path, None, true), ProjectRead::Read(Ok(_))));
+        assert!(read_project(Daw::FlStudio, path).is_err());
     }
 
     #[test]

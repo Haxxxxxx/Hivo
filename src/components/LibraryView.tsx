@@ -5,6 +5,7 @@ import {
   ArrowUpDown,
   CheckSquare,
   ChevronRight,
+  Cloud,
   Folder,
   Download,
   FolderSearch,
@@ -22,6 +23,7 @@ import {
 import { useAppStore, type SortKey, type StatusFilter } from "../store/useAppStore";
 import { useCrewStore } from "../store/useCrewStore";
 import { shareLimitNote } from "../lib/crewSync";
+import { isNetworkPath } from "../lib/relink";
 import { useCanShare } from "./CrewPanel";
 import { detectKey } from "../lib/people";
 import { dawOf } from "../lib/daws";
@@ -81,6 +83,11 @@ const T = dict(
     noMatch: "No songs match",
     clearFilters: "Clear filters",
     unreachable: (folder: string) => `${folder} isn't reachable right now (unplugged drive or moved folder). Its songs are hidden until it's back; their stages, notes and credits are kept.`,
+    unreachableNetwork: (folder: string) =>
+      `${folder} is a network path: Hivo never opens one directly (on Windows that would send your sign-in to that computer). Map the share to a drive letter (or mount it) and link that instead. Its songs' stages, notes and credits are kept.`,
+    skippedLinks: (n: number, example: string) =>
+      `${n === 1 ? "1 folder" : `${n} folders`} inside your linked folders ${n === 1 ? "is a shortcut" : "are shortcuts"} (symlink or junction), like ${example}. Hivo doesn't follow ${n === 1 ? "it" : "them"}, so the songs in ${n === 1 ? "it aren't" : "them aren't"} listed: link the real folder in Settings instead.`,
+    inCloud: "In the cloud, not downloaded to this computer: not opened (that would download it)",
     retry: "Retry",
     repoint: "It moved: find it",
     repointTitle: "Pick the folder's new place (a drive with another letter, a renamed folder). Every song's data follows.",
@@ -149,6 +156,11 @@ const T = dict(
     noMatch: "Aucun son ne correspond",
     clearFilters: "Effacer les filtres",
     unreachable: (folder: string) => `${folder} est injoignable pour l'instant (disque débranché ou dossier déplacé). Ses sons sont masqués jusqu'à son retour ; leurs étapes, notes et crédits sont gardés.`,
+    unreachableNetwork: (folder: string) =>
+      `${folder} est un chemin réseau : Hivo n'en ouvre jamais directement (sous Windows, ça enverrait ton identifiant à cet ordinateur). Associe le partage à une lettre de lecteur (ou monte-le) et lie celle-ci à la place. Les étapes, notes et crédits de ses sons sont gardés.`,
+    skippedLinks: (n: number, example: string) =>
+      `${n === 1 ? "1 dossier" : `${n} dossiers`} dans tes dossiers liés ${n === 1 ? "est un raccourci" : "sont des raccourcis"} (lien symbolique ou jonction), comme ${example}. Hivo ne ${n === 1 ? "le" : "les"} suit pas, donc ${n === 1 ? "ses sons ne sont pas listés" : "leurs sons ne sont pas listés"} : lie plutôt le vrai dossier dans Réglages.`,
+    inCloud: "Dans le cloud, pas téléchargé sur cet ordinateur : pas ouvert (ça le téléchargerait)",
     retry: "Réessayer",
     repoint: "Il a bougé : le retrouver",
     repointTitle: "Choisis le nouvel emplacement du dossier (disque avec une autre lettre, dossier renommé). Les infos de chaque son suivent.",
@@ -349,6 +361,7 @@ export function LibraryView() {
   const selectedPaths = useMemo(() => filtered.filter((p) => selected.has(p.path)).map((p) => p.path), [filtered, selected]);
   const hiddenSelected = selected.size - selectedPaths.length;
   const unreachable = useAppStore((s) => s.unreachable);
+  const skippedLinks = useAppStore((s) => s.skippedLinks);
   const repointFolder = useAppStore((s) => s.repointFolder);
   const removeWatchedFolder = useAppStore((s) => s.removeWatchedFolder);
   const resetLibraryFilters = useAppStore((s) => s.resetLibraryFilters);
@@ -535,7 +548,7 @@ export function LibraryView() {
             className="mx-6 mt-3 flex flex-wrap items-center gap-2 rounded-md border border-amber-400/30 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-200"
           >
             <AlertTriangle size={13} className="shrink-0" />
-            <span className="min-w-0 flex-1 break-all">{t.unreachable(folder)}</span>
+            <span className="min-w-0 flex-1 break-all">{isNetworkPath(folder) ? t.unreachableNetwork(folder) : t.unreachable(folder)}</span>
             <button
               onClick={() => {
                 setError(null);
@@ -561,6 +574,13 @@ export function LibraryView() {
             />
           </div>
         ))}
+
+      {!demoMode && skippedLinks.count > 0 && (
+        <div role="status" className="mx-6 mt-3 flex items-center gap-2 rounded-md border border-rule px-3 py-2 text-xs text-engrave">
+          <FolderSearch size={13} className="shrink-0" />
+          <span className="min-w-0 flex-1 break-all">{t.skippedLinks(skippedLinks.count, skippedLinks.examples[0] ?? "")}</span>
+        </div>
+      )}
 
       {error && (
         <div className="mx-6 mt-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
@@ -668,6 +688,11 @@ export function LibraryView() {
                           {songLabel(project, songs)}
                         </button>
                         {hasProblems(project) && <ProblemIcon project={project} />}
+                        {project.inCloud && (
+                          <span title={t.inCloud} aria-label={t.inCloud} className="shrink-0 text-engrave">
+                            <Cloud size={12} />
+                          </span>
+                        )}
                         {project.isTemplate && (
                           <span className="rounded bg-rule px-1.5 text-[10.5px] text-body">{t.template}</span>
                         )}

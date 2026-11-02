@@ -1,9 +1,11 @@
 use crate::daws::{self, Daw};
-use crate::models::{FileEntry, ProjectInfo, ScanResult, StemsInfo};
-use crate::resolve::Resolver;
+use crate::flp_metadata::FlpMetadata;
+use crate::models::{FileEntry, ProjectInfo, SampleInfo, ScanResult, StemsInfo};
+use crate::resolve::{fold, Resolver};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::{AppHandle, Manager};
 use walkdir::WalkDir;
 
@@ -125,7 +127,7 @@ pub(crate) fn export_song_key(stem: &str) -> String {
             s = &s[..open];
         }
     }
-    s.to_lowercase()
+    fold(s)
 }
 
 /// Mixdowns exported by this app land in the export folder, not next to
@@ -154,22 +156,51 @@ fn index_exports(output_folder: Option<&str>) -> HashMap<String, Vec<FileEntry>>
 }
 
 /// `stem` is the song's name, or the name followed by a separator ("Envy",
-/// "Envy (master)", "Envy_v2", "Envy - final"). `name` is lowercased already;
-/// "Envyous" is another song.
+/// "Envy (master)", "Envy_v2", "Envy - final"). `name` is folded already
+/// (`resolve::fold`); "Envyous" is another song.
+#[cfg(test)]
 fn named_after(stem: &str, name: &str) -> bool {
-    let stem = stem.to_lowercase();
+    let stem = fold(stem);
     match stem.strip_prefix(name) {
         Some(rest) => rest.is_empty() || rest.starts_with(|c: char| !c.is_alphanumeric()),
         None => false,
     }
 }
 
-/// Whether `stem` belongs to the song `name` among the songs of one folder
-/// (`names`, all lowercased): it's named after `name`, and not after a
-/// longer name there too. "Envy v2.wav" is "Envy v2"'s, not "Envy"'s, when
-/// both projects sit in the same folder.
-fn owned_by(stem: &str, name: &str, names: &[String]) -> bool {
-    named_after(stem, name) && !names.iter().any(|n| n.len() > name.len() && named_after(stem, n))
+/// The songs of one folder by folded name (two projects can share one:
+/// `Envy.flp` and `Envy.als`), to hand each file to its song in one pass.
+struct FolderSongs<'a> {
+    by_name: HashMap<&'a str, Vec<usize>>,
+}
+
+impl<'a> FolderSongs<'a> {
+    fn new(names: &'a [String]) -> Self {
+        let mut by_name: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (k, n) in names.iter().enumerate() {
+            by_name.entry(n.as_str()).or_default().push(k);
+        }
+        Self { by_name }
+    }
+
+    /// Which songs a file (its folded stem) is named after: the longest
+    /// song name it starts with, followed by nothing or a character that
+    /// isn't a letter or digit ("Envy v2.wav" is "Envy v2"'s, not "Envy"'s,
+    /// when both sit in the folder). Also whether a `_` follows the name
+    /// (FL's split-mixer export, `<name>_<track>`). Only the stem's own word
+    /// boundaries are looked up, so this is linear in the stem, not in the
+    /// number of songs.
+    fn owner(&self, stem: &str) -> Option<(&[usize], bool)> {
+        let ends = stem
+            .char_indices()
+            .filter(|&(i, c)| i > 0 && !c.is_alphanumeric())
+            .map(|(i, _)| i)
+            .chain(std::iter::once(stem.len()));
+        let ends: Vec<usize> = ends.collect();
+        ends.iter().rev().find_map(|&end| {
+            let owners = self.by_name.get(&stem[..end])?;
+            Some((owners.as_slice(), stem[end..].starts_with('_')))
+        })
+    }
 }
 
 /// Whether `needle` appears in `hay` as whole words: bounded by the start,
@@ -204,52 +235,255 @@ fn is_stems_dir(name: &str) -> bool {
 /// "Session Templates"). Whole folder names only: "Love Template" is a song.
 const TEMPLATE_DIRS: &[&str] = &["templates", "template", "project templates", "projecttemplates", "session templates"];
 
-#[cfg(test)]
-fn scan(folders: &[String], output_folder: Option<&str>) -> Vec<ProjectInfo> {
-    scan_with(folders, output_folder, Resolver::new(crate::settings::detect_fl_studio()))
+/// One folder's entries, collected by the walk from its own file types (no
+/// stat per entry): visible files, never dot-files (macOS `._` AppleDouble
+/// twins, `.DS_Store`), and subfolders.
+#[derive(Default)]
+struct DirList {
+    files: Vec<PathBuf>,
+    dirs: Vec<PathBuf>,
 }
 
-fn scan_with(folders: &[String], output_folder: Option<&str>, mut resolver: Resolver) -> Vec<ProjectInfo> {
-    let exports = index_exports(output_folder);
+/// Every folder the walk went through, listed once: renders, stems,
+/// recordings, sketches and the sample lookup reuse it instead of listing
+/// the song folders again.
+#[derive(Default)]
+struct Listing {
+    dirs: HashMap<PathBuf, DirList>,
+    /// Symlinked folders and junctions: not followed (they can loop, or lead
+    /// out of the linked folder), so what's in them isn't listed.
+    links: Vec<PathBuf>,
+}
+
+impl Listing {
+    fn files(&self, dir: &Path) -> &[PathBuf] {
+        self.dirs.get(dir).map_or(&[], |d| d.files.as_slice())
+    }
+
+    fn subdirs(&self, dir: &Path) -> &[PathBuf] {
+        self.dirs.get(dir).map_or(&[], |d| d.dirs.as_slice())
+    }
+
+    /// A folder below `dir` by relative name ("Audio", "Samples/Recorded"),
+    /// in any case.
+    fn sub<'a>(&'a self, dir: &'a Path, rel: &str) -> Option<&'a Path> {
+        let mut at = dir;
+        for part in rel.split('/') {
+            at = self.subdirs(at).iter().find(|d| d.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(part))).map(PathBuf::as_path)?;
+        }
+        Some(at)
+    }
+
+    fn sub_files(&self, dir: &Path, rel: &str) -> &[PathBuf] {
+        self.sub(dir, rel).map_or(&[], |d| self.files(d))
+    }
+
+    /// Files in `dir` and up to two folders below it: where the sample lookup
+    /// looks for a moved sample.
+    fn song_folder_files(&self, dir: &Path) -> Vec<&PathBuf> {
+        let mut out: Vec<&PathBuf> = Vec::new();
+        let mut level: Vec<&Path> = vec![dir];
+        for depth in 0..3 {
+            let mut next = Vec::new();
+            for d in level {
+                out.extend(self.files(d));
+                if depth < 2 {
+                    next.extend(self.subdirs(d).iter().map(PathBuf::as_path));
+                }
+            }
+            level = next;
+        }
+        out
+    }
+}
+
+/// A project file the walk found; it's read once the walk is done.
+struct Found {
+    path: PathBuf,
+    daw: Daw,
+    root: usize,
+    size: u64,
+    modified_ms: i64,
+    stamp: Option<daws::Stamp>,
+    /// A cloud placeholder (or an iCloud `.name.icloud` stand-in): never opened.
+    cloud: bool,
+}
+
+impl Found {
+    fn new(path: PathBuf, daw: Daw, root: usize, meta: &fs::Metadata) -> Self {
+        Self {
+            path,
+            daw,
+            root,
+            size: meta.len(),
+            modified_ms: modified_ms(meta),
+            stamp: Some(daws::stamp_of(meta)),
+            cloud: daws::is_cloud_placeholder(meta),
+        }
+    }
+}
+
+/// What a scan found: the projects, and the symlinked folders it skipped.
+struct Scanned {
+    projects: Vec<ProjectInfo>,
+    links: Vec<PathBuf>,
+}
+
+/// Reads one project, containing a reader panic. Returns the metadata, why
+/// it couldn't be read, and whether it's only in the cloud.
+fn read_found(f: &Found) -> (FlpMetadata, Option<String>, bool) {
+    // A corrupt, oversized or hostile project never fails the whole scan:
+    // it's listed with no metadata and the reason. A reader bug (panic) is
+    // contained the same way (release builds unwind, see Cargo.toml). Reads
+    // are cached by size and mtime (daws.rs).
+    match std::panic::catch_unwind(|| daws::read_project_at(f.daw, &f.path, f.stamp, f.cloud)) {
+        Ok(daws::ProjectRead::Read(Ok(meta))) => (meta, None, f.cloud),
+        Ok(daws::ProjectRead::Read(Err(e))) => (FlpMetadata::default(), Some(e), f.cloud),
+        Ok(daws::ProjectRead::InCloud) => (FlpMetadata::default(), None, true),
+        Err(_) => (FlpMetadata::default(), Some("the reader crashed on this file (damaged or unusual project)".to_string()), false),
+    }
+}
+
+/// A project that failed to read and was saved this recently is probably
+/// being written (FL saving it): it's read again once, `REREAD_AFTER` later.
+const REREAD_IF_YOUNGER_MS: i64 = 2_000;
+const REREAD_AFTER: std::time::Duration = std::time::Duration::from_millis(500);
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Resolved samples, per project: (project stamp, resolver context, song
+/// folder fingerprint, the samples). Reused while none of them changes; a
+/// sample deleted or restored elsewhere on disk shows at the latest when the
+/// sample-library index is rebuilt (`LIBRARY_TTL` in resolve.rs).
+type SamplesEntry = (daws::Stamp, u64, u64, Vec<SampleInfo>);
+static RESOLVED_SAMPLES: std::sync::Mutex<Option<HashMap<PathBuf, SamplesEntry>>> = std::sync::Mutex::new(None);
+
+/// A fingerprint of the file names in a song folder (what the moved-sample
+/// lookup searches).
+fn folder_fingerprint(files: &[&PathBuf]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut names: Vec<&PathBuf> = files.to_vec();
+    names.sort();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    names.hash(&mut h);
+    h.finish()
+}
+
+/// Whether a symlink (or junction) points at a folder (Some(true)) or a
+/// file (Some(false)). On Windows the link's own entry says so, so its
+/// target (maybe a network share) is never looked up.
+fn link_kind(path: &Path, file_type: fs::FileType) -> Option<bool> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        // Junctions carry the directory attribute, so they're symlink dirs too.
+        let _ = path;
+        Some(!file_type.is_symlink_file())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = file_type;
+        let meta = fs::metadata(path).ok()?;
+        meta.is_dir().then_some(true).or(meta.is_file().then_some(false))
+    }
+}
+
+/// What the walk collected: every folder's listing, the projects, the
+/// backups (file, DAW, backup-only file type), the `<song>/BandLab` folders
+/// (with their linked root), and the paths seen (lowercased).
+type Walked = (Listing, Vec<Found>, Vec<(PathBuf, Daw, bool)>, Vec<(PathBuf, String)>, HashSet<String>);
+
+fn walk(folders: &[String]) -> Walked {
+    let mut listing = Listing::default();
     let mut seen = HashSet::new();
-    let mut projects: Vec<ProjectInfo> = Vec::new();
+    let mut found: Vec<Found> = Vec::new();
     // (file, DAW, backup-only file type)
     let mut backups: Vec<(PathBuf, Daw, bool)> = Vec::new();
     // (`<song>/BandLab` folder, its linked root)
     let mut sketch_dirs: Vec<(PathBuf, String)> = Vec::new();
+    // iCloud stand-ins (`.Envy.flp.icloud`): (the file they stand for, root, their metadata)
+    let mut stubs: Vec<(PathBuf, usize, fs::Metadata)> = Vec::new();
+    // Folders already walked (overlapping linked folders), any case.
+    let mut walked: HashSet<String> = HashSet::new();
 
-    for root in folders {
+    for (ri, root) in folders.iter().enumerate() {
         let root_path = Path::new(root);
         // Unreachable right now: reported by `unreachable_roots`.
         if !reachable(root_path) {
             continue;
         }
         // Ableton's library folders hold presets and demo sets, not songs.
-        let walker = WalkDir::new(root_path).into_iter().filter_entry(|e| {
+        let mut it = WalkDir::new(root_path).into_iter().filter_entry(|e| {
             !(e.depth() > 0 && e.file_type().is_dir() && daws::LIBRARY_DIRS.contains(&e.file_name().to_string_lossy().to_lowercase().as_str()))
         });
-        for entry in walker.filter_map(|e| e.ok()) {
+        while let Some(entry) = it.next() {
+            let Ok(entry) = entry else { continue };
             let path = entry.path();
-            // `<song>/BandLab/` below the root: maybe a sketch (checked
-            // once every project is known, see `sketch_of`).
-            if entry.file_type().is_dir() && entry.depth() >= 2 && entry.file_name() == crate::sketch::SKETCH_DIR {
-                sketch_dirs.push((path.to_path_buf(), root.clone()));
+            let file_type = entry.file_type();
+            if entry.depth() == 0 || file_type.is_dir() {
+                if entry.depth() > 0 {
+                    if let Some(parent) = path.parent() {
+                        listing.dirs.entry(parent.to_path_buf()).or_default().dirs.push(path.to_path_buf());
+                    }
+                }
+                // A folder an overlapping linked folder already went through.
+                if !walked.insert(path.to_string_lossy().to_lowercase()) {
+                    it.skip_current_dir();
+                    continue;
+                }
+                listing.dirs.entry(path.to_path_buf()).or_default();
+                if entry.depth() == 0 {
+                    continue;
+                }
+            }
+            let Some(parent) = path.parent() else { continue };
+            let name = entry.file_name().to_string_lossy();
+            if file_type.is_symlink() {
+                // Never followed: a linked folder is counted, a linked file
+                // is listed (a render can be one) but never read as a project.
+                match link_kind(path, file_type) {
+                    Some(true) => listing.links.push(path.to_path_buf()),
+                    Some(false) if !name.starts_with('.') => listing.dirs.entry(parent.to_path_buf()).or_default().files.push(path.to_path_buf()),
+                    _ => {}
+                }
                 continue;
             }
-            if !entry.file_type().is_file() {
+            if file_type.is_dir() {
+                // `<song>/BandLab/` below the root: maybe a sketch (checked
+                // once every project is known, see `sketch_of`).
+                if entry.depth() >= 2 && entry.file_name() == crate::sketch::SKETCH_DIR {
+                    sketch_dirs.push((path.to_path_buf(), root.clone()));
+                }
                 continue;
             }
+            if !file_type.is_file() {
+                continue;
+            }
+            // Dot-files aren't songs, renders, stems or takes: macOS
+            // metadata twins (`._Envy.flp`) from unzipped packages or exFAT
+            // drives, `.DS_Store`. Except iCloud's stand-in for a file that
+            // isn't downloaded, which is listed as that file.
+            if name.starts_with('.') {
+                if let Some(real) = name.strip_prefix('.').and_then(|n| n.strip_suffix(".icloud")).filter(|n| !n.is_empty()) {
+                    if let Ok(meta) = entry.metadata() {
+                        stubs.push((parent.join(real), ri, meta));
+                    }
+                }
+                continue;
+            }
+            listing.dirs.entry(parent.to_path_buf()).or_default().files.push(path.to_path_buf());
             // Backup-only files: .rpp-bak, Cubase .bak, Studio One .autosave.
             let (daw, backup_only) = match (Daw::of_project(path), Daw::of_backup_file(path)) {
                 (Some(d), _) => (d, false),
                 (None, Some(d)) => (d, true),
                 _ => continue,
             };
-            // macOS metadata twins (`._Envy.flp`, `__MACOSX/`) from unzipped
-            // packages or exFAT drives aren't projects.
-            if entry.file_name().to_string_lossy().starts_with("._")
-                || path.components().any(|c| c.as_os_str() == "__MACOSX")
-            {
+            if path.components().any(|c| c.as_os_str() == "__MACOSX") {
                 continue;
             }
             // Overlapping linked folders would otherwise list a file twice.
@@ -261,57 +495,121 @@ fn scan_with(folders: &[String], output_folder: Option<&str>, mut resolver: Reso
                 continue;
             }
             let Ok(meta) = entry.metadata() else { continue };
+            found.push(Found::new(path.to_path_buf(), daw, ri, &meta));
+        }
+    }
 
-            // A corrupt, oversized or hostile project never fails the whole
-            // scan: it's listed with no metadata and the reason. A reader bug
-            // (panic) is contained the same way (release builds unwind, see
-            // Cargo.toml). Reads are cached by size and mtime (daws.rs).
-            let read = std::panic::catch_unwind(|| daws::read_project(daw, path));
-            let (flp, read_error) = match read {
-                Ok(Ok(flp)) => (flp, None),
-                Ok(Err(e)) => (Default::default(), Some(e)),
-                Err(_) => (Default::default(), Some("the reader crashed on this file (damaged or unusual project)".to_string())),
-            };
+    // A project that's only in iCloud: listed under its real name (its
+    // stage and notes are keyed by that), never downloaded.
+    for (path, ri, meta) in stubs {
+        let Some(daw) = Daw::of_project(&path) else { continue };
+        let root = Path::new(&folders[ri]);
+        if path.components().any(|c| c.as_os_str() == "__MACOSX") || daws::is_backup_project(&path, root, daw) {
+            continue;
+        }
+        if !seen.insert(path.to_string_lossy().to_lowercase()) {
+            continue;
+        }
+        found.push(Found { path, daw, root: ri, size: 0, modified_ms: modified_ms(&meta), stamp: None, cloud: true });
+    }
+    (listing, found, backups, sketch_dirs, seen)
+}
 
-            projects.push(ProjectInfo {
-                path: path.to_string_lossy().to_string(),
-                name: stem_of(path),
-                folder: path
-                    .parent()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_default(),
-                size_bytes: meta.len(),
-                modified_at_ms: modified_ms(&meta),
-                root: root.clone(),
-                genre: non_empty(flp.genre),
-                artist: non_empty(flp.artist),
-                tempo_bpm: flp.tempo_bpm,
-                time_sig_num: flp.time_sig_num,
-                time_sig_denom: flp.time_sig_denom,
-                fl_version: if daw == Daw::FlStudio { flp.fl_version.clone() } else { None },
-                daw,
-                daw_version: flp.fl_version.clone(),
-                is_template: under_template_dir(path, root_path),
-                backups: Vec::new(),
-                renders: Vec::new(),
-                recordings_count: 0,
-                recordings_bytes: 0,
-                flp_title: non_empty(flp.title.clone()),
-                comment: non_empty(flp.comment.clone()),
-                stems: None,
-                plugins: resolver.plugins(&flp.plugins),
-                samples: resolver.samples(&flp.samples, path),
-                track_names: {
-                    let mut names = Vec::new();
-                    for n in &flp.mixer_names {
-                        push_track_name(&mut names, n);
+#[cfg(test)]
+fn scan(folders: &[String], output_folder: Option<&str>) -> Vec<ProjectInfo> {
+    scan_with(folders, output_folder, Resolver::new(crate::settings::detect_fl_studio())).projects
+}
+
+fn scan_with(folders: &[String], output_folder: Option<&str>, mut resolver: Resolver) -> Scanned {
+    let exports = index_exports(output_folder);
+    let (listing, mut found, backups, sketch_dirs, mut seen) = walk(folders);
+
+    // Read every project; one that failed while it was being saved gets a
+    // second chance a moment later (all of them after one wait).
+    let mut reads: Vec<(FlpMetadata, Option<String>, bool)> = found.iter().map(read_found).collect();
+    let now = now_ms();
+    let retry: Vec<usize> = (0..found.len())
+        .filter(|&i| reads[i].1.is_some() && !reads[i].2 && now - found[i].modified_ms < REREAD_IF_YOUNGER_MS)
+        .collect();
+    if !retry.is_empty() {
+        std::thread::sleep(REREAD_AFTER);
+        for i in retry {
+            if let Ok(meta) = fs::metadata(&found[i].path) {
+                let f = &mut found[i];
+                *f = Found::new(std::mem::take(&mut f.path), f.daw, f.root, &meta);
+                reads[i] = read_found(&found[i]);
+            }
+        }
+    }
+
+    let context = resolver.context_key();
+    let mut fingerprints: HashMap<PathBuf, u64> = HashMap::new();
+    let mut projects: Vec<ProjectInfo> = Vec::with_capacity(found.len());
+    for (f, (flp, read_error, in_cloud)) in found.into_iter().zip(reads) {
+        let root = &folders[f.root];
+        let folder = f.path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let samples = if flp.samples.is_empty() {
+            Vec::new()
+        } else {
+            let fingerprint = *fingerprints.entry(folder.clone()).or_insert_with(|| folder_fingerprint(&listing.song_folder_files(&folder)));
+            let cached = f.stamp.and_then(|stamp| {
+                let cache = RESOLVED_SAMPLES.lock().unwrap_or_else(|e| e.into_inner());
+                cache.as_ref()?.get(&f.path).filter(|(s, c, fp, _)| *s == stamp && *c == context && *fp == fingerprint).map(|e| e.3.clone())
+            });
+            cached.unwrap_or_else(|| {
+                resolver.prime_song_folder(&folder, || {
+                    let mut names = HashMap::new();
+                    for p in listing.song_folder_files(&folder) {
+                        if let Some(n) = crate::resolve::lower_file_name(p) {
+                            names.entry(n).or_insert_with(|| p.clone());
+                        }
                     }
                     names
-                },
-                read_error,
-                ambiguous_exports: 0,
-            });
-        }
+                });
+                let samples = resolver.samples(&flp.samples, &f.path);
+                if let Some(stamp) = f.stamp {
+                    let mut cache = RESOLVED_SAMPLES.lock().unwrap_or_else(|e| e.into_inner());
+                    cache.get_or_insert_with(HashMap::new).insert(f.path.clone(), (stamp, context, fingerprint, samples.clone()));
+                }
+                samples
+            })
+        };
+        projects.push(ProjectInfo {
+            path: f.path.to_string_lossy().to_string(),
+            name: stem_of(&f.path),
+            folder: folder.to_string_lossy().to_string(),
+            size_bytes: f.size,
+            modified_at_ms: f.modified_ms,
+            root: root.clone(),
+            genre: non_empty(flp.genre),
+            artist: non_empty(flp.artist),
+            tempo_bpm: flp.tempo_bpm,
+            time_sig_num: flp.time_sig_num,
+            time_sig_denom: flp.time_sig_denom,
+            fl_version: if f.daw == Daw::FlStudio { flp.fl_version.clone() } else { None },
+            daw: f.daw,
+            daw_version: flp.fl_version.clone(),
+            is_template: under_template_dir(&f.path, Path::new(root)),
+            backups: Vec::new(),
+            renders: Vec::new(),
+            recordings_count: 0,
+            recordings_bytes: 0,
+            flp_title: non_empty(flp.title.clone()),
+            comment: non_empty(flp.comment.clone()),
+            stems: None,
+            plugins: resolver.plugins(&flp.plugins),
+            samples,
+            track_names: {
+                let mut names = Vec::new();
+                for n in &flp.mixer_names {
+                    push_track_name(&mut names, n);
+                }
+                names
+            },
+            read_error,
+            ambiguous_exports: 0,
+            in_cloud,
+        });
     }
 
     // Index projects by the folder they live in.
@@ -349,69 +647,99 @@ fn scan_with(folders: &[String], output_folder: Option<&str>, mut resolver: Reso
     // songs share a name, a file there could be either's, so neither gets it.
     let mut name_counts: HashMap<String, usize> = HashMap::new();
     for p in projects.iter().filter(|p| !p.is_template) {
-        *name_counts.entry(p.name.to_lowercase()).or_default() += 1;
+        *name_counts.entry(fold(&p.name)).or_default() += 1;
     }
 
     // Renders sit next to the .flp; recordings in the sibling Audio/ folder.
     for indices in by_folder.values() {
         let dir = PathBuf::from(&projects[indices[0]].folder);
-        let siblings: Vec<PathBuf> = read_files(&dir);
-        let recordings: Vec<PathBuf> = read_files(&dir.join("Audio"));
-        let stem_dirs: Vec<PathBuf> = read_dirs(&dir)
-            .into_iter()
+        // Every song name in this folder: a file goes to the longest one it's
+        // named after (versions: "Envy", "Envy v2", "Envy v2 final"), each
+        // file looked at once.
+        let names: Vec<String> = indices.iter().map(|&j| fold(&projects[j].name)).collect();
+        let songs = FolderSongs::new(&names);
+        // Per song (position in `indices`): its files next to the project,
+        // with whether they're `<name>_<track>` split-mixer exports.
+        let mut beside: Vec<Vec<(&PathBuf, bool)>> = vec![Vec::new(); indices.len()];
+        for p in listing.files(&dir).iter().filter(|p| has_ext(p, AUDIO_EXTS)) {
+            if let Some((owners, split)) = songs.owner(&fold(&stem_of(p))) {
+                for &k in owners {
+                    beside[k].push((p, split));
+                }
+            }
+        }
+        // FL's recorded takes, `Audio/<name>_<date>_<track>.wav`.
+        let mut takes: Vec<Vec<&PathBuf>> = vec![Vec::new(); indices.len()];
+        for p in listing.sub_files(&dir, "Audio").iter().filter(|p| has_ext(p, AUDIO_EXTS)) {
+            if let Some((owners, true)) = songs.owner(&fold(&stem_of(p))) {
+                for &k in owners {
+                    takes[k].push(p);
+                }
+            }
+        }
+        // A stems folder belongs to the song it's named after (whole words,
+        // the longest song name that fits: "Envy v2 Stems" is "Envy v2"'s),
+        // else to the only song in the folder.
+        let mut stem_dir_of: Vec<Option<&PathBuf>> = vec![None; indices.len()];
+        let stem_dirs: Vec<&PathBuf> = listing
+            .subdirs(&dir)
+            .iter()
             .filter(|d| d.file_name().is_some_and(|n| is_stems_dir(&n.to_string_lossy())))
             .collect();
-        // Every song name in this folder: a file goes to the longest one it's
-        // named after (versions: "Envy", "Envy v2", "Envy v2 final").
-        let names: Vec<String> = indices.iter().map(|&j| projects[j].name.to_lowercase()).collect();
+        for &d in &stem_dirs {
+            let dname = d.file_name().map(|n| fold(&n.to_string_lossy())).unwrap_or_default();
+            let best = names.iter().enumerate().filter(|(_, n)| has_words(&dname, n)).map(|(k, n)| (n.len(), k)).max();
+            if let Some((len, _)) = best {
+                for (k, n) in names.iter().enumerate() {
+                    if n.len() == len && has_words(&dname, n) && stem_dir_of[k].is_none() {
+                        stem_dir_of[k] = Some(d);
+                    }
+                }
+            }
+        }
+        if indices.len() == 1 && stem_dir_of[0].is_none() {
+            stem_dir_of[0] = stem_dirs.first().copied();
+        }
+        let mut per_daw: HashMap<Daw, usize> = HashMap::new();
+        for &j in indices {
+            *per_daw.entry(projects[j].daw).or_default() += 1;
+        }
 
-        for &i in indices {
-            let name = projects[i].name.to_lowercase();
-            let owns = |p: &Path| owned_by(&stem_of(p), &name, &names);
+        for (k, &i) in indices.iter().enumerate() {
+            let name = &names[k];
             // FL's split-mixer export: `<name>_<track>.wav`, one per track.
             // Two or more of them are stems, not mixdowns.
-            let split_prefix = format!("{name}_");
-            let split: Vec<&PathBuf> = siblings
-                .iter()
-                .filter(|p| has_ext(p, AUDIO_EXTS) && stem_of(p).to_lowercase().starts_with(&split_prefix) && owns(p))
-                .collect();
+            let split: Vec<PathBuf> = beside[k].iter().filter(|(_, s)| *s).map(|(p, _)| (*p).clone()).collect();
             let split_are_stems = split.len() >= 2;
-            let mut renders: Vec<FileEntry> = siblings
+            let mut renders: Vec<FileEntry> = beside[k]
                 .iter()
-                .filter(|p| has_ext(p, AUDIO_EXTS) && owns(p))
-                .filter(|p| !(split_are_stems && stem_of(p).to_lowercase().starts_with(&split_prefix)))
-                .filter_map(|p| file_entry(p))
+                .filter(|(_, s)| !(split_are_stems && *s))
+                .filter_map(|(p, _)| file_entry(p))
                 .collect();
             // Each DAW's own export folder (Pro Tools "Bounced Files", Studio
             // One "Mixdown"…): files named after the song, or any audio there
             // if it's the only project of that DAW in the folder.
             let daw = projects[i].daw;
-            let alone = indices.iter().filter(|&&j| projects[j].daw == daw).count() == 1;
+            let alone = per_daw.get(&daw).copied() == Some(1);
+            let owns = |p: &Path| songs.owner(&fold(&stem_of(p))).is_some_and(|(owners, _)| owners.contains(&k));
             for sub in daw.render_dirs() {
                 renders.extend(
-                    read_files(&dir.join(sub))
+                    listing
+                        .sub_files(&dir, sub)
                         .iter()
                         .filter(|p| has_ext(p, AUDIO_EXTS) && (alone || owns(p)))
                         .filter_map(|p| file_entry(p)),
                 );
             }
-            // A stems folder belongs to this song if it's the only song in the
-            // folder, or the stems folder is named after it (whole words, and
-            // the longest song name that fits: "Envy v2 Stems" is "Envy v2"'s).
-            let dir_named_after = |d: &Path, n: &str| d.file_name().is_some_and(|f| has_words(&f.to_string_lossy().to_lowercase(), n));
-            let own_dir = stem_dirs
-                .iter()
-                .find(|d| dir_named_after(d, &name) && !names.iter().any(|n| n.len() > name.len() && dir_named_after(d, n)))
-                .or_else(|| (indices.len() == 1).then(|| stem_dirs.first()).flatten());
-            projects[i].stems = if let Some(sd) = own_dir {
-                stems_info(sd, &read_files(sd))
+            projects[i].stems = if let Some(sd) = stem_dir_of[k] {
+                stems_info(sd, listing.files(sd))
             } else if split_are_stems {
-                stems_info(&dir, &split.iter().map(|p| (*p).clone()).collect::<Vec<_>>())
+                stems_info(&dir, &split)
             } else {
                 None
             };
-            if let Some(exported) = exports.get(&name) {
-                if name_counts.get(&name).copied().unwrap_or(0) > 1 {
+            if let Some(exported) = exports.get(name) {
+                if name_counts.get(name).copied().unwrap_or(0) > 1 {
                     projects[i].ambiguous_exports = exported.len() as u32;
                 } else {
                     renders.extend(exported.iter().cloned());
@@ -425,7 +753,7 @@ fn scan_with(folders: &[String], output_folder: Option<&str>, mut resolver: Reso
                 // the only project of that DAW in the folder.
                 if alone {
                     for sub in daw.recording_dirs() {
-                        for rec in read_files(&dir.join(sub)).iter().filter(|p| has_ext(p, AUDIO_EXTS)) {
+                        for rec in listing.sub_files(&dir, sub).iter().filter(|p| has_ext(p, AUDIO_EXTS)) {
                             if let Ok(meta) = fs::metadata(rec) {
                                 projects[i].recordings_count += 1;
                                 projects[i].recordings_bytes += meta.len();
@@ -436,10 +764,7 @@ fn scan_with(folders: &[String], output_folder: Option<&str>, mut resolver: Reso
                 projects[i].backups.sort_by(by_newest);
                 continue;
             }
-            let prefix = format!("{name}_");
-            for rec in recordings.iter().filter(|p| {
-                has_ext(p, AUDIO_EXTS) && stem_of(p).to_lowercase().starts_with(&prefix) && owns(p)
-            }) {
+            for rec in &takes[k] {
                 if let Ok(meta) = fs::metadata(rec) {
                     projects[i].recordings_count += 1;
                     projects[i].recordings_bytes += meta.len();
@@ -458,32 +783,32 @@ fn scan_with(folders: &[String], output_folder: Option<&str>, mut resolver: Reso
         if !seen.insert(dir.to_string_lossy().to_lowercase()) {
             continue;
         }
-        if let Some(sketch) = sketch_of(&dir, &root) {
+        if let Some(sketch) = sketch_of(&dir, &root, &listing) {
             projects.push(sketch);
         }
     }
 
     merge_plugin_aliases(&mut projects);
     projects.sort_by(|a, b| b.modified_at_ms.cmp(&a.modified_at_ms));
-    projects
+    Scanned { projects, links: listing.links }
 }
 
 /// A BandLab sketch: `X/BandLab/` holding at least one audio file, with no
 /// DAW project directly in X (once there's one, X is that project's folder
 /// and BandLab/ just holds its source audio). Keyed by the BandLab folder's
 /// path; named after X. Nothing is read from inside the audio here.
-fn sketch_of(bandlab: &Path, root: &str) -> Option<ProjectInfo> {
+fn sketch_of(bandlab: &Path, root: &str, listing: &Listing) -> Option<ProjectInfo> {
     let song = bandlab.parent()?;
     if bandlab.components().any(|c| c.as_os_str() == "__MACOSX") {
         return None;
     }
-    let hidden = |p: &Path| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.'));
-    if read_files(song).iter().any(|p| !hidden(p) && Daw::of_project(p).is_some()) {
+    if listing.files(song).iter().any(|p| Daw::of_project(p).is_some()) {
         return None;
     }
-    let mut audio: Vec<FileEntry> = read_files(bandlab)
+    let mut audio: Vec<FileEntry> = listing
+        .files(bandlab)
         .iter()
-        .filter(|p| !hidden(p) && crate::sketch::is_sketch_audio(p))
+        .filter(|p| crate::sketch::is_sketch_audio(p))
         .filter_map(|p| file_entry(p))
         .collect();
     if audio.is_empty() {
@@ -518,7 +843,75 @@ fn sketch_of(bandlab: &Path, root: &str) -> Option<ProjectInfo> {
         samples: Vec::new(),
         track_names: Vec::new(),
         ambiguous_exports: 0,
+        in_cloud: false,
     })
+}
+
+/// Scans run on every window focus and can overlap (focus + adding a
+/// folder): each gets a number, and only the newest one to finish so far
+/// replaces what the last scan listed (`remember_scan`).
+static SCAN_SEQ: AtomicU64 = AtomicU64::new(0);
+static REMEMBERED_SEQ: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
+
+/// Remembers scan `seq`'s results unless a newer scan already did. Returns
+/// whether it did.
+fn remember_if_newest(seq: u64, projects: &[ProjectInfo]) -> bool {
+    let mut newest = REMEMBERED_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+    if seq <= *newest {
+        return false;
+    }
+    *newest = seq;
+    remember_scan(projects);
+    true
+}
+
+/// Where the read cache is saved, and whether it was loaded this launch.
+const READ_CACHE_FILE: &str = "read-cache.json";
+static READ_CACHE_LOADED: std::sync::Once = std::sync::Once::new();
+
+/// Scans the linked folders and the export folder from Settings (never
+/// folders named by the webview: the backup cleanup trusts this listing).
+#[tauri::command]
+pub async fn scan_projects(app: AppHandle) -> Result<ScanResult, String> {
+    let seq = SCAN_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
+    let scope = crate::scope::Scope::load(&app)?;
+    let folders: Vec<String> = scope.folders().iter().map(|f| f.to_string_lossy().to_string()).collect();
+    // Every linked folder as saved (the scope drops the ones that can't be
+    // resolved, e.g. a drive letter that's gone): the webview needs to know
+    // which are unreachable, so their songs aren't taken for moved or deleted.
+    let linked = crate::settings::load(&app)?.watched_folders;
+    let output_folder = scope.output_folder().map(|o| o.to_string_lossy().to_string());
+    // Let the webview stream renders from linked folders and the export
+    // folder (in-app playback) without opening the asset protocol to the
+    // whole disk.
+    let assets = app.asset_protocol_scope();
+    for folder in folders.iter().chain(output_folder.iter()) {
+        let _ = assets.allow_directory(folder, true);
+    }
+    let (fl, user_data) = crate::settings::fl_paths(&app);
+    let sample_folders = scope.sample_folders().to_vec();
+    let cache_file = app.path().app_config_dir().ok().map(|d| d.join(READ_CACHE_FILE));
+    let (scanned, unreachable) = tauri::async_runtime::spawn_blocking(move || {
+        if let Some(file) = &cache_file {
+            READ_CACHE_LOADED.call_once(|| daws::load_read_cache(file));
+        }
+        let resolver = Resolver::new(fl).with_user_data(user_data).with_sample_folders(&sample_folders);
+        let scanned = scan_with(&folders, output_folder.as_deref(), resolver);
+        if remember_if_newest(seq, &scanned.projects) {
+            if let Some(file) = &cache_file {
+                // Not fatal: the next launch reads the projects again.
+                if let Err(e) = daws::save_read_cache(file) {
+                    eprintln!("{e}");
+                }
+            }
+        }
+        (scanned, unreachable_roots(&linked))
+    })
+        .await
+        .map_err(|e| format!("scan failed: {e}"))?;
+    let skipped_links = scanned.links.len() as u32;
+    let skipped_link_examples = scanned.links.iter().take(3).map(|p| p.to_string_lossy().to_string()).collect();
+    Ok(ScanResult { projects: scanned.projects, unreachable, skipped_links, skipped_link_examples })
 }
 
 /// The same plugin reports different names per format — FabFilter's CLAP
@@ -561,12 +954,6 @@ fn under_template_dir(path: &Path, root: &Path) -> bool {
     comps.iter().any(|c| TEMPLATE_DIRS.contains(&c.trim()))
 }
 
-fn read_dirs(dir: &Path) -> Vec<PathBuf> {
-    fs::read_dir(dir)
-        .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.is_dir()).collect())
-        .unwrap_or_default()
-}
-
 /// Audio files among `files` as a stems summary; None if there are none.
 fn stems_info(folder: &Path, files: &[PathBuf]) -> Option<StemsInfo> {
     let audio: Vec<FileEntry> = files.iter().filter(|p| has_ext(p, AUDIO_EXTS)).filter_map(|p| file_entry(p)).collect();
@@ -576,47 +963,6 @@ fn stems_info(folder: &Path, files: &[PathBuf]) -> Option<StemsInfo> {
         bytes: audio.iter().map(|f| f.size_bytes).sum(),
         newest_ms: audio.iter().map(|f| f.modified_at_ms).max().unwrap_or(0),
     })
-}
-
-fn read_files(dir: &Path) -> Vec<PathBuf> {
-    fs::read_dir(dir)
-        .map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| p.is_file())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// Scans the linked folders and the export folder from Settings (never
-/// folders named by the webview: the backup cleanup trusts this listing).
-#[tauri::command]
-pub async fn scan_projects(app: AppHandle) -> Result<ScanResult, String> {
-    let scope = crate::scope::Scope::load(&app)?;
-    let folders: Vec<String> = scope.folders().iter().map(|f| f.to_string_lossy().to_string()).collect();
-    // Every linked folder as saved (the scope drops the ones that can't be
-    // resolved, e.g. a drive letter that's gone): the webview needs to know
-    // which are unreachable, so their songs aren't taken for moved or deleted.
-    let linked = crate::settings::load(&app)?.watched_folders;
-    let output_folder = scope.output_folder().map(|o| o.to_string_lossy().to_string());
-    // Let the webview stream renders from linked folders and the export
-    // folder (in-app playback) without opening the asset protocol to the
-    // whole disk.
-    let assets = app.asset_protocol_scope();
-    for folder in folders.iter().chain(output_folder.iter()) {
-        let _ = assets.allow_directory(folder, true);
-    }
-    let (fl, user_data) = crate::settings::fl_paths(&app);
-    let sample_folders = scope.sample_folders().to_vec();
-    let (projects, unreachable) = tauri::async_runtime::spawn_blocking(move || {
-        let resolver = Resolver::new(fl).with_user_data(user_data).with_sample_folders(&sample_folders);
-        (scan_with(&folders, output_folder.as_deref(), resolver), unreachable_roots(&linked))
-    })
-        .await
-        .map_err(|e| format!("scan failed: {e}"))?;
-    remember_scan(&projects);
-    Ok(ScanResult { projects, unreachable })
 }
 
 /// A linked folder that can be listed right now. Network and device paths
@@ -640,6 +986,9 @@ fn remember_scan(projects: &[ProjectInfo]) {
     *LISTED_BACKUPS.lock().unwrap_or_else(|e| e.into_inner()) = Some(listed);
     let scanned: HashSet<PathBuf> = projects.iter().map(|p| PathBuf::from(&p.path)).collect();
     daws::prune_read_cache(&scanned);
+    if let Some(cache) = RESOLVED_SAMPLES.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        cache.retain(|p, _| scanned.contains(p));
+    }
 }
 
 /// Whether the last scan listed `path` as some project's backup.
@@ -772,6 +1121,279 @@ mod tests {
             println!("  {} — {} backups, {} renders, {} recordings", p.name, p.backups.len(), p.renders.len(), p.recordings_count);
         }
         assert!(!projects.is_empty());
+    }
+
+    #[test]
+    fn a_flat_folder_hands_each_file_to_its_longest_song_name() {
+        let names: Vec<String> = ["envy", "envy v2", "envy v2 final", "été"].iter().map(|s| s.to_string()).collect();
+        let songs = FolderSongs::new(&names);
+        let owner = |stem: &str| songs.owner(&fold(stem)).map(|(o, split)| (o.to_vec(), split));
+        assert_eq!(owner("Envy"), Some((vec![0], false)));
+        assert_eq!(owner("Envy (master)"), Some((vec![0], false)));
+        assert_eq!(owner("Envy_Kick"), Some((vec![0], true)));
+        assert_eq!(owner("Envy v2_Kick"), Some((vec![1], true)));
+        assert_eq!(owner("Envy v2 final - bounce"), Some((vec![2], false)));
+        assert_eq!(owner("Envyous"), None);
+        assert_eq!(owner("Other"), None);
+        // NFD on disk, NFC in the project name.
+        assert_eq!(owner("E\u{301}te\u{301} (master)"), Some((vec![3], false)));
+        // Two projects with one name (Envy.flp and Envy.als) both own it.
+        let twins: Vec<String> = vec!["envy".into(), "envy".into()];
+        assert_eq!(FolderSongs::new(&twins).owner("envy").map(|(o, _)| o.to_vec()), Some(vec![0, 1]));
+    }
+
+    #[test]
+    fn dot_files_are_never_renders_stems_or_takes() {
+        let (root, w) = fixture("dotfiles");
+        w("Envy/Envy.flp");
+        w("Envy/Envy.wav");
+        w("Envy/._Envy.wav");
+        w("Envy/._Envy (master).mp3");
+        w("Envy/.DS_Store");
+        w("Envy/Stems/Kick.wav");
+        w("Envy/Stems/._Kick.wav");
+        w("Envy/Audio/Envy_2025-12-15 18-49-59_Voice.wav");
+        w("Envy/Audio/._Envy_2025-12-15 18-49-59_Voice.wav");
+        let projects = scan(&[root.to_string_lossy().to_string()], None);
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(projects.len(), 1);
+        let p = &projects[0];
+        assert_eq!(file_names(&p.renders), vec!["Envy.wav"]);
+        assert_eq!(p.stems.as_ref().map(|s| s.count), Some(1));
+        assert_eq!(p.recordings_count, 1);
+    }
+
+    #[test]
+    fn decomposed_and_composed_names_match() {
+        let (root, w) = fixture("nfc");
+        // The project named on Windows (NFC), the mixdown and the stems
+        // folder made on a Mac (NFD).
+        w("Ete/\u{c9}t\u{e9}.flp");
+        w("Ete/E\u{301}te\u{301}.wav");
+        w("Ete/Other.flp");
+        w("Ete/E\u{301}te\u{301} Stems/Kick.wav");
+        let projects = scan(&[root.to_string_lossy().to_string()], None);
+        let _ = fs::remove_dir_all(&root);
+        let ete = projects.iter().find(|p| p.name != "Other").expect("listed");
+        assert_eq!(ete.renders.len(), 1, "{:?}", ete.renders);
+        assert_eq!(ete.stems.as_ref().map(|s| s.count), Some(1));
+        assert_eq!(export_song_key("E\u{301}te\u{301}"), export_song_key("\u{c9}t\u{e9}"));
+    }
+
+    #[test]
+    fn an_icloud_stub_is_listed_in_the_cloud_not_dropped() {
+        let (root, w) = fixture("icloud");
+        w("Envy/.Envy.flp.icloud");
+        w("Envy/Envy.wav");
+        w("Solo/Solo.flp");
+        let projects = scan(&[root.to_string_lossy().to_string()], None);
+        let _ = fs::remove_dir_all(&root);
+        let envy = projects.iter().find(|p| p.name == "Envy").expect("the stub stands for Envy.flp");
+        assert!(envy.path.ends_with("Envy.flp") && !envy.path.contains(".icloud"), "{}", envy.path);
+        assert!(envy.in_cloud && envy.read_error.is_none());
+        assert_eq!(envy.renders.len(), 1);
+        assert!(!projects.iter().find(|p| p.name == "Solo").unwrap().in_cloud);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_folders_are_counted_not_followed() {
+        let (root, w) = fixture("links");
+        w("Projects/Envy/Envy.flp");
+        w("Elsewhere/Night/Night.flp");
+        w("Elsewhere/kick.wav");
+        std::os::unix::fs::symlink(root.join("Elsewhere"), root.join("Projects/Linked")).unwrap();
+        // A linked file next to a project still counts as its render.
+        std::os::unix::fs::symlink(root.join("Elsewhere/kick.wav"), root.join("Projects/Envy/Envy.wav")).unwrap();
+        let scanned = scan_with(&[root.join("Projects").to_string_lossy().to_string()], None, Resolver::new(None));
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(scanned.projects.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), vec!["Envy"]);
+        assert_eq!(scanned.links.len(), 1);
+        assert!(scanned.links[0].ends_with("Linked"));
+        assert_eq!(scanned.projects[0].renders.len(), 1);
+    }
+
+    #[test]
+    fn only_the_newest_scan_replaces_what_the_last_one_listed() {
+        // Scans 1 and 2 overlap; 2 finishes first.
+        let base = SCAN_SEQ.fetch_add(2, Ordering::SeqCst);
+        let (older, newer) = (base + 1, base + 2);
+        assert!(remember_if_newest(newer, &[]));
+        assert!(!remember_if_newest(older, &[]), "a slower, older scan doesn't overwrite it");
+        assert!(!remember_if_newest(newer, &[]));
+    }
+
+    #[test]
+    fn a_project_caught_mid_save_is_read_again() {
+        let (root, _w) = fixture("midsave");
+        let song = root.join("Envy");
+        fs::create_dir_all(&song).unwrap();
+        let flp = song.join("Envy.flp");
+        // Half written: the header says more data than there is.
+        let mut half = b"FLhd\x06\0\0\0\0\0\x04\0\x60\0FLdt".to_vec();
+        half.extend_from_slice(&64u32.to_le_bytes());
+        half.extend_from_slice(b"\xc7\x05FL 2");
+        fs::write(&flp, &half).unwrap();
+        // FL finishes saving a moment later.
+        let done = flp.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            let mut full = b"FLhd\x06\0\0\0\0\0\x04\0\x60\0FLdt".to_vec();
+            full.extend_from_slice(&0u32.to_le_bytes());
+            fs::write(&done, &full).unwrap();
+        });
+        let projects = scan(&[root.to_string_lossy().to_string()], None);
+        writer.join().unwrap();
+        let _ = fs::remove_dir_all(&root);
+        assert!(projects[0].read_error.is_none(), "{:?}", projects[0].read_error);
+    }
+
+    #[test]
+    fn resolved_samples_follow_the_song_folder() {
+        let (root, w) = fixture("samples-cache");
+        let song = root.join("Envy");
+        fs::create_dir_all(&song).unwrap();
+        let p = r"C:\Elsewhere\Pack\Kick.wav";
+        let mut events = vec![196u8, p.len() as u8];
+        events.extend_from_slice(p.as_bytes());
+        let mut flp = b"FLhd\x06\0\0\0\0\0\x04\0\x60\0FLdt".to_vec();
+        flp.extend_from_slice(&(events.len() as u32).to_le_bytes());
+        flp.extend_from_slice(&events);
+        fs::write(song.join("Envy.flp"), &flp).unwrap();
+        let folders = [root.to_string_lossy().to_string()];
+        let status = || scan(&folders, None)[0].samples[0].status;
+        assert_eq!(status(), SampleStatus::Missing);
+        assert_eq!(status(), SampleStatus::Missing, "same answer from the cache");
+        // The sample turns up in the song folder: found, though the project didn't change.
+        w("Envy/Samples/Kick.wav");
+        assert_eq!(status(), SampleStatus::Relocated);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `FLSM_BENCH=2000 cargo test bench_flat_folder -- --nocapture`: a flat
+    /// folder of N projects, each with a mixdown and two split-mixer stems.
+    #[test]
+    fn bench_flat_folder() {
+        let Some(n) = std::env::var("FLSM_BENCH").ok().and_then(|v| v.parse::<usize>().ok()) else { return };
+        let root = std::env::temp_dir().join(format!("flsm-bench-{n}"));
+        if !root.join("done").exists() {
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(root.join("Beats").join("Audio")).unwrap();
+            let flp: &[u8] = b"FLhd\x06\0\0\0\0\0\x04\0\x60\0FLdt\0\0\0\0";
+            for i in 0..n {
+                let d = root.join("Beats");
+                fs::write(d.join(format!("Song {i}.flp")), flp).unwrap();
+                for f in [format!("Song {i}.wav"), format!("Song {i}_Kick.wav"), format!("Song {i}_Vox.wav")] {
+                    fs::write(d.join(f), b"x").unwrap();
+                }
+                fs::write(d.join("Audio").join(format!("Song {i}_2025-12-15 18-49-59_Voice.wav")), b"x").unwrap();
+            }
+            fs::write(root.join("done"), b"").unwrap();
+        }
+        let folders = [root.join("Beats").to_string_lossy().to_string()];
+        for run in ["first", "second"] {
+            let t = std::time::Instant::now();
+            let projects = scan(&folders, None);
+            println!("bench {n} projects, {run} scan: {:?} ({} songs)", t.elapsed(), projects.len());
+            assert_eq!(projects.len(), n);
+            assert!(projects.iter().all(|p| p.renders.len() == 1 && p.stems.as_ref().map(|s| s.count) == Some(2) && p.recordings_count == 1));
+        }
+    }
+
+    /// `FLSM_BENCH_SONGS=2000 cargo test bench_song_folders -- --nocapture`:
+    /// N song folders (project, mixdown, Audio/ take, Backup/ copy, a stems
+    /// folder and 20 samples the project points at).
+    #[test]
+    fn bench_song_folders() {
+        let Some(n) = std::env::var("FLSM_BENCH_SONGS").ok().and_then(|v| v.parse::<usize>().ok()) else { return };
+        let root = std::env::temp_dir().join(format!("flsm-bench-songs-{n}"));
+        if !root.join("done").exists() {
+            let _ = fs::remove_dir_all(&root);
+            for i in 0..n {
+                let d = root.join("Songs").join(format!("Song {i}"));
+                for sub in ["Audio", "Backup", "Stems", "Samples"] {
+                    fs::create_dir_all(d.join(sub)).unwrap();
+                }
+                let mut events = Vec::new();
+                for s in 0..20 {
+                    // Saved on another computer: found by name in Samples/.
+                    let p = format!("C:\\Elsewhere\\Pack\\s{s}.wav");
+                    events.push(196u8);
+                    events.push(p.len() as u8);
+                    events.extend_from_slice(p.as_bytes());
+                    fs::write(d.join("Samples").join(format!("s{s}.wav")), b"x").unwrap();
+                }
+                let mut flp = b"FLhd\x06\0\0\0\0\0\x04\0\x60\0FLdt".to_vec();
+                flp.extend_from_slice(&(events.len() as u32).to_le_bytes());
+                flp.extend_from_slice(&events);
+                fs::write(d.join(format!("Song {i}.flp")), &flp).unwrap();
+                fs::write(d.join(format!("Song {i}.wav")), b"x").unwrap();
+                fs::write(d.join("Audio").join(format!("Song {i}_2025-12-15 18-49-59_Voice.wav")), b"x").unwrap();
+                fs::write(d.join("Backup").join(format!("Song {i} (overwritten at 16h12).flp")), b"x").unwrap();
+                fs::write(d.join("Stems").join("Kick.wav"), b"x").unwrap();
+            }
+            fs::write(root.join("done"), b"").unwrap();
+        }
+        let folders = [root.join("Songs").to_string_lossy().to_string()];
+        for run in ["first", "second"] {
+            let t = std::time::Instant::now();
+            let projects = scan(&folders, None);
+            println!("bench {n} song folders, {run} scan: {:?}", t.elapsed());
+            assert_eq!(projects.len(), n);
+            assert!(projects.iter().all(|p| p.renders.len() == 1 && p.backups.len() == 1 && p.recordings_count == 1 && p.stems.is_some()));
+            assert!(projects.iter().all(|p| p.samples.len() == 20 && p.samples.iter().all(|s| s.status == SampleStatus::Relocated)));
+        }
+    }
+
+    /// `FLSM_BENCH_LAUNCH=200 cargo test bench_launch -- --nocapture`: N
+    /// song folders with a 2 MB project each; the first scan of a launch
+    /// with and without the saved read cache. Run it alone (it empties the
+    /// in-memory cache).
+    #[test]
+    fn bench_launch() {
+        let Some(n) = std::env::var("FLSM_BENCH_LAUNCH").ok().and_then(|v| v.parse::<usize>().ok()) else { return };
+        let root = std::env::temp_dir().join(format!("flsm-bench-launch-{n}"));
+        if !root.join("done").exists() {
+            let _ = fs::remove_dir_all(&root);
+            // Plugin-state-like blobs (an event id the reader skips) padding
+            // the project to ~2 MB, plus a few named mixer tracks.
+            let mut events = Vec::new();
+            for t in 0..1000 {
+                let name: Vec<u8> = if t % 50 == 0 { format!("Track {t}").into_bytes() } else { vec![0xAB; 2000] };
+                events.push(if t % 50 == 0 { 204u8 } else { 240u8 });
+                let mut len = name.len();
+                while len >= 0x80 {
+                    events.push((len as u8 & 0x7f) | 0x80);
+                    len >>= 7;
+                }
+                events.push(len as u8);
+                events.extend_from_slice(&name);
+            }
+            let mut flp = b"FLhd\x06\0\0\0\0\0\x04\0\x60\0FLdt".to_vec();
+            flp.extend_from_slice(&(events.len() as u32).to_le_bytes());
+            flp.extend_from_slice(&events);
+            for i in 0..n {
+                let d = root.join("Songs").join(format!("Song {i}"));
+                fs::create_dir_all(&d).unwrap();
+                fs::write(d.join(format!("Song {i}.flp")), &flp).unwrap();
+            }
+            fs::write(root.join("done"), b"").unwrap();
+        }
+        let folders = [root.join("Songs").to_string_lossy().to_string()];
+        let file = root.join("read-cache.json");
+        daws::clear_read_cache();
+        let t = std::time::Instant::now();
+        assert_eq!(scan(&folders, None).len(), n);
+        println!("bench launch {n} x 2 MB, no saved cache: {:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        daws::mark_read_cache_dirty();
+        daws::save_read_cache(&file).unwrap();
+        println!("bench launch save: {:?} ({} KB)", t.elapsed(), fs::metadata(&file).unwrap().len() / 1024);
+        daws::clear_read_cache();
+        let t = std::time::Instant::now();
+        daws::load_read_cache(&file);
+        assert_eq!(scan(&folders, None).len(), n);
+        println!("bench launch {n} x 2 MB, saved cache loaded: {:?}", t.elapsed());
     }
 
     #[test]
