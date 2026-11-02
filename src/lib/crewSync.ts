@@ -117,11 +117,29 @@ export function sharedCredits(credits: CrewCredit[]): CrewCredit[] {
   return out;
 }
 
-/** The row to upsert for one shared song, always within the database's checks. */
-export function sharedSongPayload(project: ProjectInfo, meta: SongMeta, ws: Workspace, scope: ShareScope): SharedSongPayload | null {
+/** Nothing could be read from inside the project this scan (damaged, caught
+ * mid-save, or a cloud placeholder never read before): what's read from it
+ * (the bpm) isn't known, which isn't the same as "no bpm". */
+export function unreadThisScan(project: ProjectInfo): boolean {
+  return !!project.readError || (!!project.inCloud && project.tempoBpm == null);
+}
+
+/** The row to upsert for one shared song, always within the database's
+ * checks. `lastGood`: the row the server has, whose read values are kept
+ * while the project can't be read (a half-written save must not push
+ * `bpm: null`). */
+export function sharedSongPayload(
+  project: ProjectInfo,
+  meta: SongMeta,
+  ws: Workspace,
+  scope: ShareScope,
+  lastGood?: Pick<CrewSongRow, "bpm">,
+): SharedSongPayload | null {
   if (!sharedHere(meta, scope)) return null;
   const name = (id: string) => ws.people.find((p) => p.id === id)?.name;
-  const bpm = project.tempoBpm != null && project.tempoBpm >= 10 && project.tempoBpm <= 522 ? Math.round(project.tempoBpm * 100) / 100 : null;
+  const read = project.tempoBpm != null && project.tempoBpm >= 10 && project.tempoBpm <= 522 ? Math.round(project.tempoBpm * 100) / 100 : null;
+  const kept = lastGood?.bpm == null ? null : Number(lastGood.bpm);
+  const bpm = unreadThisScan(project) ? (Number.isFinite(kept) ? kept : null) : read;
   const key = meta.key ? chars(meta.key.trim(), 8) : "";
   return {
     id: meta.shareId!,
@@ -154,10 +172,12 @@ export function shareElsewhere(meta: SongMeta | undefined, scope: ShareScope): {
   return { crewId: meta.shareCrewId ?? scope.crewId, mine: (meta.shareUserId ?? scope.userId) === scope.userId, shared: !!meta.shared };
 }
 
-/** Every shared song's payload, for one push. */
-export function sharedPayloads(projects: ProjectInfo[], ws: Workspace, scope: ShareScope): SharedSongPayload[] {
+/** Every shared song's payload, for one push. `remote`: my rows on the
+ * server by id (their read values stand in for an unreadable project's). */
+export function sharedPayloads(projects: ProjectInfo[], ws: Workspace, scope: ShareScope, remote?: Map<string, Pick<CrewSongRow, "bpm">>): SharedSongPayload[] {
   return projects.flatMap((p) => {
-    const row = sharedSongPayload(p, ws.songs[p.path] ?? {}, ws, scope);
+    const meta = ws.songs[p.path] ?? {};
+    const row = sharedSongPayload(p, meta, ws, scope, meta.shareId ? remote?.get(meta.shareId) : undefined);
     return row ? [row] : [];
   });
 }
