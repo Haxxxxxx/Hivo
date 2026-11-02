@@ -4,8 +4,8 @@
 // release stats (docs/GUARDRAILS.md, rules 3 and 6). Pure, so the blocks
 // only draw.
 
-import type { ProjectInfo, SongMeta, Workspace } from "../types";
-import { isFinished, lastSaveMs, saveTimestamps } from "./songs";
+import type { ProjectInfo, SongMeta, SongStatus, Workspace } from "../types";
+import { STATUSES, isFinished, lastSaveMs, saveTimestamps } from "./songs";
 
 const DAY = 24 * 60 * 60 * 1000;
 /** "Last 12 months" for the time-bound reads. */
@@ -22,6 +22,12 @@ const median = (xs: number[]): number | null => {
 };
 
 const metaOf = (ws: Workspace, p: ProjectInfo): SongMeta | undefined => ws.songs[p.path];
+
+/** Blocks read from file dates (save, backup and render times), which a
+ * copy, a sync or FL pruning old backups changes: the UI labels them
+ * "approximate". */
+export const FILE_DATE_BLOCKS = ["workingHours", "songShape"] as const;
+export const isFromFileDates = (id: string): boolean => (FILE_DATE_BLOCKS as readonly string[]).includes(id);
 
 // ---- 1. Tempo & key ----
 
@@ -323,11 +329,47 @@ export interface MonthStarts {
   finished: number;
 }
 
+/** Median days a song stays in one stage, from the stage log. */
+export interface StageDays {
+  stage: SongStatus;
+  medianDays: number;
+  /** Songs with at least one finished stay in this stage. */
+  songs: number;
+}
+
+/** Days spent in each stage, from every song's stage log (`SongMeta.stageLog`):
+ * a stay runs from entering a stage to entering the next one, so the stage a
+ * song is in now isn't counted yet. Pipeline order; stages without a
+ * finished stay are left out. Empty until songs have moved through the log. */
+export function stageDays(songs: ProjectInfo[], ws: Workspace): StageDays[] {
+  const by = new Map<SongStatus, number[]>();
+  for (const p of songs) {
+    const log = metaOf(ws, p)?.stageLog ?? [];
+    for (let i = 0; i + 1 < log.length; i++) {
+      const span = log[i + 1].atMs - log[i].atMs;
+      if (!Number.isFinite(span) || span < 0) continue;
+      const list = by.get(log[i].stage) ?? [];
+      list.push(span / DAY);
+      by.set(log[i].stage, list);
+    }
+  }
+  return STATUSES.map((st) => st.id).filter((st) => by.has(st)).map((stage) => ({
+    stage,
+    medianDays: Math.round(median(by.get(stage)!)!),
+    songs: by.get(stage)!.length,
+  }));
+}
+
 export interface SongShape {
   /** Versions = backups + the project itself. */
   medianVersions: number | null;
   /** First save → first mixdown, over the songs that have one. */
   medianDaysToMixdown: number | null;
+  /** Days in each stage from the stage log; empty without log data. */
+  stageDays: StageDays[];
+  /** What the timing line reads: the stage log when it has data (exact,
+   * kept by Hivo), else file dates (approximate). */
+  timingSource: "stageLog" | "fileDates";
   withMixdown: number;
   total: number;
   /** Songs started per month (first save), the last 12 months ending this one. */
@@ -369,9 +411,12 @@ export function songShape(songs: ProjectInfo[], ws: Workspace, now = Date.now())
     if (isFinished(metaOf(ws, p)?.status)) months[i].finished += 1;
   }
   const medianDays = median(toMixdown);
+  const stages = stageDays(songs, ws);
   return {
     medianVersions: median(versions),
     medianDaysToMixdown: medianDays === null ? null : Math.round(medianDays),
+    stageDays: stages,
+    timingSource: stages.length ? "stageLog" : "fileDates",
     withMixdown,
     total: songs.length,
     starts: months,

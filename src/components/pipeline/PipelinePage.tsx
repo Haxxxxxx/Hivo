@@ -58,6 +58,15 @@ export function PipelinePage({ title, sub, source, empty }: { title: string; sub
           ))}
         </div>
       </div>
+      {source.scoped && (
+        <div className="flex items-center gap-1.5 border-b border-rule px-6 py-1.5 text-xs text-engrave">
+          <span className="text-cream">{source.scoped.label}</span>
+          <span aria-hidden>·</span>
+          <button type="button" onClick={source.scoped.clear} className="underline hover:text-cream">
+            {t.showAll}
+          </button>
+        </div>
+      )}
       {source.query && (
         <div className="flex items-center gap-1.5 border-b border-rule px-6 py-1.5 text-xs text-engrave">
           <span>{t.matching(source.shown, source.total)}</span>
