@@ -5,7 +5,7 @@ import { STATUSES, UNSORTED, isFinished, statusInfo } from "@shared/lib/songs";
 import { formatRelative } from "@shared/lib/format";
 import { crewPipeline, groupCrewSongs } from "@shared/lib/crewBoard";
 import { crewCreditsText, crewMixdown, nameOf, releaseTracks, sortCrewReleases } from "@shared/lib/crewSync";
-import { localDay } from "@shared/lib/crewStats";
+import { localDay, songsOfMember } from "@shared/lib/crewStats";
 import type { CrewSongRow, SongStatus } from "@shared/types";
 import { useWeb } from "./store";
 import { Landing } from "./Landing";
@@ -302,6 +302,9 @@ function Join({ another = false, onDone }: { another?: boolean; onDone?: () => v
 function Dashboard({ topError }: { topError: string | null }) {
   const { crews, activeCrewId, selectCrew, signOut, songs, live } = useWeb();
   const [tab, setTab] = useState<Tab>("board");
+  // The board scoped to one member's songs (from a member card); null = everyone.
+  const [member, setMember] = useState<string | null>(null);
+  useEffect(() => setMember(null), [activeCrewId]);
   const active = crews.find((c) => c.id === activeCrewId) ?? crews[0];
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: "board", label: tr(W).tabBoard, icon: <KanbanSquare size={15} /> },
@@ -349,10 +352,17 @@ function Dashboard({ topError }: { topError: string | null }) {
       <OwnerNotice />
       {topError && <div role="alert" className="mx-4 mt-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">{topError}</div>}
       <main className="flex min-h-0 flex-1 flex-col">
-        {tab === "board" && <Board />}
+        {tab === "board" && <Board member={member} onShowAll={() => setMember(null)} />}
         {tab === "releases" && <Releases />}
         {tab === "calendar" && <Calendar />}
-        {tab === "crew" && <Crew />}
+        {tab === "crew" && (
+          <Crew
+            onOpenMember={(id) => {
+              setMember(id);
+              setTab("board");
+            }}
+          />
+        )}
       </main>
     </div>
   );
@@ -368,8 +378,9 @@ function useNames() {
 /** The crew board, in the crew's columns (the owner sets them in the app).
  * Same rules as the app: moving a card to a column of another stage moves
  * the song to that stage. */
-function Board() {
-  const songs = useWeb((s) => s.songs);
+function Board({ member, onShowAll }: { member: string | null; onShowAll: () => void }) {
+  const allSongs = useWeb((s) => s.songs);
+  const songs = useMemo(() => songsOfMember(allSongs, member), [allSongs, member]);
   const columns = useWeb((s) => s.columns);
   const moveCard = useWeb((s) => s.moveCard);
   const userId = useWeb((s) => s.userId);
@@ -379,7 +390,17 @@ function Board() {
   const { cfg } = useMemo(() => crewPipeline(columns), [columns]);
   const groups = useMemo(() => groupCrewSongs(songs, cfg), [songs, cfg]);
 
-  if (songs.length === 0) {
+  const scoped = member ? (
+    <div className="flex items-center gap-1.5 border-b border-rule px-4 py-2 text-xs text-engrave sm:px-6">
+      <span className="text-cream">{member === userId ? tr(W).onlyYours : tr(W).onlyOf(names.get(member) ?? tr(W).formerMember)}</span>
+      <span aria-hidden>·</span>
+      <button type="button" onClick={onShowAll} className="underline hover:text-cream">
+        {tr(W).showAll}
+      </button>
+    </div>
+  ) : null;
+
+  if (allSongs.length === 0) {
     return (
       <div className="mx-auto flex w-full max-w-md flex-col gap-4 p-8 text-center text-sm text-body">
         <p>{tr(W).nothingShared}</p>
@@ -411,6 +432,7 @@ function Board() {
   const empty = groups.filter((g) => !g.songs.length);
   return (
     <>
+      {scoped}
       {/* Phones: one list grouped by column (columns don't fit a narrow screen). */}
       <div className="flex flex-col gap-5 p-4 sm:hidden">
         {groups
@@ -665,7 +687,7 @@ function Calendar() {
   );
 }
 
-function Crew() {
+function Crew({ onOpenMember }: { onOpenMember: (userId: string) => void }) {
   const { members, songs, userId, crews, activeCrewId } = useWeb();
   const isOwner = crews.find((c) => c.id === activeCrewId)?.role === "owner";
   const [adding, setAdding] = useState(false);
@@ -677,7 +699,6 @@ function Crew() {
         {members.map((m) => {
           const theirs = songs.filter((s) => s.owner_id === m.user_id);
           const active = theirs.filter((s) => s.stage === "creation" || s.stage === "production").length;
-          const last = Math.max(0, ...theirs.map((s) => (s.last_saved_at ? Date.parse(s.last_saved_at) : 0)));
           return (
             <div key={m.user_id} className="rounded-xl border border-rule bg-panel p-4">
               <div className="flex items-baseline gap-2">
@@ -691,9 +712,16 @@ function Crew() {
                   </span>
                 )}
               </div>
-              <div className="mt-1 text-xs text-body">
-                {tr(W).memberLine(theirs.length, active, last ? formatRelative(last) : null)}
-              </div>
+              {/* Counts only, and only as a way into that member's songs:
+                  no last-session time (guardrail 3, coordination not monitoring). */}
+              <button
+                type="button"
+                onClick={() => onOpenMember(m.user_id)}
+                title={m.user_id === userId ? tr(W).openYours : tr(W).openTheirs(m.display_name)}
+                className="mt-1 text-left text-xs text-body underline decoration-rule-strong underline-offset-2 hover:text-cream"
+              >
+                {tr(W).memberLine(theirs.length, active)}
+              </button>
               <div className="mt-3 flex h-1.5 gap-px overflow-hidden rounded-full bg-raised">
                 {stages.map((c) => {
                   const n = theirs.filter((s) => (s.stage ?? undefined) === c.id).length;

@@ -19,6 +19,9 @@ export const T_PIPELINE = dict(
     matching: (shown: number, total: number) => `${shown} of ${total} songs match`,
     clear: "Clear",
     noMatch: "No songs match your search",
+    onlyOf: (name: string) => `Only ${name}'s songs`,
+    onlyYours: "Only your songs",
+    showAll: "Show everyone's",
     emptyMine: "No songs yet. Link a folder in Settings or create a song.",
     emptyCrew: "Nothing shared yet. Share a song from its panel.",
     dismiss: "Dismiss",
@@ -90,6 +93,9 @@ export const T_PIPELINE = dict(
     matching: (shown: number, total: number) => `${shown} son${shown > 1 ? "s" : ""} sur ${total}`,
     clear: "Effacer",
     noMatch: "Aucun son ne correspond à ta recherche",
+    onlyOf: (name: string) => `Seulement les sons de ${name}`,
+    onlyYours: "Seulement tes sons",
+    showAll: "Montrer ceux de tout le monde",
     emptyMine: "Pas encore de son. Relie un dossier dans Réglages ou crée un son.",
     emptyCrew: "Rien de partagé pour l'instant. Partage un son depuis son panneau.",
     dismiss: "Fermer",
@@ -196,6 +202,9 @@ export interface PipelineSource {
   moveCard: (key: string, columnId: string, beforeKey: string | null) => void;
   /** "New song" on the Creation column (your pipeline only). */
   newSong?: () => void;
+  /** A filter set from elsewhere (the crew board scoped to one member):
+   * what it shows, and how to lift it. */
+  scoped?: { label: string; clear: () => void } | null;
   /** Shown above the views (a refused move, a failed save). */
   error?: string | null;
   clearError?: () => void;
