@@ -11,6 +11,7 @@
 //! audio stays in BandLab/. If the audio can't be laid out, the template is
 //! copied alone, as before, and the reason is returned.
 
+use crate::error::{app_err, detail_of, ensure_code, path_err};
 use crate::actions::{check_template, copy_file, fl_from_settings, validate_name};
 use crate::daws::Daw;
 use crate::flp_build::{fl_plays, Clip};
@@ -38,8 +39,10 @@ pub struct Continued {
     pub flp: String,
     /// Audio clips laid out on its playlist (0: the template alone).
     pub clips: usize,
-    /// Why the audio isn't in the project, or what was converted.
+    /// Why the audio isn't in the project, or what was converted (English).
     pub note: Option<String>,
+    /// The same, one coded message each (src-tauri/src/error.rs), for the webview to translate.
+    pub notes: Vec<String>,
     /// Audio files left off the playlist past `MAX_CLIPS` (dragged in by hand).
     pub skipped: usize,
     /// The mixdown(s) left off the playlist because the stems are on it
@@ -73,7 +76,7 @@ pub async fn continue_sketch(app: AppHandle, sketch_path: String, template_path:
     // Decoding and converting can take a few seconds: off the main thread.
     tauri::async_runtime::spawn_blocking(move || continue_in(&sketch, Path::new(&template_path)))
         .await
-        .map_err(|e| format!("Continue in FL Studio failed: {e}"))?
+        .map_err(|e| app_err("task.failed", format!("Continue in FL Studio failed: {e}")))?
 }
 
 /// What goes on the playlist: the sketch's audio as FL will play it (M4A/
@@ -109,7 +112,7 @@ fn playable_audio(sketch: &Path) -> Playable {
             match crate::audio::duration_ms(&f) {
                 Ok(ms) => (f.clone(), ms),
                 Err(e) => {
-                    notes.push(e);
+                    notes.push(ensure_code("audio.read", e));
                     continue;
                 }
             }
@@ -120,11 +123,12 @@ fn playable_audio(sketch: &Path) -> Playable {
             }
             match crate::audio::convert_to_wav(&f, &wav) {
                 Ok(ms) => {
-                    notes.push(format!("{} converted to WAV for FL Studio", f.file_name().unwrap_or_default().to_string_lossy()));
+                    let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    notes.push(app_err("sketch.converted", format!("{name} converted to WAV for FL Studio")).with("name", name).into());
                     (wav, ms)
                 }
                 Err(e) => {
-                    notes.push(e);
+                    notes.push(ensure_code("sketch.convertFailed", e));
                     continue;
                 }
             }
@@ -141,48 +145,51 @@ fn playable_audio(sketch: &Path) -> Playable {
 
 fn continue_in(sketch: &Path, template: &Path) -> Result<Continued, String> {
     if sketch.file_name().is_none_or(|n| n != SKETCH_DIR) || !sketch.is_dir() {
-        return Err(format!("not a BandLab sketch: {}", sketch.display()));
+        return Err(path_err("sketch.notSketch", sketch, format!("not a BandLab sketch: {}", sketch.display())));
     }
-    let song = sketch.parent().ok_or("invalid sketch path")?;
+    let song = sketch.parent().ok_or_else(|| String::from(app_err("project.badPath", "invalid sketch path")))?;
     let has_project = fs::read_dir(song)
-        .map_err(|e| format!("can't read the song folder: {e}"))?
+        .map_err(|e| path_err("io.read", song, format!("can't read the song folder: {e}")))?
         .filter_map(|e| e.ok())
         .any(|e| e.path().is_file() && Daw::of_project(&e.path()).is_some());
     if has_project {
-        return Err("This song already has a project: open it from the Library.".to_string());
+        return Err(app_err("sketch.hasProject", "This song already has a project: open it from the Library.").into());
     }
     let name = song.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let name = validate_name(&name)?;
     if !template.is_file() {
-        return Err(format!("template not found: {}", template.display()));
+        return Err(path_err("template.missing", template, format!("template not found: {}", template.display())));
     }
     let target = song.join(format!("{name}.flp"));
     if target.exists() {
-        return Err(format!("\"{name}.flp\" already exists there"));
+        return Err(app_err("project.nameTaken", format!("\"{name}.flp\" already exists there")).with("name", format!("{name}.flp")).into());
     }
     let Playable { clips, mut notes, skipped, mixdown } = playable_audio(sketch);
     let built = if clips.is_empty() {
-        Err("no audio FL Studio can play in the BandLab folder".to_string())
+        Err(app_err("sketch.noPlayable", "no audio FL Studio can play in the BandLab folder").into())
     } else {
-        fs::read(template).map_err(|e| format!("could not read the template: {e}")).and_then(|t| crate::flp_build::build(&t, &clips, None))
+        fs::read(template).map_err(|e| path_err("io.read", template, format!("could not read the template: {e}"))).and_then(|t| crate::flp_build::build(&t, &clips, None))
     };
     let flp = target.to_string_lossy().to_string();
     match built {
         Ok(bytes) => {
             // A new file only: never over anything already there.
-            let mut f = fs::OpenOptions::new().write(true).create_new(true).open(&target).map_err(|e| format!("could not create {}: {e}", target.display()))?;
+            let mut f = fs::OpenOptions::new().write(true).create_new(true).open(&target).map_err(|e| path_err("io.create", &target, format!("could not create {}: {e}", target.display())))?;
             if let Err(e) = std::io::Write::write_all(&mut f, &bytes) {
                 drop(f);
                 let _ = fs::remove_file(&target);
-                return Err(format!("could not write {}: {e}", target.display()));
+                return Err(path_err("io.write", &target, format!("could not write {}: {e}", target.display())));
             }
-            Ok(Continued { flp, clips: clips.len(), note: (!notes.is_empty()).then(|| notes.join("; ")), skipped, mixdown })
+            let note = (!notes.is_empty()).then(|| notes.iter().map(|n| detail_of(n)).collect::<Vec<_>>().join("; "));
+            Ok(Continued { flp, clips: clips.len(), note, notes, skipped, mixdown })
         }
         Err(e) => {
             // The template alone, as before: the audio stays in BandLab/.
             copy_file(template, &target)?;
-            notes.insert(0, format!("The BandLab audio isn't in the project ({e}): drag it in from the BandLab folder"));
-            Ok(Continued { flp, clips: 0, note: Some(notes.join("; ")), skipped: 0, mixdown: Vec::new() })
+            let why = format!("The BandLab audio isn't in the project ({}): drag it in from the BandLab folder", detail_of(&e));
+            notes.insert(0, app_err("sketch.notInProject", why).with("reason", e).into());
+            let note = Some(notes.iter().map(|n| detail_of(n)).collect::<Vec<_>>().join("; "));
+            Ok(Continued { flp, clips: 0, note, notes, skipped: 0, mixdown: Vec::new() })
         }
     }
 }

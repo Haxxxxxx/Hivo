@@ -30,8 +30,15 @@ import { startSessionBridge } from "./store/sessionBridge";
 import { useCrewStore, useInCrew } from "./store/useCrewStore";
 import { ConfirmButton, StatusDot, btnPrimary, btnQuiet } from "./ui";
 import { RemovedNotice } from "./components/CrewPanel";
+import { detailBehind, errorReason } from "./lib/errors";
 
 const fileName = (p: string) => p.split(/[/\\]/).pop() ?? p;
+
+/** What "Report this" sends: the shown text, plus the raw English behind it. */
+const reportText = (shown: string) => {
+  const detail = detailBehind(shown);
+  return detail ? `${shown}\n\n${detail}` : shown;
+};
 
 const T = dict(
   {
@@ -249,7 +256,7 @@ function NotSavingStrip() {
   const run = (fn: () => Promise<void>) => {
     setBusy(true);
     void fn()
-      .catch((e) => useAppStore.setState({ actionError: t.actionFailed(e instanceof Error ? e.message : String(e)) }))
+      .catch((e) => useAppStore.setState({ actionError: t.actionFailed(errorReason(e)) }))
       .finally(() => setBusy(false));
   };
   const text =
@@ -442,11 +449,11 @@ export default function App() {
       </div>
       {bannerError && (
         <div role="alert" className="absolute left-1/2 top-3 z-40 flex max-w-xl -translate-x-1/2 items-start gap-3 rounded-md border border-red-500/40 bg-[#2a1215] px-4 py-2 text-xs text-red-200 shadow-xl">
-          <span>{bannerError}</span>
+          <span title={detailBehind(bannerError) ?? undefined}>{bannerError}</span>
           {/* The in-app form, with this error as the message (only when this build has a backend). */}
           {supabase && (
             <button
-              onClick={() => openFeedback({ category: "bug", message: scrubPaths(bannerError) })}
+              onClick={() => openFeedback({ category: "bug", message: scrubPaths(reportText(bannerError)) })}
               className="shrink-0 whitespace-nowrap text-red-200/70 underline hover:text-red-100"
             >
               {tr(T).reportThis}

@@ -9,6 +9,7 @@ import { ConfirmButton, Modal, StatusDot, StatusSelect, btn, btnPrimary, input, 
 import { MixdownBadge, Stat } from "../ui";
 import { ReleaseShare } from "./CrewPanel";
 import { dict, tr } from "../i18n";
+import { errorText } from "../lib/errors";
 
 const T = dict(
   {
@@ -282,7 +283,7 @@ function AlbumDetail({ album }: { album: Album }) {
         { subfolder: album.title, names: numbered.map((t) => t.name) },
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     }
   }
 
@@ -385,7 +386,7 @@ function AlbumDetail({ album }: { album: Album }) {
             <button
               onClick={() =>
                 startPackage(present.map((t) => t.path), album.title).catch((e) =>
-                  setError(e instanceof Error ? e.message : String(e)),
+                  setError(errorText(e)),
                 )
               }
               disabled={demoMode || packaging || present.length === 0}

@@ -7,6 +7,7 @@ import { buildCoverPrompt, COVER_VARIANTS, FREE_NEURONS_PER_DAY, NEURONS_PER_IMA
 import type { CoverImage } from "../types";
 import { btn, btnPrimary } from "./ui";
 import { dict, locale, tr } from "../i18n";
+import { errorText } from "../lib/errors";
 
 interface Concept {
   prompt: string;
@@ -149,7 +150,7 @@ export function CoverConcepts({ path, title, artists, brief, releaseType }: { pa
       api
         .generateCover(c.prompt, c.seed)
         .then((image) => patch(i, c.seed, { image, seed: image.seed }))
-        .catch((e) => patch(i, c.seed, { error: e instanceof Error ? e.message : String(e) }));
+        .catch((e) => patch(i, c.seed, { error: errorText(e) }));
     });
   }
 
@@ -185,7 +186,7 @@ export function CoverConcepts({ path, title, artists, brief, releaseType }: { pa
       setKitCover(path, { seed: picked.seed, prompt: picked.prompt, variant: picked.variant, savedPath: file, savedAtMs: Date.now() });
       setMessage({ kind: "ok", text: t.saved, dir: file });
     } catch (e) {
-      setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+      setMessage({ kind: "error", text: errorText(e) });
     } finally {
       setSaving(false);
     }

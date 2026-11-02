@@ -6,6 +6,7 @@ import * as api from "../lib/tauri";
 import { dict, tr } from "../i18n";
 import type { LookupCandidate, MatchInfo, Person, PlatformLink, SpotifyStatus } from "../types";
 import { btn, btnPrimary, input, sectionLabel } from "./ui";
+import { errorText } from "../lib/errors";
 
 // A person's streaming and social profiles, with the IDs distributors ask
 // for (Spotify artist ID, Apple Music ID…). "Look up profiles" searches
@@ -208,7 +209,7 @@ function AddLink({ onAdd }: { onAdd: (l: PlatformLink) => void }) {
       onAdd(await api.classifyProfileLink(url.trim()));
       setUrl("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     }
   };
   return (
@@ -312,7 +313,7 @@ function LookupPanel({
     try {
       setCandidates(await api.lookupArtists(q));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setSearching(false);
     }
@@ -330,7 +331,7 @@ function LookupPanel({
     try {
       onPicked(await api.lookupProfile(c.source, c.id));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setPicking(null);
     }

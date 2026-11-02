@@ -37,6 +37,7 @@ import type {
 } from "../types";
 
 import type { FeedbackDraft } from "../lib/feedback";
+import { errorReason, errorText, errorTextOr } from "../lib/errors";
 
 const DEFAULT_SETTINGS: Settings = {
   watchedFolders: [],
@@ -492,7 +493,7 @@ async function readWorkspace(): Promise<LoadedWorkspace> {
     return fromStored(await api.getWorkspace());
   } catch (e) {
     const files = await api.workspaceFiles().catch(() => null);
-    return { ok: false, detail: String(e), hasBackup: !!files?.hasBackup, canReset: !!files?.canReset };
+    return { ok: false, detail: errorReason(e), hasBackup: !!files?.hasBackup, canReset: !!files?.canReset };
   }
 }
 
@@ -536,7 +537,7 @@ export const useAppStore = create<AppState>((set, get) => {
       })
       .catch((e) => {
         console.error("saving workspace failed", e);
-        const why = tr(STORE_TEXT).saveFailed(String(e));
+        const why = tr(STORE_TEXT).saveFailed(errorReason(e));
         set({ saveError: why, unsavedChanges: why });
       });
     savingNow = write;
@@ -648,7 +649,7 @@ export const useAppStore = create<AppState>((set, get) => {
       .then(() => {
         if (get().scanError) set({ scanError: null });
       })
-      .catch((e) => set({ scanError: tr(STORE_TEXT).scanFailed(String(e)) }));
+      .catch((e) => set({ scanError: tr(STORE_TEXT).scanFailed(errorReason(e)) }));
   }
 
   function mutateAlbum(id: string, fn: (album: Album) => Album) {
@@ -772,7 +773,7 @@ export const useAppStore = create<AppState>((set, get) => {
           set({ update: { status: "idle" } });
           return;
         }
-        set({ update: { status: "error", error: e instanceof Error ? e.message : String(e) } });
+        set({ update: { status: "error", error: errorText(e) } });
       }
     },
 
@@ -791,7 +792,7 @@ export const useAppStore = create<AppState>((set, get) => {
         );
       } catch (e) {
         const blockedBySave = e instanceof UnsavedBeforeUpdate ? { blockedBySave: true } : {};
-        set({ update: { status: "error", version, error: e instanceof Error ? e.message : String(e), ...blockedBySave } });
+        set({ update: { status: "error", version, error: errorText(e), ...blockedBySave } });
       }
     },
 
@@ -821,7 +822,7 @@ export const useAppStore = create<AppState>((set, get) => {
         settings = await api.getSettings();
       } catch (e) {
         settings = { ...DEFAULT_SETTINGS };
-        set({ startupError: tr(STORE_TEXT).settingsUnreadable(String(e)) });
+        set({ startupError: tr(STORE_TEXT).settingsUnreadable(errorReason(e)) });
       }
       // settings.json didn't parse: Rust kept it aside and started from the
       // defaults. Said once, with where the old file is.
@@ -851,7 +852,8 @@ export const useAppStore = create<AppState>((set, get) => {
             const next = new Map(state.renderJobs);
             next.set(event.projectPath, {
               status: event.status,
-              message: event.message,
+              // Coded in Rust (render.rs): translated here, once.
+              message: event.message ? errorReason(event.message) : null,
               outputPath: event.outputPath,
             });
             return { renderJobs: next };
@@ -881,7 +883,7 @@ export const useAppStore = create<AppState>((set, get) => {
         // (Sample-data stars stay in memory.)
         if (saved) set((s) => ({ settings: { ...saved, favorites: realFavorites ? s.settings.favorites : saved.favorites } }));
         if (!report) throw e;
-        set({ actionError: tr(STORE_TEXT).settingsSaveFailed(e instanceof Error ? e.message : String(e)) });
+        set({ actionError: tr(STORE_TEXT).settingsSaveFailed(errorReason(e)) });
       }
     },
 
@@ -896,7 +898,7 @@ export const useAppStore = create<AppState>((set, get) => {
       try {
         set({ detectedFolders: await api.detectDawFolders(), detectError: null });
       } catch (e) {
-        set({ detectedFolders: [], detectError: e instanceof Error ? e.message : String(e) });
+        set({ detectedFolders: [], detectError: errorText(e) });
       }
     },
 
@@ -1034,7 +1036,7 @@ export const useAppStore = create<AppState>((set, get) => {
         const jobs = new Map(get().renderJobs);
         for (const path of projectPaths) {
           const job = jobs.get(path);
-          if (job && (job.status === "queued" || job.status === "rendering")) jobs.set(path, { ...job, status: "error", message: String(e) });
+          if (job && (job.status === "queued" || job.status === "rendering")) jobs.set(path, { ...job, status: "error", message: errorText(e) });
         }
         set({ renderJobs: jobs });
         throw e;
@@ -1121,7 +1123,7 @@ export const useAppStore = create<AppState>((set, get) => {
         set({ packageResults: skippedResults });
         throw new Error(skippedResults[0]?.error ?? tr(STORE_ERRORS).nothingToPackage);
       }
-      const plans = await api.packagePreview(paths);
+      const plans = (await api.packagePreview(paths)).map((p) => ({ ...p, error: errorTextOr(p.error) }));
       set({ packagePlan: { plans, subfolder, skipped: skippedResults }, packageResults: null });
     },
 
@@ -1135,7 +1137,7 @@ export const useAppStore = create<AppState>((set, get) => {
       set({ packaging: true, packageResults: skippedResults, packagePlan: null });
       // Results stream in per song so the panel can show progress.
       const unlisten = await api.onPackageProgress((r) =>
-        set((s) => ({ packageResults: [...(s.packageResults ?? []), r] })),
+        set((s) => ({ packageResults: [...(s.packageResults ?? []), { ...r, error: errorTextOr(r.error) }] })),
       );
       try {
         await api.packageProjects({ projectPaths: paths, subfolder, approved });

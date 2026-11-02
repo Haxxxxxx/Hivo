@@ -10,6 +10,7 @@ import { btn, btnPrimary, ConfirmButton, input } from "../ui";
 import { crewText, inviteMessage } from "../lib/crewMessages";
 import { cleanCode, isCodeComplete } from "../lib/signInCode";
 import { dict, locale, tr } from "../i18n";
+import { errorText } from "../lib/errors";
 
 const field = input;
 const primary = `${btnPrimary} shrink-0 justify-center py-2`;
@@ -342,7 +343,7 @@ function useAction() {
       await fn();
       return true;
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
       return false;
     } finally {
       setBusy(false);

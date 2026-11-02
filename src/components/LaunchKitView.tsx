@@ -41,6 +41,7 @@ import { CoverConcepts } from "./CoverConcepts";
 import { ConfirmButton, Modal, StatusSelect, btn, btnPrimary } from "./ui";
 import { canRenderInApp } from "../lib/daws";
 import { Card, CheckLine, FieldRow, KitStatus, StatusDot } from "../ui";
+import { errorReason, errorText } from "../lib/errors";
 
 // Snippet colors: the dark categorical slots, in fixed order (as elsewhere).
 const SNIPPET_COLORS = ["#ff5a1f", "#f2efe8", "#3ddc84"];
@@ -305,7 +306,7 @@ function useAnalysis(project: ProjectInfo | undefined, render: FileEntry | undef
         analysisCache.set(key, a);
         if (live) setState({ key, analysis: a, error: null, loading: false });
       })
-      .catch((e) => live && setState({ key, analysis: null, error: String(e), loading: false }));
+      .catch((e) => live && setState({ key, analysis: null, error: errorReason(e), loading: false }));
     return () => {
       live = false;
     };
@@ -459,7 +460,7 @@ export function LaunchKitView() {
     try {
       await startRender([project.path]);
     } catch (e) {
-      setExportState({ status: "error", message: e instanceof Error ? e.message : String(e) });
+      setExportState({ status: "error", message: errorText(e) });
     }
   }
 
@@ -494,7 +495,7 @@ export function LaunchKitView() {
       setExportState({ status: "done", dir });
       setGuide({ guide: kitGuide(lang, { title, master: masterExt ? `${masterBaseName(fields, project.name)}.${masterExt}` : null, snippets: snippets.map((s) => s.label) }), lang, dir });
     } catch (e) {
-      setExportState({ status: "error", message: String(e) });
+      setExportState({ status: "error", message: errorText(e) });
     }
   }
 
@@ -809,7 +810,7 @@ function AiPanel({ path, input, fields }: { path: string; input: KitInput; field
       if (!stillValid()) return;
       setKitAi(path, { review: { fields: checked.review, model: checked.model, atMs: Date.now() } });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setRunning(null);
     }

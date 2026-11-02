@@ -5,6 +5,7 @@ import { formatDateTime } from "../lib/format";
 import type { PhonePairing, PhoneSyncStatus } from "../types";
 import { usePhoneInbox } from "../store/usePhoneInbox";
 import { dict, tr } from "../i18n";
+import { errorText, errorReason } from "../lib/errors";
 
 const T = dict(
   {
@@ -111,7 +112,7 @@ export function PhoneSyncSettings() {
       // The menu's Phone inbox entry follows phone sync being on / paired.
       void usePhoneInbox.getState().refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setBusy(false);
     }
@@ -134,7 +135,7 @@ export function PhoneSyncSettings() {
       setCopied(false);
       setStatus(await api.phoneSyncStatus());
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorText(e);
       // "No" in the native confirmation: nothing to say.
       if (msg !== api.PAIR_CANCELLED) setError(msg);
     } finally {
@@ -167,12 +168,12 @@ export function PhoneSyncSettings() {
       </label>
       <div className={`mt-2 text-xs ${on ? "text-emerald-300" : "text-engrave"}`}>{on && status?.port ? t.on(status.port) : t.off}</div>
       {on && <div className="mt-1 font-mono text-[11px] text-engrave">{status?.addresses.length ? t.addresses(status.addresses.join(", ")) : t.noAddress}</div>}
-      {status?.error && <div className="mt-2 text-xs text-red-300">{status.error}</div>}
+      {status?.error && <div className="mt-2 text-xs text-red-300">{errorReason(status.error)}</div>}
       <p className="mt-2 text-[11px] leading-relaxed text-engrave">{t.firewall}</p>
       {windows && on && (
         <p className="mt-1 text-[11px] leading-relaxed text-engrave">
           {t.firewallWindows}{" "}
-          <button onClick={() => void api.phoneSyncOpenFirewall().catch((e) => setError(String(e)))} className="text-body underline hover:text-cream">
+          <button onClick={() => void api.phoneSyncOpenFirewall().catch((e) => setError(errorText(e)))} className="text-body underline hover:text-cream">
             {t.openFirewall}
           </button>
         </p>

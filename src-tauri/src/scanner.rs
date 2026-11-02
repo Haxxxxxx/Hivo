@@ -1,3 +1,4 @@
+use crate::error::app_err;
 use crate::daws::{self, Daw};
 use crate::models::{FileEntry, ProjectInfo, ScanResult, StemsInfo};
 use crate::resolve::Resolver;
@@ -614,7 +615,7 @@ pub async fn scan_projects(app: AppHandle) -> Result<ScanResult, String> {
         (scan_with(&folders, output_folder.as_deref(), resolver), unreachable_roots(&linked))
     })
         .await
-        .map_err(|e| format!("scan failed: {e}"))?;
+        .map_err(|e| app_err("task.failed", format!("scan failed: {e}")))?;
     remember_scan(&projects);
     Ok(ScanResult { projects, unreachable })
 }

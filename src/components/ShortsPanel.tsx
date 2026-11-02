@@ -9,6 +9,7 @@ import { usePickedConcept } from "./CoverConcepts";
 import { kitFolderName, previousKitFolder } from "../lib/kitState";
 import { btn, btnPrimary } from "./ui";
 import { dict, tr } from "../i18n";
+import { errorText, errorReason, errorTextOr } from "../lib/errors";
 
 const T = dict(
   {
@@ -157,7 +158,7 @@ export function ShortsPanel({
       });
       setState({ kind: "done", results });
     } catch (e) {
-      setState({ kind: "error", message: e instanceof Error ? e.message : String(e) });
+      setState({ kind: "error", message: errorText(e) });
     }
   }
 
@@ -178,7 +179,7 @@ export function ShortsPanel({
           ) : status ? (
             <div className="rounded-md border border-amber-400/20 bg-amber-500/[0.06] p-2.5 text-amber-100/80">
               <div className="flex items-center gap-1.5 font-medium">
-                <AlertTriangle size={12} /> {status.error ?? (status.found ? t.confirmFound(status.found) : t.notFound)}
+                <AlertTriangle size={12} /> {errorTextOr(status.error) ?? (status.found ? t.confirmFound(status.found) : t.notFound)}
               </div>
               <div className="mt-1 text-engrave">
                 {t.installOnce}
@@ -224,7 +225,7 @@ export function ShortsPanel({
               </div>
             ) : (
               <div key={r.label} className="max-w-[200px] text-[11px] text-red-300">
-                {r.label}: {r.error}
+                {r.label}: {errorReason(r.error)}
               </div>
             ),
           )}

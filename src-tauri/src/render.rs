@@ -1,3 +1,4 @@
+use crate::error::app_err;
 use crate::models::{RenderEvent, RenderStatus};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -57,7 +58,7 @@ fn render_one(
     let src = Path::new(project_path);
     let file_name = src
         .file_name()
-        .ok_or_else(|| "invalid project path".to_string())?;
+        .ok_or_else(|| String::from(app_err("project.badPath", "invalid project path")))?;
     let base_name = src
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
@@ -72,7 +73,7 @@ fn render_one(
         std::process::id(),
         RENDER_SEQ.fetch_add(1, Ordering::Relaxed)
     ));
-    fs::create_dir_all(&temp_dir).map_err(|e| format!("could not create staging folder: {e}"))?;
+    fs::create_dir_all(&temp_dir).map_err(|e| app_err("render.stage", format!("could not create staging folder: {e}")))?;
 
     let cleanup = |dir: &Path| {
         let _ = fs::remove_dir_all(dir);
@@ -86,7 +87,7 @@ fn render_one(
     let staged_flp = staged.dir.join(file_name);
     if let Err(e) = fs::create_dir_all(&staged.dir).and_then(|_| fs::copy(src, &staged_flp)) {
         cleanup(&temp_dir);
-        return Err(format!("could not stage project file: {e}"));
+        return Err(app_err("render.stage", format!("could not stage project file: {e}")).into());
     }
 
     let mut child = match Command::new(fl_studio_path)
@@ -98,7 +99,7 @@ fn render_one(
         Ok(c) => c,
         Err(e) => {
             cleanup(&temp_dir);
-            return Err(format!("could not launch FL Studio renderer: {e}"));
+            return Err(app_err("render.launch", format!("could not launch FL Studio renderer: {e}")).into());
         }
     };
 
@@ -118,7 +119,7 @@ fn render_one(
             }
             Err(e) => {
                 cleanup(&temp_dir);
-                return Err(format!("error waiting for renderer: {e}"));
+                return Err(app_err("render.wait", format!("error waiting for renderer: {e}")).into());
             }
         }
     }
@@ -131,31 +132,37 @@ fn render_one(
         None => {
             cleanup(&temp_dir);
             let reason = if timed_out {
-                "render timed out and no output was produced"
+                app_err("render.timeout", "render timed out and no output was produced")
             } else {
-                "FL Studio exited but no mixdown was written. If FL Studio is already open, close it and render again (it can't render from the command line while it runs); otherwise check the FL Studio path and format in Settings"
+                app_err("render.noOutput", "FL Studio exited but no mixdown was written. If FL Studio is already open, close it and render again (it can't render from the command line while it runs); otherwise check the FL Studio path and format in Settings")
             };
-            return Err(reason.to_string());
+            return Err(reason.into());
         }
     };
 
     if let Err(e) = fs::create_dir_all(output_folder) {
         cleanup(&temp_dir);
-        return Err(format!("could not create output folder: {e}"));
+        return Err(app_err("render.outputFolder", format!("could not create output folder: {e}")).into());
     }
     let dest = unique_output_path(output_folder, output_name.unwrap_or(&base_name), format);
     let copy_result = fs::copy(&rendered_file, &dest);
     cleanup(&temp_dir);
-    copy_result.map_err(|e| format!("could not move rendered file: {e}"))?;
+    copy_result.map_err(|e| app_err("render.move", format!("could not move rendered file: {e}")))?;
 
     let warning = (!staged.missing.is_empty()).then(|| {
         let shown: Vec<&str> = staged.missing.iter().take(3).map(String::as_str).collect();
         let more = staged.missing.len().saturating_sub(3);
-        format!(
-            "Rendered, but {} sample(s) stored next to the project weren't found, so they're silent in this mixdown: {}{}",
-            staged.missing.len(),
-            shown.join(", "),
-            if more > 0 { format!(" (+{more})") } else { String::new() }
+        let names = format!("{}{}", shown.join(", "), if more > 0 { format!(" (+{more})") } else { String::new() });
+        String::from(
+            app_err(
+                "render.missingSamples",
+                format!(
+                    "Rendered, but {} sample(s) stored next to the project weren't found, so they're silent in this mixdown: {names}",
+                    staged.missing.len()
+                ),
+            )
+            .with("count", staged.missing.len())
+            .with("names", names.as_str()),
         )
     });
     Ok((dest, warning))
@@ -263,7 +270,7 @@ pub async fn render_projects(
     let fl_studio_path = scope.fl_studio()?.to_string_lossy().to_string();
     let format = scope.render_format.clone();
     if !matches!(format.as_str(), "wav" | "mp3" | "ogg" | "flac") {
-        return Err(format!("unsupported render format: {format}"));
+        return Err(app_err("render.format", format!("unsupported render format: {format}")).with("format", format.as_str()).into());
     }
     let mut output_folder = scope.output()?.to_path_buf();
     if let Some(sub) = subfolder.as_deref().and_then(crate::scope::safe_subfolder) {
@@ -277,7 +284,7 @@ pub async fn render_projects(
         render_all(&app, project_paths, output_folder, &fl_studio_path, &format, output_names)
     })
     .await
-    .map_err(|e| format!("render worker failed: {e}"))
+    .map_err(|e| app_err("render.worker", format!("render worker failed: {e}")).into())
 }
 
 fn render_all(

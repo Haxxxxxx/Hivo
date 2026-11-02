@@ -3,6 +3,7 @@ import { Check, FolderPlus, RefreshCw } from "lucide-react";
 import { useAppStore } from "../store/useAppStore";
 import { btn } from "../ui";
 import { dict, tr } from "../i18n";
+import { errorText } from "../lib/errors";
 
 const T = dict(
   {
@@ -51,7 +52,7 @@ export function DetectedFolders({ compact = false }: { compact?: boolean }) {
     try {
       await fn();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setBusy(null);
     }

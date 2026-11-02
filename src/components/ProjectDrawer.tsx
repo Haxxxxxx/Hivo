@@ -42,6 +42,7 @@ import { TemplateSelect, useFactoryTemplates } from "./NewProjectModal";
 import { ConfirmButton, StatusSelect, TagEditor, btn, btnPrimary, input, sectionLabel } from "./ui";
 import { Fact, Section } from "../ui";
 import { dict, tr } from "../i18n";
+import { errorText, errorReason } from "../lib/errors";
 
 const KEEP_BACKUPS = 5;
 
@@ -393,7 +394,7 @@ export function ProjectDrawer() {
       const result = await action();
       setMessage({ kind: "ok", text: ok(result) });
     } catch (e) {
-      setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+      setMessage({ kind: "error", text: errorText(e) });
     }
   }
 
@@ -429,7 +430,7 @@ export function ProjectDrawer() {
           ) : (
             <>
               <button
-                onClick={() => openInFlStudio(project.path).catch((e) => setMessage({ kind: "error", text: t.couldntOpen(e instanceof Error ? e.message : String(e)) }))}
+                onClick={() => openInFlStudio(project.path).catch((e) => setMessage({ kind: "error", text: t.couldntOpen(errorReason(e)) }))}
                 disabled={demoMode}
                 className={btnPrimary}
               >
@@ -455,7 +456,7 @@ export function ProjectDrawer() {
                 else if (job?.status === "done") setMessage(job.message ? { kind: "warn", text: job.message } : { kind: "ok", text: t.renderDone });
                 else setMessage({ kind: "warn", text: t.renderPending });
               } catch (e) {
-                setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+                setMessage({ kind: "error", text: errorText(e) });
               }
             }}
             disabled={demoMode || rendering || !canRenderInApp(project)}
@@ -617,7 +618,7 @@ export function ProjectDrawer() {
               title={t.sessionTitle}
               onClick={() =>
                 void openSession({ kind: "song", id: project.path, title: project.name, bpm: project.tempoBpm ?? null }).catch((e) =>
-                  setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) }),
+                  setMessage({ kind: "error", text: errorText(e) }),
                 )
               }
             >
@@ -940,13 +941,14 @@ function SketchPanel({ project }: { project: ProjectInfo }) {
       // project, files left off past 20, the mixdown left off for the stems.
       if (done.clips === 0 || done.skipped > 0 || done.mixdown.length > 0) {
         const extra = (done.skipped > 0 ? t.continueSkipped(done.skipped) : "") + (done.mixdown.length > 0 ? t.continueMixdown(done.mixdown.join(", ")) : "");
-        useAppStore.setState({ actionError: t.continueNote(project.name, done.clips, done.note) + extra });
+        const note = done.notes?.length ? done.notes.map(errorReason).join("; ") : done.note;
+        useAppStore.setState({ actionError: t.continueNote(project.name, done.clips, note) + extra });
       }
       await openInFlStudio(done.flp).catch((e) =>
-        useAppStore.setState({ actionError: t.continueOpenFailed(project.name, e instanceof Error ? e.message : String(e)) }),
+        useAppStore.setState({ actionError: t.continueOpenFailed(project.name, errorReason(e)) }),
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
       setBusy(false);
     }
   }

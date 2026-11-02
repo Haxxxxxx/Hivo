@@ -4,6 +4,7 @@ import { appendIdea, ideaBlock, newCount, relinkedFilings, targetKey } from "../
 import { useAppStore } from "./useAppStore";
 import type { FiledSketch, IncomingItem, InboxItem, InboxTarget } from "../types";
 import { dict, tr } from "../i18n";
+import { errorText } from "../lib/errors";
 
 // The phone inbox on the desktop (docs/PHONE-SYNC.md v1.1). Rust holds the
 // items and files; this mirrors the list, refreshes when Rust says
@@ -89,7 +90,7 @@ export const usePhoneInbox = create<InboxState>((set, get) => {
           paired: status?.devices.filter((d) => d.lastSeenMs !== null).length ?? 0,
         });
       } catch (e) {
-        set({ loaded: true, error: e instanceof Error ? e.message : String(e) });
+        set({ loaded: true, error: errorText(e) });
       }
     },
 

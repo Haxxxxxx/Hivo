@@ -25,6 +25,7 @@ import type { BeatFile, FiledSketch, IncomingItem, InboxItem, InboxTarget, Saved
 import { ConfirmButton, btn, btnPrimary, btnQuiet, engrave, input } from "./ui";
 import { StatusDot } from "../ui";
 import { dict, tr } from "../i18n";
+import { errorText } from "../lib/errors";
 
 // The phone inbox (docs/PHONE-SYNC.md v1.1): ideas, voice memos and BandLab
 // exports sent from the phone. Each card files its item: an idea into a
@@ -329,7 +330,7 @@ function IncomingList({ items }: { items: IncomingItem[] }) {
               </>
             }
             confirmLabel={t.removeConfirm}
-            onConfirm={() => void remove(i.id).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
+            onConfirm={() => void remove(i.id).catch((e) => setError(errorText(e)))}
             className={btnQuiet}
           />
         </div>
@@ -378,7 +379,7 @@ function InboxCard({ item, options, onNotice }: { item: InboxItem; options: Targ
     try {
       await work();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorText(e);
       setError(msg === "disk full" ? "This computer's disk is full." : msg);
     } finally {
       setBusy(false);

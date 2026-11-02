@@ -6,6 +6,7 @@ import type { SongStatus, TemplateInfo } from "../types";
 import { Modal, btn, btnPrimary, input, sectionLabel } from "./ui";
 import { dict, tr } from "../i18n";
 import { adoptBeat } from "../store/beatToSong";
+import { errorText, errorReason } from "../lib/errors";
 
 const T = dict(
   {
@@ -154,13 +155,13 @@ export function NewProjectModal() {
           await api.openInFlStudio(path);
         } catch (e) {
           // The song exists; say so here instead of on a closed modal.
-          setError(tr(T).openFailed(trimmed, e instanceof Error ? e.message : String(e)));
+          setError(tr(T).openFailed(trimmed, errorReason(e)));
           return;
         }
       }
       close();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setBusy(false);
     }

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useCrewStore } from "../store/useCrewStore";
 import { btn, input } from "../ui";
 import { dict, tr } from "../i18n";
+import { errorText } from "../lib/errors";
 
 const T = dict(
   {
@@ -48,7 +49,7 @@ export function DeleteCrew() {
     try {
       await deleteCrew(typed);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
       setBusy(false);
     }
   };

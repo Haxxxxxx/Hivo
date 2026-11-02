@@ -1,3 +1,4 @@
+use crate::error::{app_err, path_err};
 use crate::flp_metadata;
 use crate::paths::is_remote_or_device;
 use crate::render::unique_output_path;
@@ -122,7 +123,7 @@ pub async fn package_preview(app: AppHandle, project_paths: Vec<String>) -> Resu
             .collect()
     })
     .await
-    .map_err(|e| format!("couldn't list the package: {e}"))
+    .map_err(|e| app_err("task.failed", format!("couldn't list the package: {e}")).into())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -151,7 +152,7 @@ fn package_one(resolver: &mut Resolver, project: &Path, out_dir: &Path, approved
     let refused: Vec<String> = plan.refused.iter().map(|r| format!("{} — {}", r.path, r.reason)).collect();
     let stem = project.file_stem().unwrap_or_default().to_string_lossy().to_string();
 
-    fs::create_dir_all(out_dir).map_err(|e| format!("could not create output folder: {e}"))?;
+    fs::create_dir_all(out_dir).map_err(|e| path_err("io.create", out_dir, format!("could not create output folder: {e}")))?;
     let dest = unique_output_path(out_dir, &stem, "zip");
     // Write under a temporary name so a failure never leaves a half-written
     // zip that looks complete.
@@ -159,7 +160,7 @@ fn package_one(resolver: &mut Resolver, project: &Path, out_dir: &Path, approved
     let result = write_zip(&partial, project, &samples);
     match result {
         Ok((included, unreadable)) => {
-            fs::rename(&partial, &dest).map_err(|e| format!("could not finish package: {e}"))?;
+            fs::rename(&partial, &dest).map_err(|e| path_err("io.write", &dest, format!("could not finish package: {e}")))?;
             missing.extend(unreadable);
             Ok(PackageResult {
                 project_path: project.to_string_lossy().to_string(),
@@ -180,7 +181,7 @@ fn package_one(resolver: &mut Resolver, project: &Path, out_dir: &Path, approved
 
 /// Returns how many samples went in, and the ones that couldn't be read.
 fn write_zip(dest: &Path, project: &Path, samples: &[PathBuf]) -> Result<(u32, Vec<String>), String> {
-    let file = File::create(dest).map_err(|e| format!("could not create zip: {e}"))?;
+    let file = File::create(dest).map_err(|e| path_err("io.create", dest, format!("could not create zip: {e}")))?;
     let mut zip = zip::ZipWriter::new(BufWriter::new(file));
     let mut names = HashSet::new();
     let mut included = 0u32;
@@ -201,12 +202,12 @@ fn write_zip(dest: &Path, project: &Path, samples: &[PathBuf]) -> Result<(u32, V
             .compression_method(if store { CompressionMethod::Stored } else { CompressionMethod::Deflated })
             .large_file(size >= u32::MAX as u64);
         zip.start_file(name.as_str(), options)
-            .map_err(|e| format!("zip error on {name}: {e}"))?;
-        std::io::copy(&mut src, zip).map_err(|e| format!("could not add {name}: {e}"))?;
+            .map_err(|e| app_err("package.add", format!("zip error on {name}: {e}")).with("name", name.as_str()))?;
+        std::io::copy(&mut src, zip).map_err(|e| app_err("package.add", format!("could not add {name}: {e}")).with("name", name.as_str()))?;
         Ok(true)
     };
 
-    let project_file = File::open(project).map_err(|e| format!("could not read {}: {e}", project.display()))?;
+    let project_file = File::open(project).map_err(|e| path_err("io.read", project, format!("could not read {}: {e}", project.display())))?;
     add(&mut zip, project, project_file)?;
     let mut unreadable = Vec::new();
     for sample in samples {
@@ -222,8 +223,8 @@ fn write_zip(dest: &Path, project: &Path, samples: &[PathBuf]) -> Result<(u32, V
             None => unreadable.push(sample.to_string_lossy().to_string()),
         }
     }
-    let mut inner = zip.finish().map_err(|e| format!("could not finish zip: {e}"))?;
-    inner.flush().map_err(|e| format!("could not write zip: {e}"))?;
+    let mut inner = zip.finish().map_err(|e| path_err("io.write", dest, format!("could not finish zip: {e}")))?;
+    inner.flush().map_err(|e| path_err("io.write", dest, format!("could not write zip: {e}")))?;
     Ok((included, unreadable))
 }
 
@@ -268,7 +269,7 @@ pub async fn package_projects(
         results
     })
     .await
-    .map_err(|e| format!("packaging failed: {e}"))
+    .map_err(|e| app_err("task.failed", format!("packaging failed: {e}")).into())
 }
 
 #[cfg(test)]

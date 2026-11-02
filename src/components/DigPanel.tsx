@@ -6,6 +6,7 @@ import { beatFactsLine, nameQueries } from "../lib/digger";
 import { currentLang, dict, tr } from "../i18n";
 import type { YoutubeStatus } from "../types";
 import { chip, label, secondary } from "./DigResults";
+import { errorDetail, errorReason } from "../lib/errors";
 
 // The right side of the Digger: the picked beats, the AI dig (what they
 // share, what Gemini heard, the searches, "Go deeper"). The results live
@@ -173,8 +174,8 @@ export function DigPanel({ yt, round }: Props) {
               <span>{t.failed(dig.failed.length)}</span>
               <ul className="flex flex-col gap-0.5">
                 {dig.failed.map((f, i) => (
-                  <li key={i} className="truncate text-engrave" title={f.error}>
-                    {f.name}: {f.error}
+                  <li key={i} className="truncate text-engrave" title={errorDetail(f.error)}>
+                    {f.name}: {errorReason(f.error)}
                   </li>
                 ))}
               </ul>
@@ -214,7 +215,7 @@ export function DigPanel({ yt, round }: Props) {
           )}
           {dig.webError && (
             <p className="text-[11px] text-engrave">
-              {dig.webError}{" "}
+              {errorReason(dig.webError)}{" "}
               <button onClick={() => void d.retryWeb(currentLang(), !!yt?.configured)} disabled={d.diggingDeeper || d.digging} title={t.tryAgainTitle} className="underline hover:text-cream disabled:opacity-40">
                 {t.tryAgain}
               </button>

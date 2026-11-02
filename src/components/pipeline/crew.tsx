@@ -9,6 +9,7 @@ import { formatRelative } from "../../lib/format";
 import type { CrewSongRow, PipelineConfig } from "../../types";
 import { T_PIPELINE, type PipelineItem, type PipelineSource } from "./shared";
 import { tr } from "../../i18n";
+import { errorText } from "../../lib/errors";
 
 // The crew's pipeline: every song the crew shares, in the crew's columns
 // (crew_columns on the server, the same on the website). The owner edits
@@ -45,7 +46,7 @@ export function useCrewSource(): PipelineSource {
     // Current members first, else the last name seen here (a former member).
     const name = (id: string | null | undefined) => nameOf(id, members, knownNames);
     const localPath = pathsByShareId(workspace);
-    const fail = (e: unknown) => setError(e instanceof Error ? e.message : String(e));
+    const fail = (e: unknown) => setError(errorText(e));
     const save = (next: PipelineConfig) => {
       setError(null);
       saveCrewColumns(next).catch(fail);

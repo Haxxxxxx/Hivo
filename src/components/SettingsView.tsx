@@ -14,6 +14,7 @@ import { converterTemplateFor } from "../lib/converters";
 import type { CaptionLang, RenderFormat, SpotifyStatus, YoutubeStatus } from "../types";
 import { dict, tr } from "../i18n";
 import { StatusDot } from "../ui";
+import { errorText, errorTextOr } from "../lib/errors";
 
 // A stable empty list: a fresh [] in a store selector re-renders forever.
 const NO_FOLDERS: string[] = [];
@@ -235,12 +236,12 @@ export function SettingsView() {
 
   async function handleAddFolder() {
     setFolderError(null);
-    await addWatchedFolder().catch((e) => setFolderError(e instanceof Error ? e.message : String(e)));
+    await addWatchedFolder().catch((e) => setFolderError(errorText(e)));
   }
 
   async function handleRemoveFolder(folder: string) {
     setFolderError(null);
-    await removeWatchedFolder(folder).catch((e) => setFolderError(e instanceof Error ? e.message : String(e)));
+    await removeWatchedFolder(folder).catch((e) => setFolderError(errorText(e)));
   }
 
   async function handleDetect() {
@@ -249,7 +250,7 @@ export function SettingsView() {
     try {
       if (!(await detectFlStudio())) setFlError(tr(T).flNotFound);
     } catch (e) {
-      setFlError(e instanceof Error ? e.message : String(e));
+      setFlError(errorText(e));
     } finally {
       setDetecting(false);
     }
@@ -259,12 +260,12 @@ export function SettingsView() {
   // Studio) before saving it.
   async function handleBrowseExecutable() {
     setFlError(null);
-    await pickFlStudio().catch((e) => setFlError(e instanceof Error ? e.message : String(e)));
+    await pickFlStudio().catch((e) => setFlError(errorText(e)));
   }
 
   async function handleBrowseOutput() {
     setExportError(null);
-    await pickOutputFolder().catch((e) => setExportError(e instanceof Error ? e.message : String(e)));
+    await pickOutputFolder().catch((e) => setExportError(errorText(e)));
   }
 
   async function handleTestRender() {
@@ -296,7 +297,7 @@ export function SettingsView() {
         setTestState({ status: "error", message: job?.message ?? tr(T).renderFailed });
       }
     } catch (e) {
-      setTestState({ status: "error", message: e instanceof Error ? e.message : String(e) });
+      setTestState({ status: "error", message: errorText(e) });
     }
   }
 
@@ -513,11 +514,11 @@ function ShortsSettings() {
 
   async function browse() {
     setError(null);
-    await pickFfmpeg().catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    await pickFfmpeg().catch((e) => setError(errorText(e)));
   }
   async function confirmFound(found: string) {
     setError(null);
-    await useDetectedFfmpeg(found).catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    await useDetectedFfmpeg(found).catch((e) => setError(errorText(e)));
   }
   const t = tr(T);
 
@@ -534,7 +535,7 @@ function ShortsSettings() {
           ? t.lookingFfmpeg
           : status.encoder
             ? t.found(status.path ?? "", status.encoder)
-            : status.error ?? (status.found ? t.foundUnconfirmed(status.found) : t.ffmpegMissing)}
+            : errorTextOr(status.error) ?? (status.found ? t.foundUnconfirmed(status.found) : t.ffmpegMissing)}
       </div>
       {status && !status.path && status.found && (
         <button onClick={() => void confirmFound(status.found!)} className="mt-2 rounded-md border border-rule-strong px-3 py-2 text-sm text-body hover:bg-raised">
@@ -608,7 +609,7 @@ function AiSettings() {
       setKey("");
       setMessage({ kind: "ok", text: value ? t.keySaved : t.keyRemoved });
     } catch (e) {
-      setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+      setMessage({ kind: "error", text: errorText(e) });
     }
   }
 
@@ -708,7 +709,7 @@ function CoverSettings() {
       setToken("");
       setMessage({ kind: "ok", text: remove ? t.cfRemoved : t.cfSaved });
     } catch (e) {
-      setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+      setMessage({ kind: "error", text: errorText(e) });
     }
   }
 
@@ -837,7 +838,7 @@ function YoutubeSettings() {
       setKey("");
       setMessage({ kind: "ok", text: value ? t.saved : t.removed });
     } catch (e) {
-      setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+      setMessage({ kind: "error", text: errorText(e) });
     }
   }
 
@@ -946,7 +947,7 @@ function SpotifySettings() {
       setSecret("");
       setMessage({ kind: "ok", text: clear ? t.removed : t.saved });
     } catch (e) {
-      setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+      setMessage({ kind: "error", text: errorText(e) });
     }
   }
 
@@ -1076,7 +1077,7 @@ function DiggerSettings() {
     } catch (e) {
       // Rust cleared it: keep the store in step, then say why.
       await updateSettings({ converterUrlTemplate: undefined }).catch(() => {});
-      setMessage({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+      setMessage({ kind: "error", text: errorText(e) });
     }
   }
 
@@ -1146,7 +1147,7 @@ function BeatFoldersSection() {
 
   function run(action: Promise<void>) {
     setError(null);
-    void action.catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    void action.catch((e) => setError(errorText(e)));
   }
 
   return (
@@ -1202,7 +1203,7 @@ function SampleFoldersSection() {
 
   function run(action: Promise<void>) {
     setError(null);
-    void action.catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    void action.catch((e) => setError(errorText(e)));
   }
 
   return (

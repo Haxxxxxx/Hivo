@@ -43,6 +43,7 @@ import {
 import type { ProjectInfo, SongStatus } from "../types";
 import { ConfirmButton, StatusDot, StatusSelect, btn, btnPrimary } from "./ui";
 import { Chip, MixdownBadge, Toggle } from "../ui";
+import { errorText } from "../lib/errors";
 
 const T = dict(
   {
@@ -365,7 +366,7 @@ export function LibraryView() {
     try {
       await startRender(selectedPaths);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     }
   }
 
@@ -389,7 +390,7 @@ export function LibraryView() {
         <button
           onClick={() => {
             setError(null);
-            rescan().catch((e) => setError(e instanceof Error ? e.message : String(e)));
+            rescan().catch((e) => setError(errorText(e)));
           }}
           disabled={scanning || demoMode}
           className={btn}
@@ -510,7 +511,7 @@ export function LibraryView() {
             }}
           />
           <button
-            onClick={() => startPackage(selectedPaths).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
+            onClick={() => startPackage(selectedPaths).catch((e) => setError(errorText(e)))}
             disabled={packaging || demoMode || selectedPaths.length === 0}
             className={`${btn} ml-auto py-1 text-xs`}
             title={t.packageTitle}
@@ -539,7 +540,7 @@ export function LibraryView() {
             <button
               onClick={() => {
                 setError(null);
-                rescan().catch((e) => setError(e instanceof Error ? e.message : String(e)));
+                rescan().catch((e) => setError(errorText(e)));
               }}
               disabled={scanning}
               className={`${btn} py-1 text-xs`}
@@ -547,7 +548,7 @@ export function LibraryView() {
               <RefreshCw size={12} /> {t.retry}
             </button>
             <button
-              onClick={() => repointFolder(folder).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
+              onClick={() => repointFolder(folder).catch((e) => setError(errorText(e)))}
               title={t.repointTitle}
               className={`${btn} py-1 text-xs`}
             >
@@ -556,7 +557,7 @@ export function LibraryView() {
             <ConfirmButton
               label={t.unlink}
               confirmLabel={t.unlinkConfirm}
-              onConfirm={() => removeWatchedFolder(folder).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
+              onConfirm={() => removeWatchedFolder(folder).catch((e) => setError(errorText(e)))}
               className={`${btn} py-1 text-xs`}
             />
           </div>
@@ -843,7 +844,7 @@ export function EmptyLibrary() {
   const [error, setError] = useState<string | null>(null);
   const run = (fn: () => Promise<void>) => () => {
     setError(null);
-    fn().catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    fn().catch((e) => setError(errorText(e)));
   };
 
   const t = tr(T);
