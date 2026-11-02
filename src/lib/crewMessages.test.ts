@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { crewErrorMessage, crewText, currentUiLang, setUiLang, uiLang } from "./crewMessages";
+import { crewErrorMessage, crewText, currentUiLang, inviteMessage, setUiLang, uiLang } from "./crewMessages";
 
 // One test per dead end on the way into a crew (sign-up is closed).
 
@@ -72,5 +72,18 @@ describe("onboarding messages", () => {
     setUiLang("en");
     expect(crewText("badCode")).toBe("That code is wrong or expired. Ask for a new one.");
     setUiLang(null);
+  });
+});
+
+describe("inviteMessage", () => {
+  it("carries the code, the crew, the website in that language and the email step", () => {
+    const en = inviteMessage("AB12CD34", "Night Crew", "en");
+    expect(en).toContain("AB12CD34");
+    expect(en).toContain("Night Crew");
+    expect(en).toContain("https://www.hi-vo.fr/en");
+    expect(en).toMatch(/send me the email/i);
+    const fr = inviteMessage("AB12CD34", "Night Crew", "fr");
+    expect(fr).toContain("https://www.hi-vo.fr/fr");
+    expect(fr).toMatch(/Envoie-moi/);
   });
 });

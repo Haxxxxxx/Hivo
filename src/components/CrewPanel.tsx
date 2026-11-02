@@ -4,10 +4,10 @@ import { Check, ClipboardCopy, LogOut, RefreshCw, Users } from "lucide-react";
 import { useCrewStore, type ShareResult } from "../store/useCrewStore";
 import { useAppStore } from "../store/useAppStore";
 import { formatRelative } from "../lib/format";
-import { myServerShares, orphanedShares, pushLimitNote, releaseSharedHere, shareElsewhere, sharedHere, sharedTitle, shareLimitNote, syncNote, unsharedTracks } from "../lib/crewSync";
+import { canMoveShare, myServerShares, nameOf, orphanedShares, pushLimitNote, releaseSharedHere, shareElsewhere, sharedHere, sharedTitle, shareLimitNote, syncNote, unsharedTracks } from "../lib/crewSync";
 import { StatusDot } from "./ui";
 import { btn, btnPrimary, ConfirmButton, input } from "../ui";
-import { crewText } from "../lib/crewMessages";
+import { crewText, inviteMessage } from "../lib/crewMessages";
 import { cleanCode, isCodeComplete } from "../lib/signInCode";
 import { dict, locale, tr } from "../i18n";
 
@@ -20,7 +20,7 @@ const plural = (n: number) => (n === 1 ? "" : "s");
 const T = dict(
   {
     privacy:
-      'Share chosen songs with your crew: everyone sees them on the crew board, the calendar and in "who\'s on what". For each shared song the crew sees its title, stage, BPM, key, tags, credits, release date, whether it has a mixdown, whether its Launch Kit is accepted, and when the project was last saved. They also see your crew and display names (not your email, which only the sign-in service keeps). Never audio, file paths, samples, notes or track names. Stored in the EU (Ireland).',
+      'Share chosen songs with your crew: everyone sees them on the crew board, the calendar and in "who\'s on what". For each shared song the crew sees its title, stage, BPM, key, tags, credits, release date, whether it has a mixdown and whether it\'s up to date, whether its Launch Kit is accepted, and when the project was last saved. They also see your crew and display names (not your email, which only the sign-in service keeps). Never audio, file paths, samples, notes or track names. Stored in the EU (Ireland).',
     notConfigured: "Crew sharing isn't set up in this build (no crew server configured).",
     loading: "Loading…",
     loadFailed: (error: string) => `Couldn't load your crews: ${error}`,
@@ -71,6 +71,8 @@ const T = dict(
     newInvite: "New invite code",
     copied: "Copied",
     copy: "Copy",
+    copyMessage: "Copy invite message",
+    messageCopied: "Message copied",
     inviteValid: "Valid 7 days, up to 10 people.",
     inviteListNote: "They also need their email added to the crew's sign-in list first (Supabase dashboard → Authentication → Users).",
     becomesOwner: (name: string) => ` ${name} becomes the owner.`,
@@ -119,11 +121,19 @@ const T = dict(
     hide: "Hide",
     here: "this computer",
     elsewhereRow: "not on this computer",
-    duplicate: "same title as a song shared from here",
+    duplicate: "same title as another row not on this computer: maybe a duplicate",
     removeRow: "Remove",
     removeRowConfirm: "Remove from the board?",
-    removeDuplicates: (n: number) => `Remove ${n} duplicate${plural(n)}`,
-    removeDuplicatesConfirm: "Remove them?",
+    nowOwner: (crew: string) => `You now own ${crew}: invites, columns and the crew's settings are yours.`,
+    moveShare: "Move the share to…",
+    moveShareHelp: "Saved it under a new name (FL Save As, a new version)? Move the crew card to that song: same card, column and place. This song stops being shared.",
+    moveShareTo: "Move to",
+    moveShareConfirm: "Move the card?",
+    moveShareNone: "No other song without a share of its own.",
+    pickSong: "Pick a song",
+    moveShareOffer: (name: string) => `This song is on the crew board. Move its card to ${name}?`,
+    moveShareDone: "Card moved.",
+    movedByLine: (stage: string, who: string, when: string) => `Moved to ${stage} by ${who}, ${when}.`,
     makeOwner: "Make owner",
     makeOwnerConfirm: (name: string) => `Make ${name} the owner?`,
     makeOwnerNote: "Making someone the owner hands them invites, columns and the crew's settings; you become a member.",
@@ -133,7 +143,7 @@ const T = dict(
   },
   {
     privacy:
-      "Partage les sons de ton choix avec ton crew : tout le monde les voit sur le tableau du crew, dans le calendrier et dans « qui bosse sur quoi ». Pour chaque son partagé, le crew voit son titre, son étape, son BPM, sa tonalité, ses tags, ses crédits, sa date de sortie, s'il a un mixdown, si son Launch Kit est validé, et quand le projet a été enregistré pour la dernière fois. Il voit aussi le nom du crew et ton nom affiché (pas ton email, que seul le service de connexion garde). Jamais d'audio, de chemins de fichiers, de samples, de notes ni de noms de pistes. Stocké dans l'UE (Irlande).",
+      "Partage les sons de ton choix avec ton crew : tout le monde les voit sur le tableau du crew, dans le calendrier et dans « qui bosse sur quoi ». Pour chaque son partagé, le crew voit son titre, son étape, son BPM, sa tonalité, ses tags, ses crédits, sa date de sortie, s'il a un mixdown et s'il est à jour, si son Launch Kit est validé, et quand le projet a été enregistré pour la dernière fois. Il voit aussi le nom du crew et ton nom affiché (pas ton email, que seul le service de connexion garde). Jamais d'audio, de chemins de fichiers, de samples, de notes ni de noms de pistes. Stocké dans l'UE (Irlande).",
     notConfigured: "Le partage en crew n'est pas activé dans cette version (aucun serveur de crew configuré).",
     loading: "Chargement…",
     loadFailed: (error: string) => `Impossible de charger tes crews : ${error}`,
@@ -186,6 +196,8 @@ const T = dict(
     newInvite: "Nouveau code d'invitation",
     copied: "Copié",
     copy: "Copier",
+    copyMessage: "Copier le message d'invitation",
+    messageCopied: "Message copié",
     inviteValid: "Valable 7 jours, jusqu'à 10 personnes.",
     inviteListNote: "Il faut aussi d'abord ajouter leur email à la liste de connexion du crew (tableau de bord Supabase → Authentication → Users).",
     becomesOwner: (name: string) => ` ${name} devient propriétaire.`,
@@ -236,11 +248,19 @@ const T = dict(
     hide: "Masquer",
     here: "cet ordi",
     elsewhereRow: "pas sur cet ordi",
-    duplicate: "même titre qu'un son partagé d'ici",
+    duplicate: "même titre qu'une autre ligne absente de cet ordi\u202f: peut-être un doublon",
     removeRow: "Retirer",
     removeRowConfirm: "Retirer du tableau\u202f?",
-    removeDuplicates: (n: number) => (n === 1 ? "Retirer le doublon" : `Retirer les ${n} doublons`),
-    removeDuplicatesConfirm: "Les retirer\u202f?",
+    nowOwner: (crew: string) => `Tu es maintenant propriétaire de ${crew}\u202f: les invitations, les colonnes et les réglages du crew sont à toi.`,
+    moveShare: "Déplacer le partage vers…",
+    moveShareHelp: "Tu l'as enregistré sous un autre nom (Enregistrer sous dans FL, une nouvelle version)\u202f? Déplace la carte du crew vers ce son\u202f: même carte, même colonne, même place. Ce son n'est plus partagé.",
+    moveShareTo: "Déplacer vers",
+    moveShareConfirm: "Déplacer la carte\u202f?",
+    moveShareNone: "Aucun autre son sans partage à lui.",
+    pickSong: "Choisis un son",
+    moveShareOffer: (name: string) => `Ce son est sur le tableau du crew. Déplacer sa carte vers ${name}\u202f?`,
+    moveShareDone: "Carte déplacée.",
+    movedByLine: (stage: string, who: string, when: string) => `Déplacé dans ${stage} par ${who}, ${when}.`,
     makeOwner: "Nommer propriétaire",
     makeOwnerConfirm: (name: string) => `Nommer ${name} propriétaire\u202f?`,
     makeOwnerNote: "Nommer quelqu'un propriétaire lui passe les invitations, les colonnes et les réglages du crew\u202f; tu deviens membre.",
@@ -288,9 +308,12 @@ export function CrewPanel() {
 /** Once: "you're no longer in <crew>" (removed, or the crew was deleted). */
 export function RemovedNotice({ floating = false }: { floating?: boolean }) {
   const removedFrom = useCrewStore((s) => s.removedFrom);
-  const dismiss = useCrewStore((s) => s.dismissRemoved);
-  if (!removedFrom.length) return null;
+  const nowOwnerOf = useCrewStore((s) => s.nowOwnerOf);
+  const dismissRemoved = useCrewStore((s) => s.dismissRemoved);
+  const dismissOwner = useCrewStore((s) => s.dismissOwnerNotice);
+  if (!removedFrom.length && !nowOwnerOf.length) return null;
   const t = tr(T);
+  const dismiss = () => (dismissRemoved(), dismissOwner());
   return (
     <div
       role="status"
@@ -298,6 +321,9 @@ export function RemovedNotice({ floating = false }: { floating?: boolean }) {
     >
       {removedFrom.map((name, i) => (
         <span key={i}>{t.removedFrom(name || t.aCrew)}</span>
+      ))}
+      {nowOwnerOf.map((name, i) => (
+        <span key={`o${i}`}>{t.nowOwner(name)}</span>
       ))}
       <button onClick={dismiss} className="self-start underline hover:text-cream">
         {t.ok}
@@ -580,7 +606,6 @@ function MyServerShares() {
   const rows = myServerShares(songs, workspace, { crewId, userId });
   const unknown = rows.filter((r) => !r.local);
   if (!rows.length) return null;
-  const dupes = unknown.filter((r) => r.duplicate).map((r) => r.id);
   const t = tr(T);
   return (
     <div className="rounded-md border border-rule px-3 py-2 text-xs">
@@ -589,15 +614,6 @@ function MyServerShares() {
           {t.serverTitle(rows.length)}
           {unknown.length > 0 && t.notHere(unknown.length)}
         </span>
-        {dupes.length > 0 && (
-          <ConfirmButton
-            label={t.removeDuplicates(dupes.length)}
-            confirmLabel={t.removeDuplicatesConfirm}
-            onConfirm={() => void run(() => remove(dupes))}
-            disabled={busy}
-            className="rounded border border-transparent px-1 text-engrave hover:text-cream disabled:opacity-40"
-          />
-        )}
         <button onClick={() => setOpen(!open)} className="ml-auto text-engrave hover:text-cream">
           {open ? t.hide : t.show}
         </button>
@@ -717,9 +733,11 @@ export function CrewMembers() {
 export function CrewInvites() {
   const crew = useCrewStore();
   const active = useActiveCrew();
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<"code" | "message" | null>(null);
   const { busy, error, run } = useAction();
   const isOwner = active?.role === "owner";
+  const copy = (what: "code" | "message", text: string) =>
+    void navigator.clipboard?.writeText(text).then(() => (setCopied(what), setTimeout(() => setCopied(null), 1200)));
   const { loadInvites } = crew;
   useEffect(() => {
     if (isOwner) void loadInvites().catch(() => {});
@@ -756,11 +774,11 @@ export function CrewInvites() {
         {crew.invite && (
           <>
             <code className="rounded bg-rule px-2 py-1.5 font-mono text-sm tracking-widest text-cream">{crew.invite}</code>
-            <button
-              onClick={() => void navigator.clipboard?.writeText(crew.invite!).then(() => (setCopied(true), setTimeout(() => setCopied(false), 1200)))}
-              className={`${secondary} flex items-center gap-1.5`}
-            >
-              {copied ? <Check size={14} /> : <ClipboardCopy size={14} />} {copied ? t.copied : t.copy}
+            <button onClick={() => copy("code", crew.invite!)} className={`${secondary} flex items-center gap-1.5`}>
+              {copied === "code" ? <Check size={14} /> : <ClipboardCopy size={14} />} {copied === "code" ? t.copied : t.copy}
+            </button>
+            <button onClick={() => copy("message", inviteMessage(crew.invite!, active.name))} className={`${secondary} flex items-center gap-1.5`}>
+              {copied === "message" ? <Check size={14} /> : <ClipboardCopy size={14} />} {copied === "message" ? t.messageCopied : t.copyMessage}
             </button>
             <span className="text-[11px] text-engrave">{t.inviteValid}</span>
           </>
@@ -908,6 +926,7 @@ export function ShareToggle({ path }: { path: string }) {
   const setShared = useCrewStore((s) => s.setShared);
   const moveShares = useCrewStore((s) => s.moveShares);
   const { busy, error, run } = useAction();
+  const [moving, setMoving] = useState(false);
   if (!can || !crewId || !userId) return null;
   const t = tr(T);
   const scope = { crewId, userId };
@@ -990,6 +1009,17 @@ export function ShareToggle({ path }: { path: string }) {
           />
         </label>
       )}
+      {shared && (
+        <div className="border-t border-rule px-3 py-2">
+          {moving ? (
+            <MoveSharePicker from={path} onDone={() => setMoving(false)} />
+          ) : (
+            <button onClick={() => setMoving(true)} className="text-engrave underline hover:text-cream">
+              {t.moveShare}
+            </button>
+          )}
+        </div>
+      )}
       </div>
   );
 }
@@ -999,10 +1029,11 @@ export function ShareToggle({ path }: { path: string }) {
 export function StageConflictBanner({ path }: { path: string }) {
   const conflict = useAppStore((s) => s.workspace.songs[path]?.stageConflict);
   const members = useCrewStore((s) => s.members);
+  const knownNames = useCrewStore((s) => s.knownNames);
   const resolve = useCrewStore((s) => s.resolveStageConflict);
   if (!conflict) return null;
   const t = tr(T);
-  const who = members.find((m) => m.user_id === conflict.by)?.display_name ?? crewText("someone");
+  const who = nameOf(conflict.by, members, knownNames) ?? crewText("someone");
   const theirs = statusInfo(conflict.theirs ?? undefined).label;
   const mine = statusInfo(conflict.mine ?? undefined).label;
   return (
@@ -1025,4 +1056,87 @@ export function StageConflictBanner({ path }: { path: string }) {
       </div>
     </div>
   );
+}
+
+/** Pick the song that takes over this song's crew card (Save As, a new
+ * version): only songs with no share of their own. */
+function MoveSharePicker({ from, onDone }: { from: string; onDone: () => void }) {
+  const crewId = useCrewStore((s) => s.activeCrewId);
+  const userId = useCrewStore((s) => s.userId);
+  const moveShareTo = useCrewStore((s) => s.moveShareTo);
+  const projects = useAppStore((s) => s.projects);
+  const workspace = useAppStore((s) => s.workspace);
+  const [to, setTo] = useState("");
+  if (!crewId || !userId) return null;
+  const t = tr(T);
+  const scope = { crewId, userId };
+  // The same folder first (a Save As or new version usually sits next to it).
+  const folder = (p: string) => p.replace(/[/\\][^/\\]*$/, "");
+  const options = projects
+    .filter((p) => canMoveShare(workspace, from, p.path, scope))
+    .sort((a, b) => Number(folder(b.path) === folder(from)) - Number(folder(a.path) === folder(from)) || b.modifiedAtMs - a.modifiedAtMs);
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-[11px] text-engrave">{t.moveShareHelp}</span>
+      {options.length === 0 ? (
+        <span className="text-engrave">{t.moveShareNone}</span>
+      ) : (
+        <div className="flex items-center gap-2">
+          <select value={to} onChange={(e) => setTo(e.target.value)} aria-label={t.moveShareTo} className="min-w-0 flex-1 rounded border border-rule bg-chassis px-2 py-1 text-body">
+            <option value="">{t.pickSong}</option>
+            {options.map((p) => (
+              <option key={p.path} value={p.path}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          <ConfirmButton
+            label={t.moveShareTo}
+            confirmLabel={t.moveShareConfirm}
+            disabled={!to}
+            onConfirm={() => (moveShareTo(from, to), onDone())}
+            className="shrink-0 rounded border border-rule-strong px-2 py-1 text-body hover:bg-raised disabled:opacity-40"
+          />
+        </div>
+      )}
+      <button onClick={onDone} className="self-start text-[11px] text-engrave hover:text-cream">
+        {t.cancel}
+      </button>
+    </div>
+  );
+}
+
+/** After "Save as new version": offer to move the crew card to the new file. */
+export function MoveShareOffer({ from, to, onDone }: { from: string; to: string; onDone: () => void }) {
+  const crewId = useCrewStore((s) => s.activeCrewId);
+  const userId = useCrewStore((s) => s.userId);
+  const moveShareTo = useCrewStore((s) => s.moveShareTo);
+  const workspace = useAppStore((s) => s.workspace);
+  if (!crewId || !userId || !canMoveShare(workspace, from, to, { crewId, userId })) return null;
+  const t = tr(T);
+  const name = to.split(/[/\\]/).pop() ?? to;
+  return (
+    <div role="status" className="mt-2 flex items-center gap-2 rounded-md border border-rule bg-panel px-3 py-2 text-xs text-body">
+      <span className="flex-1">{t.moveShareOffer(name)}</span>
+      <button onClick={() => (moveShareTo(from, to), onDone())} className="shrink-0 rounded border border-rule-strong px-2 py-1 text-body hover:bg-raised">
+        {t.moveShareTo}
+      </button>
+      <button onClick={onDone} className="shrink-0 text-engrave hover:text-cream">
+        {t.cancel}
+      </button>
+    </div>
+  );
+}
+
+/** "Moved to <stage> by <name>, <time>": a crewmate's move on the crew
+ * board set this song's stage. */
+export function CrewMoveNote({ path }: { path: string }) {
+  const meta = useAppStore((s) => s.workspace.songs[path]);
+  const members = useCrewStore((s) => s.members);
+  const knownNames = useCrewStore((s) => s.knownNames);
+  if (!meta?.stageMovedBy || meta.stagePending || meta.stageConflict || !meta.shared) return null;
+  const t = tr(T);
+  const who = nameOf(meta.stageMovedBy, members, knownNames) ?? crewText("someone");
+  const when = meta.stageUpdatedAtMs ? formatRelative(meta.stageUpdatedAtMs) : "";
+  return <div className="mt-2 text-[11px] text-engrave">{t.movedByLine(statusInfo(meta.status).label, who, when)}</div>;
 }
