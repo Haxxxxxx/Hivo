@@ -135,3 +135,55 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+#[cfg(test)]
+mod acl_tests {
+    use std::collections::BTreeSet;
+
+    fn handler_commands() -> BTreeSet<String> {
+        let src = include_str!("lib.rs");
+        let block = src.split("generate_handler![").nth(1).unwrap().split("])").next().unwrap();
+        block
+            .lines()
+            .filter_map(|l| l.trim().trim_end_matches(',').rsplit_once("::").map(|(_, c)| c.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn app_commands_are_declared_and_granted() {
+        let handlers = handler_commands();
+        assert!(handlers.len() > 50);
+
+        let build = include_str!("../build.rs");
+        let declared: BTreeSet<String> = build
+            .split("const COMMANDS")
+            .nth(1)
+            .unwrap()
+            .split("];")
+            .next()
+            .unwrap()
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix('"').and_then(|l| l.strip_suffix("\",")).map(str::to_string))
+            .collect();
+        assert_eq!(handlers, declared, "build.rs COMMANDS must list exactly the commands in generate_handler!");
+
+        let perm = |c: &String| format!("allow-{}", c.replace('_', "-"));
+        let main: serde_json::Value = serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        let granted: BTreeSet<String> = main["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.as_str().map(str::to_string))
+            .collect();
+        for c in &handlers {
+            assert!(granted.contains(&perm(c)), "default.json must grant {}", perm(c));
+        }
+
+        // The session window only listens to events: no app command, ever.
+        let session: serde_json::Value = serde_json::from_str(include_str!("../capabilities/session.json")).unwrap();
+        for p in session["permissions"].as_array().unwrap() {
+            let p = p.as_str().unwrap();
+            assert!(p.contains(':'), "session.json must not grant app command {p}");
+        }
+    }
+}

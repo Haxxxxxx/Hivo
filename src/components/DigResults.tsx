@@ -329,6 +329,10 @@ export function DigResults({ yt, round, setRound, fill }: Props) {
               src={embedUrl(playing.id) ?? undefined}
               allow="autoplay; encrypted-media; fullscreen"
               allowFullScreen
+              // The wrapper and the YouTube player inside it (sandbox flags
+              // carry over) need scripts and their own origin; no popups,
+              // forms or top navigation.
+              sandbox="allow-scripts allow-same-origin allow-presentation"
               title={playing.title}
               className="aspect-video w-full max-w-2xl rounded bg-chassis"
             />
