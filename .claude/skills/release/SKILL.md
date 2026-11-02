@@ -39,32 +39,67 @@ git tag v0.5.0 && git push origin v0.5.0
 ```
 Re-tag after a failed run (nothing shipped): `git tag -d vX && git push origin :refs/tags/vX`, then tag again on the new head.
 
-## What the runner does (`.github/workflows/release.yml`, self-hosted `hivo-mac`)
-`Tag is on main` check → `npm ci --ignore-scripts` → tests → universal macOS
-build + cross-compiled Windows NSIS, both signed with `TAURI_SIGNING_PRIVATE_KEY`
-(no password) → **Publish to the releases bucket** (versioned artifacts + `.sig`,
-`latest/Hivo.dmg`, `latest/Hivo-setup.exe`, then `latest.json` last) → draft
-GitHub Release. Watch it: `gh run list --workflow 'Release builds' --limit 1`,
-`gh run view <id> --log-failed`.
+## What the workflow does (`.github/workflows/release.yml`)
+Three jobs. The two build jobs run on the self-hosted Mac (`hivo`) with **no
+secret at all**; signing and publishing happen on a fresh GitHub-hosted machine.
 
-Then the **`android` job** (same runner, `needs: build`): tag on main → phone
-version == tag == desktop version → `cd mobile && npm ci --ignore-scripts`,
-tests, tsc → `npx expo prebuild --platform android --clean` (no secrets) →
-keystore decoded to `$RUNNER_TEMP/hivo-upload.jks` → `assembleRelease
--PreactNativeArchitectures=arm64-v8a` (APK, ~30 MB, website) →
-`bundleRelease` with `HIVO_DISTRIBUTION=play` (AAB, all ABIs, Play) → both
-checked against the upload certificate (fails if debug-signed) → APK to the
-bucket, `mobile-latest.json` last → APK + AAB attached to the draft → keystore
-deleted (`if: always()`). Re-run just this job if only it failed: the desktop
-part already shipped.
+1. **`build`** (Mac): `Tag is on main` → tag == `tauri.conf.json` version →
+   `npm ci --ignore-scripts` → tests → universal macOS build + cross-compiled
+   Windows NSIS with `createUpdaterArtifacts` off (no key on the Mac) →
+   `Hivo.app.tar.gz` made with `tar` (same `Hivo.app/…` layout tauri makes) →
+   artifact `desktop` (tar.gz, dmg, -setup.exe) → draft GitHub Release with the
+   dmg and exe.
+2. **`android`** (Mac, `needs: build`): phone version == desktop version →
+   `cd mobile && npm ci --ignore-scripts`, tests, tsc → `expo prebuild` →
+   `assembleRelease -PreactNativeArchitectures=arm64-v8a` with
+   `HIVO_DISTRIBUTION=direct` (APK, website) and `bundleRelease` with
+   `HIVO_DISTRIBUTION=play` (AAB, Play), both `HIVO_UNSIGNED=1` → artifact
+   `android` (unsigned APK + AAB).
+3. **`release`** (`ubuntu-latest`, `environment: release`, `needs: [build,
+   android]`): signs the updater files with `npx tauri signer sign
+   --app-version <ver>` (same version-bound signature tauri build makes), signs
+   the APK with `apksigner` and the AAB with `jarsigner` (keystore only inside
+   that step), checks both carry the upload certificate (never debug) →
+   uploads everything to `v<ver>/` → attaches APK + AAB to the draft → **only
+   then** `latest/Hivo.dmg`, `latest/Hivo-setup.exe`, `latest/Hivo.apk`
+   (`cache-control: max-age=60`), `latest.json`, `mobile-latest.json` last.
+   A failure anywhere before that leaves `latest/` and both manifests as they were.
 
-Phone builds: the APK ("direct") shows an update banner when
-`mobile-latest.json` has a newer version (checked at launch, at most once a
-day). The AAB ("play") never checks: Play updates it, and Play's policy forbids
-an app updating itself from elsewhere. Signing goes through
+Watch it: `gh run list --workflow 'Release builds' --limit 1`, `gh run view
+<id> --log-failed`. A failed `release` job can be re-run alone (the artifacts
+are kept 7 days).
+
+Phone builds: only a build made with `HIVO_DISTRIBUTION=direct` (the website
+APK) checks `mobile-latest.json` (at launch, at most once a day); `play` and a
+build without the flag (`dev`) never do (fail closed). Signing goes through
 `mobile/plugins/withReleaseSigning.js`: `HIVO_UPLOAD_STORE_FILE`,
-`HIVO_UPLOAD_STORE_PASSWORD`, `HIVO_UPLOAD_KEY_ALIAS`, `HIVO_UPLOAD_KEY_PASSWORD`;
-without them a release build is signed with the debug key (local tests only).
+`HIVO_UPLOAD_STORE_PASSWORD`, `HIVO_UPLOAD_KEY_ALIAS`, `HIVO_UPLOAD_KEY_PASSWORD`
+sign it; `HIVO_UNSIGNED=1` leaves it unsigned (the workflow); with neither, a
+local release build gets the debug key, and **on CI (`CI` set) the build
+fails** instead.
+
+## Owner actions in GitHub settings (one-time; the workflow can't do them)
+1. **Environment `release`** (Settings → Environments → New environment):
+   add yourself as **required reviewer**, limit deployment branches/tags to
+   `v*` tags and `main`, and move the secrets `TAURI_SIGNING_PRIVATE_KEY`,
+   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, `ANDROID_UPLOAD_KEYSTORE_BASE64`,
+   `ANDROID_UPLOAD_KEYSTORE_PASSWORD`, `ANDROID_UPLOAD_KEY_ALIAS` and
+   `SUPABASE_SERVICE_ROLE_KEY` from repository secrets into it (then delete the
+   repository copies). The `release` job then waits for your approval before
+   anything is signed or shipped. (Without the environment set up, GitHub
+   creates it empty on the first run and repository secrets still work.)
+2. **Tag protection**: a ruleset (Settings → Rules → Rulesets → New tag
+   ruleset) targeting `v*`, restricting creation, update and deletion to you
+   (bypass list), so nobody else with write access can push a release tag.
+3. **A password on the Tauri signing key** (it has none today). The key must
+   stay the same (installed apps only trust `plugins.updater.pubkey`), so
+   re-encrypt it rather than generate a new one: the Tauri key is a base64'd
+   minisign secret key, so `base64 --decode < ~/.tauri/hivo.key > k.key`,
+   `minisign -C -s k.key` (old password: empty), `base64 < k.key | tr -d '\n'`
+   is the new `TAURI_SIGNING_PRIVATE_KEY`, the password goes in
+   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Check before relying on it: sign a
+   test file with `npx tauri signer sign` and the new pair, then delete
+   `k.key`. (Not tried here yet.) Empty password secret = no password.
 
 ## Google Play (manual, by the user)
 The workflow never uploads to Play. After the run: download
@@ -79,13 +114,17 @@ the listing is live, set `PLAY_URL` in `web/src/Landing.tsx` to show the
 Google Play button.
 
 ## Secrets and places (never print any of them)
-- `TAURI_SIGNING_PRIVATE_KEY`: GitHub repo secret; backup at `~/.tauri/hivo.key`.
-  Public half is `plugins.updater.pubkey` in `tauri.conf.json`. Never on Vercel.
-- `SUPABASE_SERVICE_ROLE_KEY`: GitHub repo secret, used only by the publish
-  steps (desktop and phone). Never in the app, never on Vercel.
+All of them are read only by the `release` job (GitHub-hosted), each in the
+one step that needs it; never on the self-hosted Mac. They belong in the
+`release` environment (see owner actions above).
+- `TAURI_SIGNING_PRIVATE_KEY` (+ `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, empty
+  today): backup at `~/.tauri/hivo.key`. Public half is
+  `plugins.updater.pubkey` in `tauri.conf.json`. Never on Vercel.
+- `SUPABASE_SERVICE_ROLE_KEY`: used only by the two upload steps. Never in the
+  app, never on Vercel.
 - `ANDROID_UPLOAD_KEYSTORE_BASE64` (the upload `.jks`, base64),
   `ANDROID_UPLOAD_KEYSTORE_PASSWORD` (store and key password, the same),
-  `ANDROID_UPLOAD_KEY_ALIAS`: GitHub repo secrets for the phone app. Keep a
+  `ANDROID_UPLOAD_KEY_ALIAS`: the phone app's upload key. Keep a
   backup of the keystore and password outside the repo: website APK users can
   only update to an APK signed with the same key. Never commit a keystore
   (`*.jks`, `*.key` are git-ignored in `mobile/`).

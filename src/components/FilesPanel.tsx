@@ -3,6 +3,7 @@ import { Clapperboard, Disc3, FileAudio, History, Image, Layers, Mic, Music2, Pa
 import { useAppStore } from "../store/useAppStore";
 import * as api from "../lib/tauri";
 import { kitTitleFor } from "../lib/launchKit";
+import { kitFolderName } from "../lib/kitState";
 import { formatBytes, formatRelative } from "../lib/format";
 import type { ProjectInfo } from "../types";
 import { FileRow } from "../ui";
@@ -71,8 +72,9 @@ export function FilesPanel({ project }: { project: ProjectInfo }) {
   const demoMode = useAppStore((s) => s.demoMode);
   const openLaunchKit = useAppStore((s) => s.openLaunchKit);
   const [kit, setKit] = useState<api.KitFile[] | null>(null);
-  // The kit folder is named after the kit's title (as the export does).
-  const kitTitle = kitTitleFor(project, meta);
+  // The folder the last export went to (it may be "Title (2)"), else the
+  // kit's title (as the export names it).
+  const kitTitle = kitFolderName(meta, kitTitleFor(project, meta));
 
   useEffect(() => {
     let live = true;
@@ -85,6 +87,21 @@ export function FilesPanel({ project }: { project: ProjectInfo }) {
       live = false;
     };
   }, [settings.outputFolder, kitTitle, demoMode, project.modifiedAtMs]);
+
+  // Audio attached from the phone inbox (`<song folder>/BandLab/`), for any
+  // song; a sketch's own BandLab audio already shows as its mixdowns.
+  const [bandlab, setBandlab] = useState<api.KitFile[]>([]);
+  useEffect(() => {
+    let live = true;
+    if (demoMode || project.daw === "bandlab") return setBandlab([]);
+    api
+      .bandlabFiles(project.path)
+      .then((files) => live && setBandlab(files ?? []))
+      .catch(() => live && setBandlab([]));
+    return () => {
+      live = false;
+    };
+  }, [project.path, project.daw, project.modifiedAtMs, demoMode]);
 
   const reveal = (path: string) => void api.revealInFileManager(path).catch(() => {});
   const audioDir = join(project.folder, "Audio");
@@ -135,6 +152,15 @@ export function FilesPanel({ project }: { project: ProjectInfo }) {
         ))
       )}
       {project.renders.length > 4 && <div className="pl-[118px] text-[11px] text-engrave">{t.olderMixdowns(project.renders.length - 4)}</div>}
+      {bandlab.map((f, i) => (
+        <FileRow
+          key={f.path}
+          icon={<FileAudio size={13} />}
+          label={i === 0 ? "BandLab" : ""}
+          detail={`${f.relative} · ${formatBytes(f.sizeBytes)}`}
+          onReveal={() => reveal(f.path)}
+        />
+      ))}
 
       <div className="mt-2 border-t border-rule pt-2">
         {!settings.outputFolder ? (

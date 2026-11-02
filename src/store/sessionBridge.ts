@@ -7,6 +7,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { currentLang } from "../i18n";
+import type { Relink } from "../lib/relink";
 import type { SessionPayload, SessionTarget } from "../lib/session";
 import { useAppStore } from "./useAppStore";
 
@@ -26,9 +27,18 @@ function payload(t: SessionTarget): SessionPayload {
     gone = !project && !s.scanning && s.projects.length > 0;
     text = ws.songs[t.id]?.notes ?? "";
     bpm = project?.tempoBpm ?? bpm;
+    // A rename shows its new name.
+    if (project) return { ...t, title: project.name, bpm, text, gone, lang: currentLang() };
   } else if (t.kind === "beat") text = ws.beatNotes?.[t.id] ?? "";
   else text = ws.leadNotes?.[t.id] ?? "";
   return { ...t, bpm, text, gone, lang: currentLang() };
+}
+
+/** The target after records moved (lib/relink.ts): a song keeps its window. */
+export function followRelink(t: SessionTarget, relinks: Relink[]): SessionTarget {
+  if (t.kind !== "song") return t;
+  const moved = relinks.find((r) => r.from === t.id);
+  return moved ? { ...t, id: moved.to } : t;
 }
 
 function send(force = false) {
@@ -69,6 +79,8 @@ export function startSessionBridge(): () => void {
     }),
   );
   const unsubStore = useAppStore.subscribe((s, prev) => {
+    // A renamed or relinked song (or "Continue in FL Studio"): follow it.
+    if (target && s.lastRelinks !== prev.lastRelinks) target = followRelink(target, s.lastRelinks);
     if (target && (s.workspace !== prev.workspace || s.projects !== prev.projects || s.scanning !== prev.scanning)) send();
   });
   return () => {

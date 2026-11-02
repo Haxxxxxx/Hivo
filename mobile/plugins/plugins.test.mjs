@@ -82,7 +82,12 @@ describe("app.config.js", () => {
   it("marks Play builds by HIVO_DISTRIBUTION", () => {
     const prev = process.env.HIVO_DISTRIBUTION;
     try {
+      // No flag (or an unknown one): a dev build, which never checks for updates.
       delete process.env.HIVO_DISTRIBUTION;
+      expect(appConfig(base).extra.distribution).toBe("dev");
+      process.env.HIVO_DISTRIBUTION = "website";
+      expect(appConfig(base).extra.distribution).toBe("dev");
+      process.env.HIVO_DISTRIBUTION = "direct";
       expect(appConfig(base).extra.distribution).toBe("direct");
       process.env.HIVO_DISTRIBUTION = "play";
       expect(appConfig(base).extra.distribution).toBe("play");
@@ -98,7 +103,9 @@ describe("withReleaseSigning", () => {
     const out = applyReleaseSigning(GRADLE);
     expect(out).toMatch(/debug \{[^}]*\}\s*release \{ \/\/ hivo-release-signing/);
     expect(out).toContain("System.getenv('HIVO_UPLOAD_STORE_FILE')");
-    expect(out).toContain("signingConfig(System.getenv('HIVO_UPLOAD_STORE_FILE') ? signingConfigs.release : signingConfigs.debug)");
+    expect(out).toContain("signingConfig(System.getenv('HIVO_UPLOAD_STORE_FILE') ? signingConfigs.release : System.getenv('HIVO_UNSIGNED') == '1' ? null : System.getenv('CI') ?");
+    // On CI, no upload key and no explicit unsigned build is an error, never the debug key.
+    expect(out).toMatch(/System\.getenv\('CI'\) \? \{ throw new GradleException\([^)]*\) \}\(\) : signingConfigs\.debug\)/);
     // The debug build type keeps the debug key.
     expect(out).toMatch(/debug \{\s*signingConfig signingConfigs\.debug\s*\}/);
     // No secret or path in the generated file.

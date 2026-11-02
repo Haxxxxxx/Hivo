@@ -5,20 +5,42 @@
 
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import * as api from "../lib/tauri";
-import { applyNoteChanges, buildSnapshot, noteLookup, parseChanges, type SyncSources } from "../lib/phoneSync";
+import { applyNoteChanges, buildSnapshot, noteLookup, parseChanges, refusal, type SyncSources } from "../lib/phoneSync";
 import type { PhoneSyncRequest } from "../types";
 import { useAppStore } from "./useAppStore";
 import { startPhoneInbox } from "./usePhoneInbox";
 
 type Reply = { body: unknown } | { error: string };
 
+/** How long a request waits for a running scan (Rust gives up after 10 s). */
+export const SCAN_WAIT_MS = 5_000;
+
+/** Resolves when no scan is running, or after `ms` (whichever comes first). */
+function scanSettled(ms: number): Promise<void> {
+  if (!useAppStore.getState().scanning) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      unsub();
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    const unsub = useAppStore.subscribe((s) => {
+      if (!s.scanning) done();
+    });
+  });
+}
+
 async function sources(): Promise<SyncSources | Reply> {
   // Fresh lists: the Digger may never have been opened. No beats folder = none.
-  const [leads, beats] = await Promise.all([api.listLeads().catch(() => []), api.scanBeats().catch(() => [])]);
+  const [leads, beats] = await Promise.all([
+    api.listLeads().then((ls) => ls.filter((l) => !l.unrecognised)).catch(() => []),
+    api.scanBeats().catch(() => []),
+    scanSettled(SCAN_WAIT_MS),
+  ]);
   const s = useAppStore.getState();
-  if (s.demoMode) return { error: "demo" };
-  // Not loaded yet, read-only, or a scan in flight (songs could look deleted).
-  if (!s.workspaceWritable || s.scanning) return { error: "busy" };
+  const refused = refusal({ ...s, hasIssue: s.workspaceIssue !== null, projectCount: s.projects.length });
+  if (refused) return { error: refused };
   return { leads, beats, projects: s.projects, workspace: s.workspace };
 }
 
@@ -53,6 +75,18 @@ export function startPhoneSyncBridge(): () => void {
     if (s.demoMode !== prev.demoMode) tellDemo(s.demoMode);
   });
   const stopInbox = startPhoneInbox();
+  // A phone with a newer Hivo said hello: this computer may have one waiting.
+  let unlistenNewer: UnlistenFn | null = null;
+  api
+    .onPhoneNewer(() => {
+      const s = useAppStore.getState();
+      if (s.update.status === "idle" || s.update.status === "error") void s.checkUpdate({ quiet: true });
+    })
+    .then((u) => {
+      if (stopped) u();
+      else unlistenNewer = u;
+    })
+    .catch(() => {});
   api
     .onPhoneSyncRequest((req) => {
       void answerPhoneRequest(req)
@@ -68,6 +102,7 @@ export function startPhoneSyncBridge(): () => void {
   return () => {
     stopped = true;
     unlisten?.();
+    unlistenNewer?.();
     unsubDemo();
     stopInbox();
   };

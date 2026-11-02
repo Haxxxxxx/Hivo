@@ -4,7 +4,9 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.webkit.MimeTypeMap
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
@@ -14,47 +16,99 @@ import java.io.IOException
 // another app (BandLab, a file manager…) shared with Hivo, copies the files
 // into the app's cache so JS can read them, and hands JS their names and
 // sizes. Text (a BandLab link, lyrics) comes through as text. The intent is
-// consumed once read, so a reload doesn't share it twice.
+// taken before it's read (`claim`), so a reload, or the new-intent event and
+// takeShared both firing, never shares it twice.
 //
 // Limits are checked here too so a huge file is never copied:
-// MAX_FILES / MAX_FILE_BYTES match src/lib/outbox.ts.
+// MAX_FILES / MAX_FILE_BYTES match src/lib/outbox.ts; MAX_SHARE_BYTES (2 GB
+// for one share) is the phone's own cap.
 
 private const val MAX_FILES = 20
 private const val MAX_FILE_BYTES = 500L * 1024 * 1024
+/** All the files of one share together. */
+private const val MAX_SHARE_BYTES = 2L * 1024 * 1024 * 1024
+/** Room left on the phone after a copy. */
+private const val SPACE_MARGIN_BYTES = 50L * 1024 * 1024
 private const val MAX_TEXT_CHARS = 20_000
+/** Marks an intent this module has already taken (it can reach JS twice:
+ * the new-intent event, then takeShared when the app becomes active). */
+private const val CONSUMED = "fr.hivo.share.consumed"
 
 class HivoShareModule : Module() {
+  private val lock = Any()
+  /** Share folders being copied right now: a sweep never touches them. */
+  private val copying = mutableSetOf<String>()
+
   override fun definition() = ModuleDefinition {
     Name("HivoShare")
-    Events("onShare")
+    Events("onShare", "onShareStart")
 
     // A share that started the app (or arrived while it was in the background).
+    // The intent is taken first (two calls never copy one share), then read.
     AsyncFunction("takeShared") {
       val activity = appContext.currentActivity ?: return@AsyncFunction null
-      val shared = read(activity.intent) ?: return@AsyncFunction null
-      // Consumed: the same intent isn't read again after a reload.
-      activity.intent = Intent(activity.intent).apply {
-        action = Intent.ACTION_MAIN
-        removeExtra(Intent.EXTRA_STREAM)
-        removeExtra(Intent.EXTRA_TEXT)
-      }
-      shared
+      val captured = claim(activity.intent) ?: return@AsyncFunction null
+      read(captured)
     }
 
-    // A share while Hivo is open (singleTask activity).
+    // A share while Hivo is open (singleTask activity). Copying can take a
+    // while (up to 20 big files): off the main thread, or Android shows
+    // "not responding".
     OnNewIntent { intent ->
-      val shared = read(intent) ?: return@OnNewIntent
-      sendEvent("onShare", shared)
+      val captured = claim(intent) ?: return@OnNewIntent
+      Thread {
+        val shared = read(captured) ?: return@Thread
+        sendEvent("onShare", shared)
+      }.start()
     }
 
-    // Removes the copies once JS has moved them into the outbox.
-    AsyncFunction("clearCache") {
-      val ctx = appContext.reactContext ?: return@AsyncFunction false
-      File(ctx.cacheDir, "hivo-share").deleteRecursively()
+    // Removes one share's copies once JS has moved them into the outbox (or
+    // the share was left). Only a folder inside the share cache.
+    AsyncFunction("clearCache") { dir: String ->
+      val target = shareDir(dir) ?: return@AsyncFunction false
+      synchronized(lock) { if (target.path in copying) return@AsyncFunction false }
+      target.deleteRecursively()
+    }
+
+    // At start: every share folder but the ones JS still shows or holds.
+    AsyncFunction("sweepCache") { keep: List<String> ->
+      val ctx = appContext.reactContext ?: return@AsyncFunction 0
+      val kept = keep.mapNotNull { shareDir(it)?.path }.toSet()
+      var removed = 0
+      File(ctx.cacheDir, "hivo-share").listFiles()?.forEach { f ->
+        val busy = synchronized(lock) { f.canonicalPath in copying }
+        if (!busy && f.canonicalPath !in kept && f.deleteRecursively()) removed++
+      }
+      removed
     }
   }
 
-  private fun streams(intent: Intent): List<Uri> {
+  /** A share folder JS named, checked to be directly inside the share cache. */
+  private fun shareDir(path: String): File? {
+    val ctx = appContext.reactContext ?: return null
+    val root = File(ctx.cacheDir, "hivo-share").canonicalFile
+    val f = try { File(path.removePrefix("file://")).canonicalFile } catch (_: IOException) { return null }
+    return if (f.parentFile == root) f else null
+  }
+
+  /** Takes a share intent once: returns a copy to read and empties the
+   * original (marked, extras removed), so nothing reads it again. */
+  private fun claim(intent: Intent?): Intent? = synchronized(lock) {
+    if (intent == null || intent.getBooleanExtra(CONSUMED, false)) return null
+    if (intent.action != Intent.ACTION_SEND && intent.action != Intent.ACTION_SEND_MULTIPLE) return null
+    val copy = Intent(intent)
+    intent.putExtra(CONSUMED, true)
+    intent.removeExtra(Intent.EXTRA_STREAM)
+    intent.removeExtra(Intent.EXTRA_TEXT)
+    intent.action = Intent.ACTION_MAIN
+    copy
+  }
+
+  /** Only content:// shares: a file:// path from another app could point
+   * inside Hivo's own storage (the activity is exported, it has to be). */
+  private fun streams(intent: Intent): List<Uri> = rawStreams(intent).filter { it.scheme == "content" }
+
+  private fun rawStreams(intent: Intent): List<Uri> {
     return when (intent.action) {
       Intent.ACTION_SEND -> {
         val uri = if (Build.VERSION.SDK_INT >= 33) {
@@ -85,41 +139,62 @@ class HivoShareModule : Module() {
     val subject = intent.getStringExtra(Intent.EXTRA_SUBJECT)?.take(200)
     if (uris.isEmpty() && text.isNullOrBlank()) return null
 
-    val dir = File(ctx.cacheDir, "hivo-share/${System.currentTimeMillis()}")
+    // Each share in its own folder: clearing one never touches another.
+    val dir = File(ctx.cacheDir, "hivo-share/${System.currentTimeMillis()}-${java.util.UUID.randomUUID().toString().take(8)}").canonicalFile
     dir.mkdirs()
+    synchronized(lock) { copying.add(dir.path) }
+    if (uris.isNotEmpty()) sendEvent("onShareStart", mapOf("count" to uris.size))
     val files = mutableListOf<Map<String, Any?>>()
     val skipped = mutableListOf<Map<String, Any?>>()
-    for ((i, uri) in uris.withIndex()) {
-      val (name, size) = describe(ctx, uri, i)
-      if (i >= MAX_FILES) {
-        skipped.add(mapOf("name" to name, "reason" to "count"))
-        continue
-      }
-      if (size != null && size > MAX_FILE_BYTES) {
-        skipped.add(mapOf("name" to name, "reason" to "too-big", "size" to size))
-        continue
-      }
-      try {
-        val target = uniqueFile(dir, name)
-        val copied = copy(ctx, uri, target)
-        if (copied < 0) {
-          target.delete()
-          skipped.add(mapOf("name" to name, "reason" to "too-big"))
-        } else {
-          files.add(mapOf("uri" to Uri.fromFile(target).toString(), "name" to target.name, "size" to copied, "mime" to ctx.contentResolver.getType(uri)))
+    var total = 0L
+    try {
+      for ((i, uri) in uris.withIndex()) {
+        val (name, size, named) = describe(ctx, uri, i)
+        if (i >= MAX_FILES) {
+          skipped.add(mapOf("name" to name, "reason" to "count"))
+          continue
         }
-      } catch (e: IOException) {
-        val full = e.message?.contains("ENOSPC") == true || e.message?.contains("No space", ignoreCase = true) == true
-        skipped.add(mapOf("name" to name, "reason" to if (full) "space" else "unreadable"))
-      } catch (e: SecurityException) {
-        skipped.add(mapOf("name" to name, "reason" to "unreadable"))
+        if (size != null && size > MAX_FILE_BYTES) {
+          skipped.add(mapOf("name" to name, "reason" to "too-big", "size" to size))
+          continue
+        }
+        if (size != null && total + size > MAX_SHARE_BYTES) {
+          skipped.add(mapOf("name" to name, "reason" to "total", "size" to size))
+          continue
+        }
+        // Checked before copying: a full phone is a sentence, not a half file.
+        if (size != null && dir.usableSpace in 1 until size + SPACE_MARGIN_BYTES) {
+          skipped.add(mapOf("name" to name, "reason" to "space", "size" to size))
+          continue
+        }
+        try {
+          val target = uniqueFile(dir, name)
+          val copied = copy(ctx, uri, target, minOf(MAX_FILE_BYTES, MAX_SHARE_BYTES - total))
+          if (copied < 0) {
+            target.delete()
+            skipped.add(mapOf("name" to name, "reason" to if (total + MAX_FILE_BYTES > MAX_SHARE_BYTES) "total" else "too-big"))
+          } else {
+            total += copied
+            files.add(mapOf("uri" to Uri.fromFile(target).toString(), "name" to target.name, "size" to copied, "mime" to ctx.contentResolver.getType(uri), "named" to named))
+          }
+        } catch (e: IOException) {
+          val full = e.message?.contains("ENOSPC") == true || e.message?.contains("No space", ignoreCase = true) == true
+          skipped.add(mapOf("name" to name, "reason" to if (full) "space" else "unreadable"))
+        } catch (e: SecurityException) {
+          skipped.add(mapOf("name" to name, "reason" to "unreadable"))
+        }
       }
+    } finally {
+      synchronized(lock) { copying.remove(dir.path) }
     }
-    return mapOf("files" to files, "skipped" to skipped, "text" to text, "subject" to subject)
+    return mapOf("dir" to dir.path, "files" to files, "skipped" to skipped, "text" to text, "subject" to subject)
   }
 
-  /** The file's display name and size, as the sharing app gave them. */
-  private fun describe(ctx: Context, uri: Uri, index: Int): Pair<String, Long?> {
+  /** The file's name and size, as the sharing app gave them, and whether
+   * that's a real name. Without a display name, the media title (plus the
+   * type's extension) is next; the uri's last segment is only an id
+   * ("msf:1000032969"), so JS renames those after the song's title. */
+  private fun describe(ctx: Context, uri: Uri, index: Int): Triple<String, Long?, Boolean> {
     var name: String? = null
     var size: Long? = null
     try {
@@ -127,15 +202,30 @@ class HivoShareModule : Module() {
         if (c.moveToFirst()) {
           val n = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
           val s = c.getColumnIndex(OpenableColumns.SIZE)
-          if (n >= 0 && !c.isNull(n)) name = c.getString(n)
+          if (n >= 0 && !c.isNull(n)) name = c.getString(n)?.takeIf { it.isNotBlank() }
           if (s >= 0 && !c.isNull(s)) size = c.getLong(s)
         }
       }
     } catch (_: Exception) {
-      // A file:// uri or a provider without columns: fall back to the path.
+      // A file:// uri or a provider without columns: fall back below.
     }
+    if (name == null) {
+      try {
+        ctx.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.TITLE), null, null, null)?.use { c ->
+          val t = c.getColumnIndex(MediaStore.MediaColumns.TITLE)
+          if (c.moveToFirst() && t >= 0 && !c.isNull(t)) {
+            val title = c.getString(t)?.takeIf { it.isNotBlank() }
+            val ext = ctx.contentResolver.getType(uri)?.let { MimeTypeMap.getSingleton().getExtensionFromMimeType(it) }
+            if (title != null) name = if (ext != null && !title.endsWith(".$ext", ignoreCase = true)) "$title.$ext" else title
+          }
+        }
+      } catch (_: Exception) {
+        // Most document providers have no title column.
+      }
+    }
+    if (name != null) return Triple(clean(name!!), size, true)
     val fallback = uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "shared-${index + 1}"
-    return Pair(clean(name ?: fallback), size)
+    return Triple(clean(fallback), size, false)
   }
 
   /** No path separators or control characters; never empty. */
@@ -156,8 +246,8 @@ class HivoShareModule : Module() {
     return f
   }
 
-  /** Bytes copied, or -1 past MAX_FILE_BYTES (the size wasn't known up front). */
-  private fun copy(ctx: Context, uri: Uri, target: File): Long {
+  /** Bytes copied, or -1 past `limit` (the size wasn't known up front). */
+  private fun copy(ctx: Context, uri: Uri, target: File, limit: Long): Long {
     val input = ctx.contentResolver.openInputStream(uri) ?: throw IOException("unreadable")
     input.use { inp ->
       target.outputStream().use { out ->
@@ -167,7 +257,7 @@ class HivoShareModule : Module() {
           val n = inp.read(buf)
           if (n < 0) break
           total += n
-          if (total > MAX_FILE_BYTES) return -1
+          if (total > limit) return -1
           out.write(buf, 0, n)
         }
         return total

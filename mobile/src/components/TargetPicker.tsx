@@ -9,10 +9,11 @@ import { T } from "../strings";
 import { C, FONT, RADIUS } from "../theme";
 import { Button, Engrave } from "./ui";
 
-/** "For: <prod / beat / song>" with a picker over the synced library. */
-export function TargetPicker({ value, onChange, disabled }: { value: IdeaTarget | null; onChange: (t: IdeaTarget | null) => void; disabled?: boolean }) {
+/** "For: <prod / beat / song>" with a picker over the synced library.
+ * `kinds` limits what can be picked (an export can only go to a song). */
+export function TargetPicker({ value, onChange, disabled, kinds = KINDS }: { value: IdeaTarget | null; onChange: (t: IdeaTarget | null) => void; disabled?: boolean; kinds?: Kind[] }) {
   const [open, setOpen] = useState(false);
-  const [kind, setKind] = useState<Kind>(value?.kind ?? "beat");
+  const [kind, setKind] = useState<Kind>(value && kinds.includes(value.kind) ? value.kind : kinds.includes("beat") ? "beat" : kinds[0]);
   const [query, setQuery] = useState("");
   const sync = useApp((st) => st.sync);
   const t = tr(T);
@@ -30,6 +31,7 @@ export function TargetPicker({ value, onChange, disabled }: { value: IdeaTarget 
         onPress={() => setOpen(true)}
         style={({ pressed }) => [styles.field, pressed && { backgroundColor: C.raised }, disabled && { opacity: 0.6 }]}
         accessibilityRole="button"
+        accessibilityLabel={value ? `${s().forTarget}: ${label[value.kind]} · ${value.title}` : `${s().forTarget}: ${s().noTarget}`}
       >
         <Text style={[styles.value, !value && { color: C.engrave }]} numberOfLines={1}>
           {value ? `${label[value.kind]} · ${value.title}` : s().noTarget}
@@ -40,13 +42,13 @@ export function TargetPicker({ value, onChange, disabled }: { value: IdeaTarget 
         <View style={styles.modal}>
           <Text style={styles.title}>{s().pickTarget}</Text>
           <View style={styles.tabs}>
-            {KINDS.map((k) => (
-              <Pressable key={k} onPress={() => setKind(k)} style={[styles.tab, kind === k && styles.tabOn]} accessibilityRole="tab">
+            {kinds.length > 1 && kinds.map((k) => (
+              <Pressable key={k} onPress={() => setKind(k)} style={[styles.tab, kind === k && styles.tabOn]} accessibilityRole="tab" accessibilityState={{ selected: kind === k }}>
                 <Text style={[styles.tabText, kind === k && { color: C.chassis }]}>{label[k]}</Text>
               </Pressable>
             ))}
           </View>
-          <TextInput value={query} onChangeText={setQuery} placeholder={t.search} placeholderTextColor={C.engrave} style={styles.search} autoCorrect={false} />
+          <TextInput value={query} onChangeText={setQuery} placeholder={t.search} placeholderTextColor={C.engrave} accessibilityLabel={t.searchLabel} style={styles.search} autoCorrect={false} />
           <FlatList
             data={list}
             keyExtractor={(i) => `${i.kind}:${i.id}`}

@@ -18,10 +18,17 @@ export const AUDIO_EXTS = ["wav", "mp3", "m4a", "aac", "flac", "ogg", "aif", "ai
 
 export type OutType = "memo" | "sketch";
 export type OutState = "waiting" | "sending" | "sent" | "failed";
-/** Why an item failed (it stays until the user retries or removes it). */
-export type OutError = "too-big" | "type" | "missing-file" | "size";
-/** Why sending stopped for now (the item stays waiting, retried at the next sync). */
-export type HoldReason = "inbox-full" | "disk-full";
+/** Why an item failed (it stays until the user retries or removes it).
+ * "refused": the computer turned this one item down ("bad request" or
+ * another error after the request opened); the others still go. */
+export type OutError = "too-big" | "type" | "missing-file" | "size" | "refused";
+/** Why sending stopped for now (the item stays waiting, retried at the next
+ * sync). "inbox-full" holds that item and bigger ones; "disk-full" and
+ * "desktop-error" (the computer couldn't write: a folder it can't create, a
+ * file it can't save) hold all. */
+export type HoldReason = "inbox-full" | "disk-full" | "desktop-error";
+/** Sent items and filed/dismissed ideas leave the phone after this long. */
+export const KEEP_SENT_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type OutFile = {
   /** A file:// uri in the app's documents (copied there when shared or recorded). */
@@ -35,6 +42,8 @@ export type OutItem = {
   id: string;
   type: OutType;
   title: string;
+  /** What was shared with it (BandLab's words and link), ≤ 2000; absent on older items. */
+  text?: string;
   target: IdeaTarget | null;
   createdAt: number;
   durationMs: number | null;
@@ -148,10 +157,55 @@ const offsetOf = (body: unknown): number | null => {
 const reason = (e: unknown): string => (e instanceof SyncError ? e.message : "");
 
 /**
+ * What an error from the computer means for the item being sent:
+ * - `fail`: this item can't go as it is (refused, wrong type, too big…);
+ *   it shows the reason and the queue goes on with the next one.
+ * - `hold`: the computer is full, or couldn't write (an I/O error on its
+ *   side); the item waits for the next sync.
+ * - `stop`: the computer can't be reached or doesn't take anything right
+ *   now (offline, off, busy, forgotten, clock, demo, outdated): the sync stops.
+ * Only what's wrong with the item itself (bad request, type, size, too big)
+ * fails it: a failed item stays failed until the user retries.
+ */
+export type Verdict = { fail: OutError } | { hold: HoldReason } | { stop: unknown };
+
+export function verdict(e: unknown): Verdict {
+  const r = reason(e);
+  if (r === "too big") return { fail: "too-big" };
+  if (r === "type") return { fail: "type" };
+  if (r === "size") return { fail: "size" };
+  // Sealed after the request opened: the computer read it and said no to this one.
+  if (r === "bad request") return { fail: "refused" };
+  if (r === "inbox full") return { hold: "inbox-full" };
+  if (r === "disk full") return { hold: "disk-full" };
+  if (e instanceof SyncError) {
+    if (e.code === "too-big") return { fail: "too-big" }; // 413: the body itself
+    // Any other sealed error ("could not write the file: …"): the computer's
+    // trouble, not this item's. Held, tried again at the next sync.
+    if (e.code === "server") return { hold: "desktop-error" };
+  }
+  return { stop: e };
+}
+
+/** The finish answer: is the whole item on the computer? (`waiting`: some
+ * of its files aren't, e.g. removed there meanwhile.) Older answers without
+ * a status count as stored. */
+const itemStored = (body: unknown): boolean => (body as { status?: unknown } | null)?.status !== "waiting";
+
+/** An item-level failure, as `uploadItem`'s file loop hands it back. */
+class Failed {
+  constructor(public item: OutItem) {}
+}
+
+/** How many times an item is sent again from its first file (the computer
+ * forgot it: removed there, or dropped after 7 days) before it fails. */
+const MAX_ITEM_RESETS = 2;
+
+/**
  * Sends one item. Returns the item as it ends: "sent", or "failed" with a
  * reason. Throws a SyncError for what stops the whole sync (offline, off,
- * forgotten, demo, outdated) and a HoldError for "inbox full" / "disk full".
- * `onUpdate` sees each step (progress).
+ * forgotten, clock, demo, outdated) and a HoldError for "inbox full" /
+ * "disk full". `onUpdate` sees each step (progress).
  */
 export async function uploadItem(io: UploadIO, start: OutItem, onUpdate: (i: OutItem) => void): Promise<OutItem> {
   let item: OutItem = { ...start, state: "sending", error: null };
@@ -163,94 +217,152 @@ export async function uploadItem(io: UploadIO, start: OutItem, onUpdate: (i: Out
     update({ state: "failed", error });
     return item;
   };
+  /** An item-level failure ends the item; anything else is thrown. */
+  const settle = (e: unknown): OutItem => {
+    const v = verdict(e);
+    if ("fail" in v) return fail(v.fail);
+    if ("hold" in v) throw new HoldError(v.hold);
+    throw v.stop;
+  };
   update({});
   const doneBytes = () => item.files.reduce((n, f) => n + (f.done ? f.size : 0), 0);
+  /** The computer forgot the item: every file goes again, from the first. */
+  const UNKNOWN = Symbol("unknown upload");
+  const isUnknown = (e: unknown) => reason(e) === "unknown upload";
+  const finish = (index: number) => withBusyRetry(io, () => io.call("/v1/upload/finish", { itemId: item.id, fileIndex: index }));
 
-  for (let index = 0; index < item.files.length; index++) {
-    const file = item.files[index];
-    if (file.done) continue;
-    if (!(await io.exists(file.uri))) return fail("missing-file");
-    let restarts = 0;
-    for (;;) {
-      // Start (or resume): the desktop says how much it has.
-      let offset: number;
-      try {
-        offset = offsetOf(
-          await withBusyRetry(io, () =>
-            io.call("/v1/upload/start", {
-              itemId: item.id,
-              itemType: item.type,
-              title: item.title,
-              target: item.target,
-              createdAt: item.createdAt,
-              durationMs: item.durationMs,
-              fileIndex: index,
-              fileCount: item.files.length,
-              name: file.name,
-              size: file.size,
-            }),
-          ),
-        ) ?? 0;
-      } catch (e) {
-        const r = reason(e);
-        if (r === "too big") return fail("too-big");
-        if (r === "type") return fail("type");
-        if (r === "size") return fail("size");
-        throw hold(e);
-      }
-      offset = Math.min(offset, file.size);
-      let restart = false;
-      while (offset < file.size) {
-        const bytes = await io.read(file.uri, offset, Math.min(MAX_CHUNK_BYTES, file.size - offset));
-        if (bytes.length === 0) return fail("missing-file");
+  /** Sends what isn't done yet; the last finish answer, null when none was
+   * needed, or UNKNOWN. Item-level failures come back as an OutItem. */
+  const sendFiles = async (): Promise<unknown> => {
+    let last: unknown = null;
+    for (let index = 0; index < item.files.length; index++) {
+      const file = item.files[index];
+      if (file.done) continue;
+      if (!(await io.exists(file.uri))) return new Failed(fail("missing-file"));
+      let restarts = 0;
+      for (;;) {
+        // Start (or resume): the desktop says how much it has.
+        let offset: number;
         try {
-          const r = await withBusyRetry(io, () => io.call("/v1/upload/chunk", { itemId: item.id, fileIndex: index, offset, data: toB64url(bytes) }));
-          offset = offsetOf(r) ?? offset + bytes.length;
+          offset = offsetOf(
+            await withBusyRetry(io, () =>
+              io.call("/v1/upload/start", {
+                itemId: item.id,
+                itemType: item.type,
+                title: item.title,
+                ...(item.text ? { text: item.text } : {}),
+                target: item.target,
+                createdAt: item.createdAt,
+                durationMs: item.durationMs,
+                fileIndex: index,
+                fileCount: item.files.length,
+                name: file.name,
+                size: file.size,
+              }),
+            ),
+          ) ?? 0;
         } catch (e) {
-          const r = reason(e);
-          const m = /^offset:(\d+)$/.exec(r);
-          if (m) {
-            offset = Math.min(Number(m[1]), file.size);
+          if (isUnknown(e)) return UNKNOWN;
+          return new Failed(settle(e));
+        }
+        offset = Math.min(offset, file.size);
+        while (offset < file.size) {
+          const bytes = await io.read(file.uri, offset, Math.min(MAX_CHUNK_BYTES, file.size - offset));
+          if (bytes.length === 0) return new Failed(fail("missing-file"));
+          try {
+            const r = await withBusyRetry(io, () => io.call("/v1/upload/chunk", { itemId: item.id, fileIndex: index, offset, data: toB64url(bytes) }));
+            offset = offsetOf(r) ?? offset + bytes.length;
+          } catch (e) {
+            const m = /^offset:(\d+)$/.exec(reason(e));
+            if (m) {
+              offset = Math.min(Number(m[1]), file.size);
+              continue;
+            }
+            if (isUnknown(e)) return UNKNOWN;
+            return new Failed(settle(e));
+          }
+          update({ sentBytes: doneBytes() + offset });
+        }
+        try {
+          last = await finish(index);
+        } catch (e) {
+          if (isUnknown(e)) return UNKNOWN;
+          // Fewer bytes than declared: that file once more from 0.
+          if (reason(e) === "size" && restarts < 2) {
+            restarts++;
             continue;
           }
-          if (r === "unknown upload" && restarts < 2) {
-            restarts++;
-            restart = true;
-            break;
-          }
-          if (r === "too big") return fail("too-big");
-          if (r === "size") return fail("size");
-          throw hold(e);
+          return new Failed(settle(e));
         }
-        update({ sentBytes: doneBytes() + offset });
+        break;
       }
-      if (restart) continue;
-      try {
-        await withBusyRetry(io, () => io.call("/v1/upload/finish", { itemId: item.id, fileIndex: index }));
-      } catch (e) {
-        const r = reason(e);
-        // Fewer bytes than declared (or dropped on the desktop): once more from 0.
-        if ((r === "size" || r === "unknown upload") && restarts < 2) {
-          restarts++;
-          continue;
-        }
-        if (r === "size") return fail("size");
-        throw hold(e);
-      }
-      break;
+      const files = item.files.map((f, i) => (i === index ? { ...f, done: true } : f));
+      update({ files, sentBytes: files.reduce((n, f) => n + (f.done ? f.size : 0), 0) });
     }
-    const files = item.files.map((f, i) => (i === index ? { ...f, done: true } : f));
-    update({ files, sentBytes: files.reduce((n, f) => n + (f.done ? f.size : 0), 0) });
+    return last;
+  };
+
+  for (let resets = 0; ; resets++) {
+    let answer = await sendFiles();
+    if (answer instanceof Failed) return answer.item;
+    // Every file was done before this run (the app stopped before marking it
+    // sent): ask the computer whether it still has the whole item.
+    if (answer === null && item.files.length > 0) {
+      try {
+        answer = await finish(item.files.length - 1);
+      } catch (e) {
+        if (!isUnknown(e)) return settle(e);
+        answer = UNKNOWN;
+      }
+    }
+    // Sent and marked "sent" (and later purged) only once the computer says
+    // the whole item is there; else every file goes again, from the first.
+    if (answer !== UNKNOWN && itemStored(answer)) break;
+    if (resets >= MAX_ITEM_RESETS) return fail("refused");
+    update({ files: item.files.map((f) => ({ ...f, done: false })), sentBytes: 0 });
   }
   update({ state: "sent", status: "stored", sentAt: io.now(), sentBytes: totalBytes(item) });
   return item;
 }
 
-function hold(e: unknown): unknown {
-  const r = reason(e);
-  if (r === "inbox full") return new HoldError("inbox-full");
-  if (r === "disk full") return new HoldError("disk-full");
-  return e;
+export type QueueHooks = {
+  /** The outbox as it is now (items can be removed while one is sending). */
+  items: () => OutItem[];
+  onStart: (id: string) => void;
+  onUpdate: (i: OutItem) => void;
+  /** An item ended (sent or failed). */
+  onDone: (i: OutItem) => void;
+};
+
+/**
+ * Sends every waiting item, oldest first. One item never blocks the others:
+ * a refused item fails on its own and the loop goes on. "inbox full" holds
+ * that item and every item at least as big (smaller ones may still fit);
+ * "disk full" holds everything. Returns why something is held, or null.
+ * Throws what stops the sync (offline, forgotten…).
+ */
+export async function sendQueue(io: UploadIO, hooks: QueueHooks): Promise<HoldReason | null> {
+  let held: HoldReason | null = null;
+  /** Bytes left of the smallest item the full inbox refused. */
+  let fullAt = Infinity;
+  for (const queued of toSend(hooks.items())) {
+    const cur = hooks.items().find((i) => i.id === queued.id);
+    if (!cur || (cur.state !== "waiting" && cur.state !== "sending")) continue;
+    const left = totalBytes(cur) - cur.sentBytes;
+    if (left >= fullAt) continue;
+    hooks.onStart(cur.id);
+    try {
+      hooks.onDone(await uploadItem(io, cur, hooks.onUpdate));
+    } catch (e) {
+      if (!(e instanceof HoldError)) throw e;
+      const now = hooks.items().find((i) => i.id === cur.id);
+      if (now) hooks.onUpdate({ ...now, state: "waiting" });
+      if (e.reason !== "inbox-full") return e.reason;
+      held = "inbox-full";
+      fullAt = Math.min(fullAt, left);
+    }
+  }
+  return held;
 }
 
 /** 429/503 or "busy" (a scan running): wait a little and try again, a few times. */
@@ -295,3 +407,9 @@ export const retry = (i: OutItem): OutItem => ({ ...i, state: "waiting", error: 
 /** A new pairing: everything still on the phone goes again to the new computer. */
 export const resetOut = (items: OutItem[]): OutItem[] =>
   items.filter((i) => i.files.length > 0 && !i.purged).map((i) => ({ ...i, state: "waiting", error: null, sentBytes: 0, status: null, filedTo: null, sentAt: null, files: i.files.map((f) => ({ ...f, done: false })) }));
+
+/** Sent memos and exports older than KEEP_SENT_MS leave the phone (they're on the computer). */
+export function pruneOut(items: OutItem[], now: number): { keep: OutItem[]; removed: string[] } {
+  const old = (i: OutItem) => i.state === "sent" && i.sentAt !== null && now - i.sentAt > KEEP_SENT_MS;
+  return { keep: items.filter((i) => !old(i)), removed: items.filter(old).map((i) => i.id) };
+}

@@ -118,8 +118,19 @@ function drawArt(ctx: CanvasRenderingContext2D, x: number, y: number, size: numb
   ctx.restore();
 }
 
-/** The layout as a PNG data URL (also used as the preview in the app). */
-export function drawShortLayout(input: ShortLayoutInput): string {
+/** The cover concept in the art square, cropped to fill it. */
+function drawCover(ctx: CanvasRenderingContext2D, x: number, y: number, size: number, img: CanvasImageSource & { width: number; height: number }) {
+  const side = Math.min(img.width, img.height);
+  ctx.save();
+  roundRect(ctx, x, y, size, size, 40);
+  ctx.clip();
+  ctx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, x, y, size, size);
+  ctx.restore();
+}
+
+/** The layout as a PNG data URL (also used as the preview in the app).
+ * `cover`: the kit's cover concept, drawn instead of the generated art. */
+export function drawShortLayout(input: ShortLayoutInput, cover?: (CanvasImageSource & { width: number; height: number }) | null): string {
   const canvas = document.createElement("canvas");
   canvas.width = SHORT_W;
   canvas.height = SHORT_H;
@@ -132,7 +143,8 @@ export function drawShortLayout(input: ShortLayoutInput): string {
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, SHORT_W, SHORT_H);
 
-  drawArt(ctx, 120, 170, 840, input);
+  if (cover && cover.width > 0 && cover.height > 0) drawCover(ctx, 120, 170, 840, cover);
+  else drawArt(ctx, 120, 170, 840, input);
 
   const font = (weight: number, size: number) => `${weight} ${size}px -apple-system, "Segoe UI", system-ui, sans-serif`;
   ctx.textAlign = "center";

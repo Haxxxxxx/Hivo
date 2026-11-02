@@ -21,6 +21,7 @@
     },
     "android": {
       "package": "fr.hivo.mobile",
+      "allowBackup": false,
       "adaptiveIcon": {
         "backgroundColor": "#0d0d0c",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -81,6 +82,34 @@
             },
             {
               "mimeType": "application/x-zip-compressed"
+            }
+          ]
+        },
+        {
+          "action": "SEND",
+          "category": [
+            "DEFAULT"
+          ],
+          "data": [
+            {
+              "mimeType": "video/mp4"
+            },
+            {
+              "mimeType": "application/octet-stream"
+            }
+          ]
+        },
+        {
+          "action": "SEND_MULTIPLE",
+          "category": [
+            "DEFAULT"
+          ],
+          "data": [
+            {
+              "mimeType": "video/mp4"
+            },
+            {
+              "mimeType": "application/octet-stream"
             }
           ]
         },

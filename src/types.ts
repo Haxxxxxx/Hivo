@@ -67,6 +67,17 @@ export interface ProjectInfo {
   samples: SampleInfo[];
   /** Named mixer tracks + recorded-take labels ("Lead Voices - Nova"). */
   trackNames: string[];
+  /** Mixdowns in the export folder named after this song that weren't
+   * counted: another linked song has the same name, and the file name can't
+   * say which one it came from. */
+  ambiguousExports?: number;
+}
+
+/** What `scan_projects` returns: the projects, and the linked folders that
+ * couldn't be read right now (their songs are missing, not moved). */
+export interface ScanResult {
+  projects: ProjectInfo[];
+  unreachable: string[];
 }
 
 export interface PluginInfo {
@@ -169,6 +180,9 @@ export interface SongMeta {
   stagePending?: boolean;
   /** A crewmate moved the song while this computer's move was waiting. */
   stageConflict?: StageConflict;
+  /** The crewmate (user id) whose move on the crew board set the current
+   * stage (its time is `stageUpdatedAtMs`). Cleared by a move of mine. */
+  stageMovedBy?: string;
   /** Every stage the song entered, oldest first (`src/lib/stageLog.ts`).
    * Starts empty: nothing before the log existed is guessed. Local only. */
   stageLog?: StageLogEntry[];
@@ -243,6 +257,22 @@ export interface LaunchKitMeta {
   snippetLengths?: Record<string, number>;
   /** Set by "Accept all"; cleared by any later edit. */
   acceptedAtMs?: number;
+  /** What the kit was accepted against (master file, credits, release:
+   * `acceptFingerprint`): a change outside the kit undoes "Accepted". */
+  acceptedFingerprint?: string;
+  /** Where `edits.releaseDate` came from: kept from a suggestion (accept or
+   * export pins it) or typed. A suggestion never beats the release's date. */
+  releaseDatePin?: "suggested" | "typed";
+  /** The mixdown picked as the master (a path among the song's renders);
+   * unset = the newest lossless render, else the newest. */
+  master?: string;
+  /** The last export: when, what (`exportFingerprint`) and the folder name
+   * it went to (so a re-export after a rename cleans up the old one). */
+  exported?: { atMs: number; fingerprint: string; folder: string };
+  /** The user marked the final 3000 × 3000 cover as ready. */
+  finalCoverDone?: boolean;
+  /** A pre-save link (https). Captions mention a pre-save only when set. */
+  preSaveUrl?: string;
   /** Opt-in: the credited people's platform IDs (Spotify artist ID…) go
    * into the exported kit (artist-ids.md, distributor sheet, metadata). */
   includeArtistIds?: boolean;
@@ -362,6 +392,15 @@ export interface Person {
   lookedUpAt?: string;
 }
 
+/** What a by-name match (Deezer, Apple Music) says about the artist it
+ * found, so two artists with the same name can be told apart. */
+export interface MatchInfo {
+  fans: number | null;
+  albums: number | null;
+  genre: string | null;
+  topTrack: string | null;
+}
+
 /** A profile on one platform (Rust: lookup.rs): the link, rebuilt from the
  * id for known platforms, and the id distributors ask for. */
 export interface PlatformLink {
@@ -370,7 +409,12 @@ export interface PlatformLink {
   category: "streaming" | "social" | "other";
   url: string;
   id: string | null;
-  source: "musicbrainz" | "deezer" | "itunes";
+  source: "musicbrainz" | "deezer" | "itunes" | "manual";
+  /** false: found by name only (Deezer, Apple Music), the user hasn't
+   * confirmed it's the same artist; its id doesn't count yet. Missing on
+   * links stored before 0.6.3 (see `linkVerified` in src/lib/profiles.ts). */
+  verified?: boolean;
+  matchInfo?: MatchInfo;
 }
 
 export interface SpotifyDetails {
@@ -493,6 +537,26 @@ export interface Workspace {
   leadNotes?: Record<string, string>;
   /** Notes on beats (Settings → Beats folders), by file path. */
   beatNotes?: Record<string, string>;
+  /** The size of each tracked beat (noted, or linked to a saved prod by
+   * hand), so a moved or renamed file finds its notes and links again on the
+   * next complete scan (`relinkBeatNotes`). */
+  beatNoteSizes?: Record<string, number>;
+  /** Tombstones of beat notes/links moved to another path, by old path:
+   * dropped once a later complete scan finds the new path, undone (the note
+   * restored) if the old path comes back first. */
+  beatNoteMoves?: Record<string, BeatMove>;
+  /** Saved prod (lead hash) → the beat file that is it (path), set by hand
+   * ("This is…"); null = "not in your prods", overriding the name match.
+   * Follows the beat when it moves (`relinkBeatNotes`); a path the scan
+   * no longer has falls back to the name match (`matchBeat`). */
+  leadBeats?: Record<string, string | null>;
+  /** Songs and beats that moved to a new path (relinks, renames, "Continue
+   * in FL Studio"), kept a few days for the phone's `/v1/snapshot`
+   * `renamed` list, so its pending note edits follow (src/lib/phoneSync.ts). */
+  phoneRenames?: { kind: "song" | "beat"; from: string; to: string; at: number }[];
+  /** Set only on generated sample data (src/lib/sampleData.ts): a workspace
+   * carrying it is never written to disk. */
+  sample?: true;
 }
 
 /** A pipeline column. Columns sit on the fixed lifecycle stages: putting a
@@ -536,6 +600,9 @@ export interface CrewSongRow {
   credits: CrewCredit[];
   release_date: string | null;
   has_mixdown: boolean;
+  /** The newest mixdown is at least as new as the last save. Null: no
+   * mixdown, or sent by a Hivo from before this column (freshness unknown). */
+  mixdown_fresh?: boolean | null;
   kit_accepted: boolean;
   last_saved_at: string | null;
   stage_updated_at: string;
@@ -604,6 +671,36 @@ export interface BeatFile {
   modifiedAtMs: number;
 }
 
+/** A beat's notes (or a lead's link) moved from one path to another: kept
+ * until the move is confirmed, so the note comes back if the old path does. */
+export interface BeatMove {
+  to: string;
+  size: number;
+  /** The note as it was moved (absent when only lead links moved). */
+  text?: string;
+}
+
+/** The beats scan (src-tauri/src/beats.rs BeatScan). */
+export interface BeatScan {
+  beats: BeatFile[];
+  /** Beats found, including those past the cap. */
+  total: number;
+  /** The scan stopped early: `total` is a floor. */
+  capped: boolean;
+  /** Audio files in formats the Digger can't read (opus, aac…). */
+  ignored: number;
+  /** Beats folders (or folders in them) that couldn't be read: their beats
+   * are missing from `beats`, not gone. */
+  unreachable: number;
+}
+
+/** One beat's offline analysis (src-tauri/src/beats.rs analyze_beats). */
+export interface BeatAnalysis {
+  path: string;
+  facts: BeatFacts | null;
+  error: string | null;
+}
+
 export interface YoutubeStatus {
   configured: boolean;
   source: "env" | "settings" | null;
@@ -623,6 +720,8 @@ export interface YoutubeVideo {
 export interface BeatFacts {
   name: string;
   durationSec: number;
+  /** Decoding stopped at 10 minutes: shown as "10:00+". */
+  durationCapped?: boolean;
   bpm: number | null;
   /** "name" = written in the file name, "audio" = estimated (may be half or double). */
   bpmSource: "name" | "audio" | null;
@@ -635,6 +734,15 @@ export interface WebLink {
   url: string;
   site: string;
   text: string;
+  /** The url is the page itself, not a Google redirect that couldn't be
+   * followed: only resolved links can be saved or converted. */
+  resolved: boolean;
+}
+
+/** A picked beat the dig couldn't analyse. */
+export interface FailedBeat {
+  name: string;
+  error: string;
 }
 
 /** The dig: what the picked beats share, searches, and beats found on the web. */
@@ -642,6 +750,8 @@ export interface DigResult {
   model: string;
   audioSent: boolean;
   beats: BeatFacts[];
+  /** Picked beats that couldn't be analysed (the dig went on without them). */
+  failed: FailedBeat[];
   /** `heard`: what Gemini heard in the excerpts, only when they were sent. */
   analysis: { summary: string; traits: string[]; tempo: string; queries: string[]; heard?: string };
   web: WebLink[];
@@ -674,6 +784,9 @@ export interface SavedLead extends Lead {
   modifiedAtMs: number;
   /** "YYYY-MM-DD" as written when saved, or "". */
   savedOn: string;
+  /** A `.md` in `_leads` that doesn't read as a lead (no hash): shown so it
+   * can be revealed or deleted. */
+  unrecognised?: boolean;
 }
 
 /** One "Go deeper" round: more web links, seeded by the dig's analysis, or
@@ -695,6 +808,10 @@ export interface PhoneDevice {
   appVersion: string | null;
   pairedAtMs: number;
   lastSeenMs: number | null;
+  /** Paired on another port than the one open now: it needs a new QR (Re-pair). */
+  needsNewQr: boolean;
+  /** Its Hivo is older (major.minor) than this computer's. Absent from older builds. */
+  phoneOutdated?: boolean;
 }
 
 export interface PhoneSyncStatus {
@@ -753,13 +870,46 @@ export interface InboxItem {
   /** Where it went: a sketch's BandLab folder, a memo's copy, or `<kind>:<id>`. */
   filedTo: string | null;
   filedAt: number | null;
+  /** "song" (a new sketch song), "folder" (copied into a song's folder),
+   * "link" (a memo linked to a beat/prod, copied into `_memos`); null when
+   * filed before this was recorded. */
+  filedAs: "song" | "folder" | "link" | null;
+  /** The durable copy of a memo linked to a beat or a prod. */
+  copiedTo: string | null;
   files: InboxFile[];
+}
+
+/** An item still arriving from the phone (it holds space in the inbox). */
+export interface IncomingItem {
+  id: string;
+  itemType: InboxItemType;
+  title: string;
+  phoneName: string;
+  fileCount: number;
+  filesDone: number;
+  receivedBytes: number;
+  /** Declared sizes of the files started so far. */
+  totalBytes: number;
+  updatedAt: number;
 }
 
 export interface InboxList {
   items: InboxItem[];
-  /** Still arriving (not listed yet). */
+  /** Still arriving (not in `items`). */
   receiving: number;
+  incoming: IncomingItem[];
+}
+
+/** What filing a sketch as a new song made (src-tauri/src/phone_inbox.rs). */
+export interface FiledSketch {
+  /** The song's key: its BandLab folder. */
+  key: string;
+  /** Audio copied as it came (the mixdown when stems came with it). */
+  audio: number;
+  /** Audio unpacked from zips. */
+  stems: number;
+  /** The stems went to `BandLab/Stems/`, apart from the mixdown. */
+  stemsApart: boolean;
 }
 
 export interface PhoneSyncRequest {

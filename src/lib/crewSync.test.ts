@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { CrewReleaseRow, CrewSongRow, ProjectInfo, Workspace } from "../types";
 import {
+  canMoveShare,
+  crewCreditsText,
+  crewMixdown,
+  moveShare,
+  nameOf,
+  newlyOwned,
+  pathsByShareId,
+  rememberNames,
+  songRowMatches,
+  withMyRole,
   orphanedShares,
   shareElsewhere,
   sharedCredits,
@@ -94,7 +104,7 @@ describe("stage moves", () => {
 
   it("a crewmate's move is taken when I have nothing waiting", () => {
     const local = shared({ status: "production", stageBaseAt: V1 });
-    expect(stageSync([row("s1", { stage: "prep", stage_updated_at: V2 })], local, scope)).toEqual([{ kind: "adopt", path: "/a.flp", stage: "prep", at: V2 }]);
+    expect(stageSync([row("s1", { stage: "prep", stage_updated_at: V2 })], local, scope)).toEqual([{ kind: "adopt", path: "/a.flp", stage: "prep", at: V2, by: null }]);
   });
 
   it("my waiting move is sent with the version it was made on", () => {
@@ -121,7 +131,7 @@ describe("stage moves", () => {
 
   it("the same move on both sides just settles", () => {
     const local = shared({ status: "prep", stageBaseAt: V1, stagePending: true });
-    expect(stageSync([row("s1", { stage: "prep", stage_updated_at: V2 })], local, scope)).toEqual([{ kind: "settle", path: "/a.flp", at: V2 }]);
+    expect(stageSync([row("s1", { stage: "prep", stage_updated_at: V2 })], local, scope)).toEqual([{ kind: "settle", path: "/a.flp", at: V2, by: null }]);
     const done = shared({ status: "prep", stageBaseAt: V2 });
     expect(stageSync([row("s1", { stage: "prep", stage_updated_at: "2026-10-12T09:30:00.123Z" })], done, scope)).toEqual([]);
   });
@@ -246,7 +256,7 @@ describe("what a shared song sends (allow-list)", () => {
   it("sends exactly the listed fields, never notes, paths, samples or track names", () => {
     const [payload] = sharedPayloads([p], ws({ [p.path]: meta }), scope);
     expect(Object.keys(payload).sort()).toEqual(
-      ["bpm", "credits", "crew_id", "has_mixdown", "id", "kit_accepted", "last_saved_at", "musical_key", "release_date", "stage", "tags", "title"].sort(),
+      ["bpm", "credits", "crew_id", "has_mixdown", "id", "kit_accepted", "last_saved_at", "mixdown_fresh", "musical_key", "release_date", "stage", "tags", "title"].sort(),
     );
     const all = JSON.stringify(payload);
     for (const leak of ["private lyric", "/Users/", "SomePack", "kick.wav", "bandlab.com"]) expect(all).not.toContain(leak);
@@ -344,3 +354,87 @@ describe("crew releases on screen", () => {
   });
 });
 
+
+describe("crew review round 2", () => {
+  const render = (ms: number) => ({ path: "/m.wav", modifiedAtMs: ms, sizeBytes: 1 });
+  const proj = (renders: { modifiedAtMs: number }[], savedMs: number) =>
+    ({ path: "/a.flp", name: "a", tempoBpm: null, renders, modifiedAtMs: savedMs, backups: [] }) as unknown as ProjectInfo;
+  const local = ws({ "/a.flp": { shared: true, shareId: "s1", shareCrewId: CREW, shareUserId: ME } });
+
+  it("sends whether the mixdown is fresh (none, fresh, stale)", () => {
+    expect(sharedPayloads([proj([], 1000)], local, scope)[0].mixdown_fresh).toBeNull();
+    expect(sharedPayloads([proj([render(2000)], 1000)], local, scope)[0].mixdown_fresh).toBe(true);
+    expect(sharedPayloads([proj([render(500)], 1000)], local, scope)[0].mixdown_fresh).toBe(false);
+  });
+
+  it("reads a card's mixdown state, old rows included", () => {
+    expect(crewMixdown({ has_mixdown: false, mixdown_fresh: true })).toBe("none");
+    expect(crewMixdown({ has_mixdown: true, mixdown_fresh: true })).toBe("fresh");
+    expect(crewMixdown({ has_mixdown: true, mixdown_fresh: false })).toBe("stale");
+    expect(crewMixdown({ has_mixdown: true })).toBe("unknown");
+    expect(crewMixdown({ has_mixdown: true, mixdown_fresh: null })).toBe("unknown");
+  });
+
+  it("a server without the freshness column doesn't make every row look changed", () => {
+    const [p] = sharedPayloads([proj([render(2000)], 1000)], local, scope);
+    const { stage: _s, ...rest } = p;
+    const server = row("s1", { title: p.title, has_mixdown: true, last_saved_at: p.last_saved_at, tags: p.tags, credits: p.credits, bpm: null });
+    expect(songRowMatches(rest, server)).toBe(true);
+    expect(songRowMatches(rest, { ...server, mixdown_fresh: false })).toBe(false);
+    expect(songRowMatches(rest, { ...server, mixdown_fresh: true })).toBe(true);
+  });
+
+  it("stage sync carries who moved the song", () => {
+    const meta = ws({ "/a.flp": { shared: true, shareId: "s1", status: "production", stageBaseAt: "2026-10-10T00:00:00Z" } });
+    const r = row("s1", { stage: "prep", stage_updated_at: "2026-10-12T00:00:00Z", stage_updated_by: "user-ana" });
+    expect(stageSync([r], meta, scope)).toEqual([{ kind: "adopt", path: "/a.flp", stage: "prep", at: "2026-10-12T00:00:00Z", by: "user-ana" }]);
+  });
+
+  it("credits show names and roles, never splits", () => {
+    expect(crewCreditsText([{ name: "Ana", role: "beat", split: 50 }, { name: " Ben ", role: "", split: 50 }, { name: " ", role: "x", split: null }])).toBe("Ana (beat) · Ben");
+    expect(crewCreditsText(undefined)).toBe("");
+  });
+
+  it("remembers names so a former member keeps one", () => {
+    const known = rememberNames({}, [{ user_id: "u1", display_name: "Ana" }])!;
+    expect(known).toEqual({ u1: "Ana" });
+    expect(rememberNames(known, [{ user_id: "u1", display_name: "Ana" }])).toBeNull();
+    expect(rememberNames(known, [{ user_id: "u1", display_name: "Ana B" }])).toEqual({ u1: "Ana B" });
+    expect(nameOf("u1", [], known)).toBe("Ana");
+    expect(nameOf("u1", [{ user_id: "u1", display_name: "Now" }], known)).toBe("Now");
+    expect(nameOf("u2", [], known)).toBeUndefined();
+  });
+
+  it("finds the crews I just became the owner of", () => {
+    const before = [
+      { id: "c1", name: "One", role: "member" as const, displayName: "Me" },
+      { id: "c2", name: "Two", role: "owner" as const, displayName: "Me" },
+    ];
+    const after = withMyRole(before, "c1", "owner");
+    expect(after[0].role).toBe("owner");
+    expect(newlyOwned(before, after).map((c) => c.name)).toEqual(["One"]);
+    expect(withMyRole(before, "c2", "owner")).toBe(before);
+    expect(withMyRole(before, "c1", undefined)).toBe(before);
+    expect(newlyOwned([], after)).toEqual([]);
+  });
+
+  it("moves a share to a new version: same id, the old song stops being shared without a delete", () => {
+    const w = ws({
+      "/old.flp": { shared: true, shareId: "s1", shareCrewId: CREW, shareUserId: ME, status: "prep", stageBaseAt: "2026-10-10T00:00:00Z", shareTitle: "Night" },
+      "/new.flp": { status: "creation", notes: "kept" },
+      "/other.flp": { shared: true, shareId: "s9", shareCrewId: "crew-b", shareUserId: ME },
+    });
+    const m = moveShare(w, "/old.flp", "/new.flp", scope)!;
+    expect(m.to).toMatchObject({ shared: true, shareId: "s1", shareCrewId: CREW, shareUserId: ME, status: "prep", stageBaseAt: "2026-10-10T00:00:00Z", shareTitle: "Night", stagePending: false });
+    expect(m.from.shareId).toBeUndefined();
+    expect(m.from.shared).toBeUndefined();
+    const after = ws({ "/old.flp": { ...w.songs["/old.flp"], ...m.from }, "/new.flp": { ...w.songs["/new.flp"], ...m.to } });
+    expect(staleShareIds([row("s1")], after, scope)).toEqual([]);
+    expect(pathsByShareId(after).get("s1")).toBe("/new.flp");
+    // Not onto a song with a share of its own, not from a song not shared here, not onto itself.
+    expect(moveShare(w, "/old.flp", "/other.flp", scope)).toBeNull();
+    expect(moveShare(w, "/new.flp", "/old.flp", scope)).toBeNull();
+    expect(moveShare(w, "/old.flp", "/old.flp", scope)).toBeNull();
+    expect(canMoveShare(w, "/old.flp", "/brand-new.flp", scope)).toBe(true);
+  });
+});

@@ -16,7 +16,8 @@ specific here.
 - `supabase/migrations/<YYYYMMDD><HHMMSS>_<topic>.sql`, one topic per file, in
   order: crew → hardening → quota upsert → closed signup invites → stage versions
   → crew columns → member update columns → releases bucket → feedback (`…120000`)
-  → feedback global cap.
+  → feedback global cap → delete crew → crew rename → place crew cards → transfer
+  crew ownership → mixdown freshness.
 - `supabase/tests/database/<topic>.test.sql`: pgTAP, one file per migration
   topic, same style as the existing ones (plan, helper setup, `is`/`ok`/`throws_ok`,
   finish). A migration without a test is not done.

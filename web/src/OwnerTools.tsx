@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useWeb } from "./store";
 import { W } from "./dashboardCopy";
 import { locale, tr } from "@shared/i18n";
+import { inviteMessage } from "@shared/lib/crewMessages";
 
 // The crew owner's tools on the website (the same calls as the desktop app;
 // the server checks the owner again): invite codes, rename, delete. Leave
@@ -10,7 +11,7 @@ import { locale, tr } from "@shared/i18n";
 const field =
   "rounded-lg border border-rule-strong bg-chassis px-3 py-2 text-sm text-cream placeholder:text-engrave focus:border-hot focus:outline-none";
 const quiet = "rounded border border-rule-strong px-3 py-1.5 text-sm text-body hover:bg-raised hover:text-cream disabled:opacity-40";
-const alertBox = "rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200";
+const alertBox = "rounded-md border border-missing/30 bg-missing/10 px-3 py-2 text-sm text-cream";
 
 function useRun() {
   const [busy, setBusy] = useState(false);
@@ -43,7 +44,7 @@ function TwoClick({ label, armedLabel, onConfirm, disabled }: { label: string; a
     <button
       disabled={disabled}
       onClick={() => (armed ? (setArmed(false), onConfirm()) : setArmed(true))}
-      className={`text-xs disabled:opacity-40 ${armed ? "text-red-300" : "text-engrave hover:text-cream"}`}
+      className={`text-xs disabled:opacity-40 ${armed ? "text-missing" : "text-engrave hover:text-cream"}`}
     >
       {armed ? armedLabel : label}
     </button>
@@ -57,7 +58,19 @@ export function RemoveMember({ userId, name }: { userId: string; name: string })
   return (
     <span className="flex flex-col items-end gap-1">
       <TwoClick label={tr(W).remove} armedLabel={tr(W).removeConfirm(name)} disabled={busy} onConfirm={() => void run(() => removeMember(userId))} />
-      {error && <span className="text-xs text-red-300">{error}</span>}
+      {error && <span className="text-xs text-missing">{error}</span>}
+    </span>
+  );
+}
+
+/** Owner: make a crewmate the owner (you become a member). */
+export function MakeOwner({ userId, name }: { userId: string; name: string }) {
+  const transferOwnership = useWeb((s) => s.transferOwnership);
+  const { busy, error, run } = useRun();
+  return (
+    <span className="flex flex-col items-end gap-1">
+      <TwoClick label={tr(W).makeOwner} armedLabel={tr(W).makeOwnerConfirm(name)} disabled={busy} onConfirm={() => void run(() => transferOwnership(userId))} />
+      {error && <span className="text-xs text-missing">{error}</span>}
     </span>
   );
 }
@@ -67,7 +80,7 @@ export function LeaveCrew() {
   const leaveCrew = useWeb((s) => s.leaveCrew);
   const { busy, error, run } = useRun();
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex flex-col items-start gap-1">
       <TwoClick label={tr(W).leave} armedLabel={tr(W).leaveConfirm} disabled={busy} onConfirm={() => void run(leaveCrew)} />
       <span className="text-xs text-engrave">{tr(W).leaveNote}</span>
       {error && <div role="alert" className={alertBox}>{error}</div>}
@@ -77,6 +90,7 @@ export function LeaveCrew() {
 
 function InviteCodes() {
   const { invites, loadInvites, createInvite, revokeInvite, activeCrewId } = useWeb();
+  const crewName = useWeb((s) => s.crews.find((c) => c.id === s.activeCrewId)?.name ?? "");
   const { busy, error, run } = useRun();
   const [copied, setCopied] = useState<string | null>(null);
   useEffect(() => {
@@ -84,11 +98,12 @@ function InviteCodes() {
     // Reload when the crew changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeCrewId]);
-  const copy = async (code: string) => {
+  /** `key`: the code, or "msg:" + the code for the whole message. */
+  const copy = async (key: string, text: string) => {
     try {
-      await navigator.clipboard.writeText(code);
-      setCopied(code);
-      setTimeout(() => setCopied((c) => (c === code ? null : c)), 2000);
+      await navigator.clipboard.writeText(text);
+      setCopied(key);
+      setTimeout(() => setCopied((c) => (c === key ? null : c)), 2000);
     } catch {
       /* the code is on screen to copy by hand */
     }
@@ -107,8 +122,11 @@ function InviteCodes() {
               <span className="font-mono text-base tracking-[0.2em] text-cream">{i.code}</span>
               <span className="text-xs text-engrave">{tr(W).inviteLine(i.uses, i.max_uses, until(i.expires_at))}</span>
               <span className="ml-auto flex items-center gap-3">
-                <button onClick={() => void copy(i.code)} className="text-xs text-body hover:text-cream">
+                <button onClick={() => void copy(i.code, i.code)} className="text-xs text-body hover:text-cream">
                   {copied === i.code ? tr(W).copied : tr(W).copy}
+                </button>
+                <button onClick={() => void copy(`msg:${i.code}`, inviteMessage(i.code, crewName))} className="text-xs text-body hover:text-cream">
+                  {copied === `msg:${i.code}` ? tr(W).messageCopied : tr(W).copyMessage}
                 </button>
                 <button onClick={() => void run(() => revokeInvite(i.code))} disabled={busy} className="text-xs text-engrave hover:text-cream disabled:opacity-40">
                   {tr(W).revoke}
@@ -160,7 +178,7 @@ function DeleteCrew({ name }: { name: string }) {
   const { busy, error, run } = useRun();
   const matches = typed.trim().toLowerCase() === name.trim().toLowerCase();
   return (
-    <section className="flex flex-col gap-2 rounded-md border border-red-500/30 p-4">
+    <section className="flex flex-col gap-2 rounded-md border border-missing/40 p-4">
       <h3 className="text-sm font-medium text-cream">{tr(W).deleteTitle}</h3>
       <p className="text-xs text-body">{tr(W).deleteWhat(name, Math.max(members, 1))}</p>
       {!open ? (
@@ -184,7 +202,7 @@ function DeleteCrew({ name }: { name: string }) {
             disabled={busy}
             className={`${field} w-64`}
           />
-          <button type="submit" disabled={!matches || busy} className="rounded border border-red-500/50 bg-red-500/15 px-3 py-1.5 text-sm text-cream hover:bg-red-500/25 disabled:opacity-40">
+          <button type="submit" disabled={!matches || busy} className="rounded border border-missing/60 bg-missing/15 px-3 py-1.5 text-sm text-cream hover:bg-missing/25 disabled:opacity-40">
             {busy ? tr(W).deleting : tr(W).deleteConfirm}
           </button>
           <button type="button" disabled={busy} onClick={() => (setOpen(false), setTyped(""))} className="text-xs text-engrave hover:text-cream">

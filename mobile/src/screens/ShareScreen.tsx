@@ -1,48 +1,47 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type MutableRefObject } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { clearShareCache } from "../../modules/hivo-share";
 import { TargetPicker } from "../components/TargetPicker";
 import { Button, Engrave } from "../components/ui";
-import { adopt, SpaceError } from "../files";
+import { adoptAll, SpaceError } from "../files";
 import { s } from "../inboxStrings";
 import { tr } from "../lib/i18n";
 import type { IdeaTarget } from "../lib/ideas";
 import { checkShared, isZip, sharedName, type OutFile } from "../lib/outbox";
+import { fileNameFor, shareText, titleFromShare } from "../lib/shareMeta";
+import type { Kind } from "../lib/sync";
 import { addIdea, addOutItem, newOutId, requestSync, useApp } from "../store";
 import { T } from "../strings";
 import { C, FONT, RADIUS } from "../theme";
 
 export type IncomingShare = {
   /** `mime`: the type the sharing app sent (fills in a missing or odd extension). */
-  files: { uri: string; name: string; size: number | null; mime?: string | null }[];
+  files: { uri: string; name: string; size: number | null; mime?: string | null; named?: boolean }[];
   skipped: { name: string; reason: string }[];
   text: string | null;
   subject: string | null;
   /** Picked in Hivo (copy the files) rather than shared from another app (already copies: move them). */
   picked: boolean;
+  /** The native share's own cache folder (cleared when this share is done). */
+  dir?: string | null;
 };
 
 const mb = (n: number) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
-/** A song name from a file: "Night_Run (Mixdown).mp3" → "Night Run". */
-function nameFromFile(file: string): string {
-  return file
-    .replace(/\.[a-z0-9]{1,5}$/i, "")
-    .replace(/[_]+/g, " ")
-    .replace(/[\s-]*[([]?\b(bandlab|mixdown|mix|master|export|stems?)\b[)\]]?$/i, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
+const SONGS_ONLY: Kind[] = ["song"];
 
 /** What another app shared with Hivo (or files picked here): send it to the computer. */
-export function ShareScreen({ share, onDone, onIdea }: { share: IncomingShare; onDone: () => void; onIdea: (id: string) => void }) {
+export function ShareScreen({ share, onDone, onIdea, backRef }: { share: IncomingShare; onDone: () => void; onIdea: (id: string) => void; backRef: MutableRefObject<(() => void) | null> }) {
   const paired = useApp((st) => st.pairing !== null);
   // Names as the files are (BandLab's M4A may come without an extension, or as .mp4).
-  const files = useMemo(() => share.files.map((f) => ({ ...f, name: sharedName(f.name, f.mime) })), [share.files]);
+  const files = useMemo(() => share.files.map((f) => ({ ...f, name: sharedName(f.name, f.mime), named: f.named !== false })), [share.files]);
   const check = useMemo(() => checkShared(files), [files]);
   const typeOf = (name: string) => files.find((f) => f.name === name)?.mime ?? null;
   const firstLine = (share.text ?? "").split("\n").find((l) => l.trim())?.trim() ?? "";
-  const [title, setTitle] = useState(() => (share.subject?.trim() || (check.ok[0] ? nameFromFile(check.ok[0].name) : "") || "").slice(0, 200));
+  // BandLab's subject, a line of its text, else a file's own name; never a link or an id.
+  const [title, setTitle] = useState(() => titleFromShare({ subject: share.subject, text: share.text, fileNames: check.ok.map((f) => f.name) }).slice(0, 200));
+  // A file named by its id ("msf_1000032969.m4a") takes the song's name.
+  const finalName = (f: (typeof check.ok)[number], i: number) => fileNameFor(f.name, f.named, title, i, check.ok.length, s().sketchLabel);
   const [target, setTarget] = useState<IdeaTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,13 +55,12 @@ export function ShareScreen({ share, onDone, onIdea }: { share: IncomingShare; o
     setBusy(true);
     setError(null);
     const id = newOutId();
-    const files: OutFile[] = [];
     try {
-      for (const f of check.ok) files.push(await adopt(id, f, share.picked));
-      // A link or a line shared with the files (BandLab adds its link) goes in the name.
-      const name = title.trim() || (hasText ? firstLine : "");
-      addOutItem(id, "sketch", files, { title: name, target });
-      void clearShareCache();
+      // All of the item's files or none (a failure puts back what was moved).
+      const files: OutFile[] = await adoptAll(id, check.ok.map((f, i) => ({ uri: f.uri, name: finalName(f, i) })), share.picked);
+      // The shared words and BandLab link go with it (the computer keeps the link on the song).
+      addOutItem(id, "sketch", files, { title: title.trim(), target, text: shareText(share.text, share.subject) });
+      if (!share.picked) void clearShareCache(share.dir);
       requestSync();
       onDone();
     } catch (e) {
@@ -76,13 +74,27 @@ export function ShareScreen({ share, onDone, onIdea }: { share: IncomingShare; o
     const lines = (share.text ?? "").split("\n").filter((l) => l.trim());
     const title = share.subject?.trim() || (lines.length > 1 && firstLine.length <= 80 ? firstLine : "");
     const id = addIdea({ title, text: share.text ?? "", target });
+    if (!share.picked) void clearShareCache(share.dir);
     requestSync();
     onIdea(id);
   }
 
+  // Leaving without sending: drop the copies (up to 20 files) from the cache.
+  const leave = () => {
+    if (!share.picked) void clearShareCache(share.dir);
+    onDone();
+  };
+  // The hardware Back does the same (App.tsx calls it).
+  useEffect(() => {
+    backRef.current = leave;
+    return () => {
+      backRef.current = null;
+    };
+  });
+
   return (
     <ScrollView contentContainerStyle={{ padding: 16, gap: 14 }} keyboardShouldPersistTaps="handled">
-      <Pressable onPress={onDone} hitSlop={10} accessibilityRole="button" style={{ paddingVertical: 4 }}>
+      <Pressable onPress={leave} hitSlop={10} accessibilityRole="button" style={{ paddingVertical: 4 }}>
         <Text style={styles.back}>‹ {t.back}</Text>
       </Pressable>
       <Text style={styles.title}>{s().shareTitle}</Text>
@@ -91,9 +103,9 @@ export function ShareScreen({ share, onDone, onIdea }: { share: IncomingShare; o
       {hasFiles ? (
         <View style={styles.box}>
           <Engrave>{`${s().sketchLabel} · ${s().shareFiles(check.ok.length)}`}</Engrave>
-          {check.ok.map((f) => (
+          {check.ok.map((f, i) => (
             <Text key={f.uri} style={styles.file} numberOfLines={1}>
-              {f.name}
+              {finalName(f, i)}
               {f.size !== null ? `  ·  ${mb(f.size)}` : ""}
               {isZip(f.name) ? `  ·  ${s().zipNote}` : ""}
             </Text>
@@ -126,10 +138,11 @@ export function ShareScreen({ share, onDone, onIdea }: { share: IncomingShare; o
       {hasFiles ? (
         <View>
           <Engrave>{s().shareName}</Engrave>
-          <TextInput value={title} onChangeText={setTitle} maxLength={200} placeholder={s().shareNamePlaceholder} placeholderTextColor={C.engrave} style={styles.input} />
+          <TextInput value={title} onChangeText={setTitle} accessibilityLabel={s().shareName} maxLength={200} placeholder={s().shareNamePlaceholder} placeholderTextColor={C.engrave} style={styles.input} />
         </View>
       ) : null}
-      {hasFiles || hasText ? <TargetPicker value={target} onChange={setTarget} /> : null}
+      {/* An export can only become (or join) a song on the computer; an idea can go anywhere. */}
+      {hasFiles || hasText ? <TargetPicker value={target} onChange={setTarget} kinds={hasFiles ? SONGS_ONLY : undefined} /> : null}
 
       {error ? <Text style={styles.warn}>{error}</Text> : null}
       {hasFiles ? <Button label={s().shareSend} variant="primary" disabled={busy} onPress={() => void send()} /> : null}
