@@ -3,9 +3,11 @@ import type { ProjectInfo, Workspace } from "../types";
 import {
   collaborators,
   firstSaveMs,
+  isFromFileDates,
   keyName,
   sampleFolder,
   songShape,
+  stageDays,
   tempoKeyTendencies,
   weekdayRun,
   workingHours,
@@ -259,5 +261,40 @@ describe("song shape", () => {
     expect(out.starts.reduce((t, m) => t + m.started, 0)).toBe(3);
     expect(songShape([], ws(), NOW).medianVersions).toBeNull();
     expect(songShape([], ws(), NOW).medianDaysToMixdown).toBeNull();
+  });
+});
+
+describe("tendency sources", () => {
+  it("flags the blocks read from file dates", () => {
+    expect(isFromFileDates("workingHours")).toBe(true);
+    expect(isFromFileDates("songShape")).toBe(true);
+    expect(isFromFileDates("tempoKey")).toBe(false);
+    expect(isFromFileDates("yourSound")).toBe(false);
+    expect(isFromFileDates("collaborators")).toBe(false);
+  });
+
+  it("reads days in each stage from the stage log, finished stays only", () => {
+    const songs = [song("a"), song("b"), song("c")];
+    const out = stageDays(
+      songs,
+      ws({
+        "/p/a.flp": { stageLog: [{ stage: "creation", atMs: NOW - 30 * DAY }, { stage: "production", atMs: NOW - 20 * DAY }, { stage: "prep", atMs: NOW - 5 * DAY }] },
+        "/p/b.flp": { stageLog: [{ stage: "creation", atMs: NOW - 10 * DAY }, { stage: "production", atMs: NOW - 6 * DAY }] },
+        // One entry only: still in its first logged stage, nothing finished.
+        "/p/c.flp": { stageLog: [{ stage: "creation", atMs: NOW - 3 * DAY }] },
+      }),
+    );
+    // Creation: 10 and 4 days → 7; Production: 15 days; Prep is open, not counted.
+    expect(out).toEqual([
+      { stage: "creation", medianDays: 7, songs: 2 },
+      { stage: "production", medianDays: 15, songs: 1 },
+    ]);
+  });
+
+  it("prefers the stage log when it has data, else file dates", () => {
+    const songs = [song("a", { renders: [file(NOW)] })];
+    expect(songShape(songs, ws(), NOW)).toMatchObject({ timingSource: "fileDates", stageDays: [] });
+    const logged = ws({ "/p/a.flp": { stageLog: [{ stage: "creation", atMs: NOW - 2 * DAY }, { stage: "production", atMs: NOW }] } });
+    expect(songShape(songs, logged, NOW)).toMatchObject({ timingSource: "stageLog", stageDays: [{ stage: "creation", medianDays: 2, songs: 1 }] });
   });
 });
