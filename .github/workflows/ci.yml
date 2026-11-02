@@ -1,6 +1,6 @@
 # Checks every pull request and every push to main: unit tests, type-checked
-# builds (desktop + web), Rust tests, dependency audits and the database
-# tests.
+# builds (desktop + web), the phone app's types and tests, Rust tests,
+# dependency audits and the database tests.
 #
 # GitHub-hosted runners only, never the self-hosted `hivo` Mac: the repo is
 # public, so this workflow runs code from forks, and that must not reach a
@@ -93,6 +93,30 @@ jobs:
       # web/ imports the pure modules in src/ through @shared.
       - run: npm ci --ignore-scripts
       - run: npm run build
+
+  mobile:
+    name: Phone app (types, tests)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - run: npm ci --ignore-scripts
+      - run: npx tsc --noEmit
+      # Pure modules and config plugins; also checks the expo-audio names the
+      # recording module relies on (src/lib/expoAudioNames.test.ts).
+      - run: npm test
 
   audit:
     name: Dependency audit
