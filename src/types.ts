@@ -550,6 +550,10 @@ export interface Workspace {
    * Follows the beat when it moves (`relinkBeatNotes`); a path the scan
    * no longer has falls back to the name match (`matchBeat`). */
   leadBeats?: Record<string, string | null>;
+  /** Songs and beats that moved to a new path (relinks, renames, "Continue
+   * in FL Studio"), kept a few days for the phone's `/v1/snapshot`
+   * `renamed` list, so its pending note edits follow (src/lib/phoneSync.ts). */
+  phoneRenames?: { kind: "song" | "beat"; from: string; to: string; at: number }[];
   /** Set only on generated sample data (src/lib/sampleData.ts): a workspace
    * carrying it is never written to disk. */
   sample?: true;
@@ -806,6 +810,8 @@ export interface PhoneDevice {
   lastSeenMs: number | null;
   /** Paired on another port than the one open now: it needs a new QR (Re-pair). */
   needsNewQr: boolean;
+  /** Its Hivo is older (major.minor) than this computer's. Absent from older builds. */
+  phoneOutdated?: boolean;
 }
 
 export interface PhoneSyncStatus {

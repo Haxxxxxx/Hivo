@@ -152,6 +152,30 @@ describe("applyPushResults", () => {
     expect(pendingChanges(s).map((c) => c.id)).toContain("a");
   });
 
+  it("re-keys pending edits, gone items and marks on `renamed`", () => {
+    // A pending edit on a song that moved.
+    let s: SyncState = { ...base(), conflicts: { [itemKey("beat", "a")]: 3 } };
+    s = editNote(s, "beat", "a", "A2", 5);
+    const moved = applySnapshot(s, { items: [item("beat", "a2", "A"), item("beat", "b"), item("beat", "c")], generatedAt: 1, renamed: [{ kind: "beat", from: "a", to: "a2" }] }, 9);
+    expect(moved.pending[itemKey("beat", "a")]).toBeUndefined();
+    expect(moved.pending[itemKey("beat", "a2")]).toMatchObject({ id: "a2", text: "A2", baseHash: s.pending[itemKey("beat", "a")].baseHash });
+    expect(moved.conflicts).toEqual({ [itemKey("beat", "a2")]: 3 });
+    // A gone item (pushed before the snapshot said it moved): an edit again, on its old base.
+    let g = applyPushResults(base(), sent, [{ kind: "beat", id: "c", status: "missing", note: "", noteHash: fnv1a("") }], 9);
+    const baseOfC = sent.find((c) => c.id === "c")!.baseHash;
+    g = applySnapshot(g, { items: [item("beat", "c2", "desk")], generatedAt: 1, renamed: [{ kind: "beat", from: "c", to: "c2" }] }, 11);
+    expect(g.gone).toEqual({});
+    expect(pendingChanges(g)).toContainEqual({ kind: "beat", id: "c2", text: "C", baseHash: baseOfC });
+    // Not in this snapshot: still gone, under its new id. Kept across a restart with its base.
+    let h = applyPushResults(base(), sent, [{ kind: "beat", id: "c", status: "missing", note: "", noteHash: fnv1a("") }], 9);
+    h = applySnapshot(h, { items: [], generatedAt: 1, renamed: [{ kind: "beat", from: "c", to: "c3" }] }, 11);
+    expect(Object.keys(h.gone)).toEqual([itemKey("beat", "c3")]);
+    expect(parseEdits(JSON.parse(JSON.stringify(editsOf(h)))).gone[itemKey("beat", "c3")].baseHash).toBe(baseOfC);
+    // Older desktops send no `renamed`; malformed entries are dropped.
+    expect(parseSnapshot({ items: [], renamed: [{ kind: "song", from: "a", to: "a" }, { kind: "x", from: "a", to: "b" }, { kind: "song", from: "a", to: "b" }] })?.renamed).toEqual([{ kind: "song", from: "a", to: "b" }]);
+    expect(parseSnapshot({ items: [] })?.renamed).toEqual([]);
+  });
+
   it("reads 'too long' from the computer's answer (older phones skipped it)", () => {
     const parsed = parsePushResults({ results: [{ kind: "beat", id: "a", status: "too long", note: "x", noteHash: fnv1a("x") }] });
     expect(parsed?.[0]?.status).toBe("too long");
@@ -159,7 +183,8 @@ describe("applyPushResults", () => {
 });
 
 // A fake desktop that follows the contract, end to end through the envelope.
-function fakeDesktop(pairing: Pairing, initial: Item[], opts: { demo?: boolean } = {}) {
+function fakeDesktop(pairing: Pairing, initial: Item[], opts: { demo?: boolean; error?: string; hivoVersion?: string } = {}) {
+  const renamed: { kind: Kind; from: string; to: string }[] = [];
   const key = Buffer.from(pairing.key, "base64url");
   const guard = new ReplayGuard();
   const notes = new Map(initial.map((i) => [itemKey(i.kind, i.id), i]));
@@ -177,8 +202,9 @@ function fakeDesktop(pairing: Pairing, initial: Item[], opts: { demo?: boolean }
     }
     let reply: Reply;
     if (opts.demo) reply = { ok: false, error: "demo" };
-    else if (path === "/v1/hello") reply = { ok: true, body: { desktopName: "Studio", hivoVersion: "0.5.6" } };
-    else if (path === "/v1/snapshot") reply = { ok: true, body: { items: [...notes.values()], generatedAt: 1 } };
+    else if (opts.error) reply = { ok: false, error: opts.error };
+    else if (path === "/v1/hello") reply = { ok: true, body: { desktopName: "Studio", hivoVersion: opts.hivoVersion ?? "0.5.6" } };
+    else if (path === "/v1/snapshot") reply = { ok: true, body: { items: [...notes.values()], generatedAt: 1, renamed } };
     else {
       const results = (body as { changes: Change[] }).changes.map((c) => {
         const cur = notes.get(itemKey(c.kind, c.id));
@@ -195,7 +221,7 @@ function fakeDesktop(pairing: Pairing, initial: Item[], opts: { demo?: boolean }
     const env = sealResponse(key, init.headers["X-Hivo-Device"], path, reply, rnd);
     return { status: 200, text: async () => JSON.stringify(env) };
   };
-  return { transport, notes, log };
+  return { transport, notes, log, renamed };
 }
 
 const pairing: Pairing = {
@@ -237,6 +263,37 @@ describe("runSync with a fake desktop", () => {
     expect(r.conflicts).toBe(1);
     expect(noteFor(s, "song", "s1")).toBe("desktop\n\n--- from Phone ---\nphone");
     expect(s.conflicts[itemKey("song", "s1")]).toBeTypeOf("number");
+  });
+
+  it("a song renamed on the desktop (Continue in FL Studio): the pending edit follows it and goes the same sync", async () => {
+    const desk = fakeDesktop(pairing, [item("song", "/p/X/BandLab", "desk")]);
+    const call = createClient({ pairing, transport: desk.transport, random: rnd, now: Date.now });
+    let s = { ...withItems(item("song", "/p/X/BandLab", "desk")), helloDone: true };
+    s = editNote(s, "song", "/p/X/BandLab", "desk\nnew bar", 1);
+    // Meanwhile the desktop continued the sketch in FL Studio: a new key.
+    desk.notes.delete(itemKey("song", "/p/X/BandLab"));
+    desk.notes.set(itemKey("song", "/p/X/X.flp"), item("song", "/p/X/X.flp", "desk"));
+    desk.renamed.push({ kind: "song", from: "/p/X/BandLab", to: "/p/X/X.flp" });
+    const r = await runSync(call, () => s, (n) => (s = n), hello, Date.now);
+    expect(desk.notes.get(itemKey("song", "/p/X/X.flp"))?.note).toBe("desk\nnew bar");
+    expect(s.pending).toEqual({});
+    expect(s.gone).toEqual({});
+    expect(r.missing).toBe(0);
+  });
+
+  it("says hello again when asked (once per app run) and returns the computer's version", async () => {
+    const desk = fakeDesktop(pairing, [], { hivoVersion: "0.5.2" });
+    const call = createClient({ pairing, transport: desk.transport, random: rnd, now: Date.now });
+    let s = { ...withItems(), helloDone: true };
+    const quiet = await runSync(call, () => s, (n) => (s = n), hello, Date.now);
+    expect(quiet.desktopVersion).toBeUndefined();
+    const r = await runSync(call, () => s, (n) => (s = n), hello, Date.now, { hello: true });
+    expect(r.desktopVersion).toBe("0.5.2");
+  });
+
+  it("the desktop's read-only workspace has its own code (not 'busy' forever)", async () => {
+    const ro = createClient({ pairing, transport: fakeDesktop(pairing, [], { error: "read only" }).transport, random: rnd, now: Date.now });
+    await expect(ro("/v1/snapshot", {})).rejects.toMatchObject({ code: "read-only" });
   });
 
   it("maps failures to clear codes", async () => {

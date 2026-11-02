@@ -59,6 +59,7 @@ export const S = dict(
       demo: "Hivo on the computer shows sample data: switch to your library there to receive.",
       "inbox-full": "The computer's phone inbox is full: file or remove items there, then sync.",
       "disk-full": "The computer's disk is full: free some space, then sync.",
+      "desktop-error": "The computer couldn't save what this phone sent (a folder it can't write to?). It goes again at the next sync.",
     } as Record<ExtrasError, string>,
     // Recorder
     recTitle: "Voice memo",
@@ -161,6 +162,7 @@ export const S = dict(
       demo: `Hivo sur l'ordi affiche des données d'exemple${NB}: passe à ta bibliothèque là-bas pour recevoir.`,
       "inbox-full": `La boîte du téléphone sur l'ordi est pleine${NB}: range ou retire des éléments là-bas, puis synchronise.`,
       "disk-full": `Le disque de l'ordi est plein${NB}: libère de la place, puis synchronise.`,
+      "desktop-error": `L'ordi n'a pas pu enregistrer ce que ce téléphone a envoyé (un dossier où il ne peut pas écrire${NB}?). Ça repart à la prochaine synchro.`,
     } as Record<ExtrasError, string>,
     recTitle: "Mémo vocal",
     recStart: "Enregistrer",

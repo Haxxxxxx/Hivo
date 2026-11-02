@@ -5,7 +5,7 @@
 
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import * as api from "../lib/tauri";
-import { applyNoteChanges, buildSnapshot, noteLookup, parseChanges, type SyncSources } from "../lib/phoneSync";
+import { applyNoteChanges, buildSnapshot, noteLookup, parseChanges, refusal, type SyncSources } from "../lib/phoneSync";
 import type { PhoneSyncRequest } from "../types";
 import { useAppStore } from "./useAppStore";
 import { startPhoneInbox } from "./usePhoneInbox";
@@ -39,11 +39,8 @@ async function sources(): Promise<SyncSources | Reply> {
     scanSettled(SCAN_WAIT_MS),
   ]);
   const s = useAppStore.getState();
-  if (s.demoMode) return { error: "demo" };
-  if (!s.workspaceWritable) return { error: "busy" };
-  // A scan still running answers from the last one; only the very first
-  // scan (nothing listed yet) is worth waiting for, or songs would look deleted.
-  if (s.scanning && s.projects.length === 0) return { error: "busy" };
+  const refused = refusal({ ...s, hasIssue: s.workspaceIssue !== null, projectCount: s.projects.length });
+  if (refused) return { error: refused };
   return { leads, beats, projects: s.projects, workspace: s.workspace };
 }
 
@@ -78,6 +75,18 @@ export function startPhoneSyncBridge(): () => void {
     if (s.demoMode !== prev.demoMode) tellDemo(s.demoMode);
   });
   const stopInbox = startPhoneInbox();
+  // A phone with a newer Hivo said hello: this computer may have one waiting.
+  let unlistenNewer: UnlistenFn | null = null;
+  api
+    .onPhoneNewer(() => {
+      const s = useAppStore.getState();
+      if (s.update.status === "idle" || s.update.status === "error") void s.checkUpdate({ quiet: true });
+    })
+    .then((u) => {
+      if (stopped) u();
+      else unlistenNewer = u;
+    })
+    .catch(() => {});
   api
     .onPhoneSyncRequest((req) => {
       void answerPhoneRequest(req)
@@ -93,6 +102,7 @@ export function startPhoneSyncBridge(): () => void {
   return () => {
     stopped = true;
     unlisten?.();
+    unlistenNewer?.();
     unsubDemo();
     stopInbox();
   };

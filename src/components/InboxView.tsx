@@ -62,6 +62,9 @@ const T = dict(
     folder: "In",
     noFolders: "Link a project folder in Settings first: the song folder is created there.",
     orAttach: "Or attach the audio to a song:",
+    attachTo: (title: string) => `Attach to ${title}`,
+    attachToHint: "The phone sent it for this song: the audio goes into its BandLab folder.",
+    orNewSong: "Or file it as a new song:",
     dismiss: "Dismiss",
     restore: "Back to new",
     remove: "Remove",
@@ -82,6 +85,7 @@ const T = dict(
     filedSketch: "Filed as a new song",
     sharedWith: "Shared with it",
     filedMemo: "Copied into the song's Voice memos folder",
+    filedMemoTo: (title: string) => `Copied into the Voice memos folder of ${title}`,
     filedLink: (title: string) => `Linked to ${title}`,
     filedLinkCopy: (title: string) => `Linked to ${title} (copied into the beats folder's _memos)`,
     dismissed: "Dismissed",
@@ -123,6 +127,9 @@ const T = dict(
     folder: "Dans",
     noFolders: "Lie d'abord un dossier de projets dans les Réglages : le dossier du son y est créé.",
     orAttach: "Ou joindre l'audio à un son :",
+    attachTo: (title: string) => `Joindre à ${title}`,
+    attachToHint: "Le téléphone l'a envoyé pour ce son : l'audio va dans son dossier BandLab.",
+    orNewSong: "Ou le classer comme nouveau son :",
     dismiss: "Écarter",
     restore: "Remettre en nouveau",
     remove: "Retirer",
@@ -143,6 +150,7 @@ const T = dict(
     filedSketch: "Rangé comme nouveau son",
     sharedWith: "Partagé avec",
     filedMemo: "Copié dans le dossier Voice memos du son",
+    filedMemoTo: (title: string) => `Copié dans le dossier Voice memos de ${title}`,
     filedLink: (title: string) => `Lié à ${title}`,
     filedLinkCopy: (title: string) => `Lié à ${title} (copié dans _memos du dossier de prods)`,
     dismissed: "Écarté",
@@ -351,6 +359,7 @@ function InboxCard({ item, options, onNotice }: { item: InboxItem; options: Targ
   const projects = useAppStore((s) => s.projects);
 
   const aimed = knownTarget(item, options);
+  const aimedSong = item.itemType === "sketch" && aimed?.kind === "song" ? aimed : null;
   const [targetKey, setTargetKey] = useState(aimed ? `${aimed.kind}:${aimed.id}` : "");
   const [name, setName] = useState(() => sketchName(item));
   const [folder, setFolder] = useState(folders[0] ?? "");
@@ -405,9 +414,11 @@ function InboxCard({ item, options, onNotice }: { item: InboxItem; options: Targ
                 : item.itemType === "idea" && filedTitle
                   ? t.filedNote(filedTitle)
                   : filedTitle
-                    ? item.copiedTo
-                      ? t.filedLinkCopy(filedTitle)
-                      : t.filedLink(filedTitle)
+                    ? item.filedAs === "folder"
+                      ? t.filedMemoTo(filedTitle)
+                      : item.copiedTo
+                        ? t.filedLinkCopy(filedTitle)
+                        : t.filedLink(filedTitle)
                     : t.filedMemo}
           </span>
         )}
@@ -468,6 +479,18 @@ function InboxCard({ item, options, onNotice }: { item: InboxItem; options: Targ
 
       {isNew && !missing && item.itemType === "sketch" && (
         <div className="flex flex-col gap-3">
+          {/* Sent for a song that's here: joining it is the first choice, not a new sketch. */}
+          {aimedSong && (
+            <div className="flex flex-col gap-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <button className={btnPrimary} disabled={busy} onClick={() => void run(() => attachMemo(item, aimedSong))}>
+                  {busy ? t.working : t.attachTo(aimedSong.title)}
+                </button>
+                <span className="text-xs text-engrave">{t.attachToHint}</span>
+              </div>
+              <span className="mt-1 text-xs text-body">{t.orNewSong}</span>
+            </div>
+          )}
           {folders.length === 0 ? (
             <Notice>{t.noFolders}</Notice>
           ) : (
@@ -487,7 +510,7 @@ function InboxCard({ item, options, onNotice }: { item: InboxItem; options: Targ
                 </select>
               </label>
               <button
-                className={btnPrimary}
+                className={aimedSong ? btn : btnPrimary}
                 disabled={busy || !name.trim() || !folder}
                 onClick={() =>
                   void run(async () => {

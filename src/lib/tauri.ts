@@ -1,6 +1,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { currentLang } from "../i18n";
 import type {
   DetectedFolder,
   AiStatus,
@@ -362,6 +363,11 @@ export async function kitFiles(folderName: string): Promise<KitFile[]> {
   return invoke("kit_files", { folderName });
 }
 
+/** What's in a song's `BandLab/` folder (audio attached from the phone; stems in `Stems/`). */
+export async function bandlabFiles(songPath: string): Promise<KitFile[]> {
+  return invoke("bandlab_files", { songPath });
+}
+
 /** URL the webview can stream a local audio file from (asset protocol). */
 export function audioSrc(path: string): string {
   return convertFileSrc(path);
@@ -387,9 +393,17 @@ export async function revealInFileManager(path: string): Promise<void> {
 // ---- Phone sync (src-tauri/src/phone_sync.rs, docs/PHONE-SYNC.md) ----
 export const phoneSyncStatus = (): Promise<PhoneSyncStatus> => invoke("phone_sync_status");
 /** Opens (true) or closes (false) the local network port; saved. */
-export const phoneSyncEnable = (on: boolean): Promise<PhoneSyncStatus> => invoke("phone_sync_enable", { on });
+export const phoneSyncEnable = (on: boolean): Promise<PhoneSyncStatus> => invoke("phone_sync_enable", { on, lang: currentLang() });
 /** A new device and its QR url. The key in it is never returned again. */
-export const phoneSyncPair = (): Promise<PhonePairing> => invoke("phone_sync_pair");
+export const phoneSyncPair = (): Promise<PhonePairing> => invoke("phone_sync_pair", { lang: currentLang() });
+/** What `phoneSyncPair` rejects with when the user said no in the native dialog. */
+export const PAIR_CANCELLED = "cancelled";
+/** Windows: "Allow an app through Windows Firewall". */
+export const phoneSyncOpenFirewall = (): Promise<void> => invoke("phone_sync_open_firewall");
+/** A phone with a newer Hivo said hello: this computer may have an update. */
+export function onPhoneNewer(handler: () => void): Promise<UnlistenFn> {
+  return listen("phone-sync-phone-newer", () => handler());
+}
 export const phoneSyncForget = (deviceId: string): Promise<PhoneSyncStatus> => invoke("phone_sync_forget", { deviceId });
 /** Answers a forwarded request: a body, or a short error ("demo", "busy"). */
 export const phoneSyncReply = (id: string, reply: { body: unknown } | { error: string }): Promise<void> =>

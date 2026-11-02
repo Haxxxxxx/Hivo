@@ -66,6 +66,21 @@ fn clip_line(s: &str, max: usize) -> String {
     s.chars().filter(|c| !c.is_control()).take(max).collect::<String>().trim().to_string()
 }
 
+/// The contract's answer for a chunk/finish without a start, or an item
+/// this computer dropped: the phone sends the whole item again.
+pub const UNKNOWN_UPLOAD: &str = "unknown upload";
+
+/// While uploading: a file or folder that vanished (the item was removed on
+/// the desktop between the lookup and the write) is "unknown upload", so the
+/// phone starts the item again instead of failing it.
+fn upload_io_error(e: &io::Error, what: &str) -> String {
+    if e.kind() == io::ErrorKind::NotFound {
+        UNKNOWN_UPLOAD.to_string()
+    } else {
+        io_error(e, what)
+    }
+}
+
 /// "disk full" when the disk refused the write, else a short message.
 pub fn io_error(e: &io::Error, what: &str) -> String {
     let enospc = matches!(e.raw_os_error(), Some(28) if cfg!(unix)) || matches!(e.raw_os_error(), Some(112) if cfg!(windows));
@@ -397,6 +412,10 @@ impl Inbox {
                 }
                 p
             }
+            // A later file of an item this computer doesn't know (removed here,
+            // or dropped after 7 days): the phone sends it all again from file
+            // 0, or the item could never become ready.
+            None if index > 0 => return Err(UNKNOWN_UPLOAD.to_string()),
             None => {
                 if Self::used_bytes(&items) + size > MAX_INBOX_BYTES {
                     return Err("inbox full".to_string());
@@ -450,9 +469,9 @@ impl Inbox {
                 if others + size > MAX_INBOX_BYTES {
                     return Err("inbox full".to_string());
                 }
-                fs::create_dir_all(&dir).map_err(|e| io_error(&e, "could not create the item folder"))?;
+                fs::create_dir_all(&dir).map_err(|e| upload_io_error(&e, "could not create the item folder"))?;
                 let slot = FileSlot { index, name: name.clone(), size, stored: stored_name(index, &name), complete: false };
-                fs::File::create(part_path(&dir, &slot)).map_err(|e| io_error(&e, "could not start the file"))?;
+                fs::File::create(part_path(&dir, &slot)).map_err(|e| upload_io_error(&e, "could not start the file"))?;
                 items[pos].files.push(slot);
                 0
             }
@@ -496,8 +515,8 @@ impl Inbox {
         if current + bytes.len() as u64 > slot.size {
             return Err("size".to_string());
         }
-        let mut f = fs::OpenOptions::new().append(true).open(&path).map_err(|e| io_error(&e, "could not write the file"))?;
-        f.write_all(&bytes).map_err(|e| io_error(&e, "could not write the file"))?;
+        let mut f = fs::OpenOptions::new().append(true).open(&path).map_err(|e| upload_io_error(&e, "could not write the file"))?;
+        f.write_all(&bytes).map_err(|e| upload_io_error(&e, "could not write the file"))?;
         Ok(json!({ "offset": current + bytes.len() as u64 }))
     }
 
@@ -523,7 +542,7 @@ impl Inbox {
                 let _ = fs::File::create(&part);
                 return Err("size".to_string());
             }
-            fs::rename(&part, dir.join(&slot.stored)).map_err(|e| io_error(&e, "could not keep the file"))?;
+            fs::rename(&part, dir.join(&slot.stored)).map_err(|e| upload_io_error(&e, "could not keep the file"))?;
             items[pos].files[s].complete = true;
         }
         let item = &mut items[pos];
@@ -739,7 +758,10 @@ impl Inbox {
     /// into `<song folder>/BandLab/` under the phone's names, zips unpacked
     /// (stems into `BandLab/Stems/` when a mixdown came with them). Never over
     /// a file. Returns the copied paths.
-    pub fn attach_to_song_folder(&self, id: &str, song_folder: &Path) -> Result<Vec<String>, String> {
+    /// A memo is filed as `song:<song_key>` with its copy in `copied_to`;
+    /// `memo_sub` (the song's file stem, when its folder holds several
+    /// projects) puts it in `Voice memos/<memo_sub>/`.
+    pub fn attach_to_song_folder(&self, id: &str, song_folder: &Path, song_key: &str, memo_sub: Option<&str>) -> Result<Vec<String>, String> {
         let item = self.get_ready(id)?;
         if item.item_type == ItemType::Idea {
             return Err("An idea has no audio to copy.".to_string());
@@ -775,15 +797,23 @@ impl Inbox {
             });
         }
         let (src, name) = sources.first().ok_or("This memo has no audio.")?;
-        if item.status == Status::Filed && item.filed_as.as_deref() == Some("folder") {
-            if let Some(done) = item.filed_to.as_deref().filter(|f| Path::new(f).starts_with(song_folder) && Path::new(f).is_file()) {
+        // Filed to the song by its key (the drawer matches on it), the copy
+        // in `copied_to`. A retry whose answer was lost answers the same.
+        let song = format!("song:{song_key}");
+        if item.status == Status::Filed && item.filed_as.as_deref() == Some("folder") && item.filed_to.as_deref() == Some(song.as_str()) {
+            if let Some(done) = item.copied_to.as_deref().filter(|f| Path::new(f).is_file()) {
                 return Ok(vec![done.to_string()]);
             }
         }
-        let dir = song_folder.join(MEMOS_DIR);
+        // Several songs in one folder (FL's flat `Projects/*.flp`): one
+        // memo folder per song, so they don't all share one.
+        let dir = match memo_sub {
+            Some(sub) => song_folder.join(MEMOS_DIR).join(crate::audio::safe_name(sub)),
+            None => song_folder.join(MEMOS_DIR),
+        };
         let target = memo_target(&dir, &item, name);
         let path = target.to_string_lossy().to_string();
-        self.filing(id, &path, "folder", None, || {
+        self.filing(id, &song, "folder", Some(path.clone()), || {
             fs::create_dir_all(&dir).map_err(|e| io_error(&e, "could not create the Voice memos folder"))?;
             copy_new(src, &target)
         })?;
@@ -1252,7 +1282,7 @@ mod tests {
         let song = d.0.join("Envy");
         fs::create_dir_all(&song).unwrap();
         fs::write(song.join("Envy.flp"), b"x").unwrap();
-        let out = inbox.attach_to_song_folder("dev.s1", &song).unwrap();
+        let out = inbox.attach_to_song_folder("dev.s1", &song, "/Envy/Envy.flp", None).unwrap();
         // The phone's names, zips unpacked, stems apart from the mixdown.
         let dir = song.join(SKETCH_DIR);
         assert_eq!(names_in(&dir), vec!["Envy mix.mp3", "Stems"]);
@@ -1261,7 +1291,7 @@ mod tests {
         let item = inbox.list()[0].item.clone();
         assert_eq!((item.status, item.filed_to.as_deref(), item.filed_as.as_deref()), (Status::Filed, Some(dir.to_string_lossy().as_ref()), Some("folder")));
         // Retried: nothing copied twice.
-        inbox.attach_to_song_folder("dev.s1", &song).unwrap();
+        inbox.attach_to_song_folder("dev.s1", &song, "/Envy/Envy.flp", None).unwrap();
         assert_eq!(names_in(&dir.join(STEMS_DIR)).len(), 2);
         assert!(fs::read(song.join("Envy.flp")).unwrap() == b"x", "the project is never touched");
     }
@@ -1300,7 +1330,7 @@ mod tests {
         fs::create_dir_all(&song).unwrap();
         // "Voice memos" is a file: the folder can't be made, the copy fails.
         fs::write(song.join(MEMOS_DIR), b"x").unwrap();
-        assert!(inbox.attach_to_song_folder("dev.m1", &song).is_err());
+        assert!(inbox.attach_to_song_folder("dev.m1", &song, "/Envy/Envy.flp", None).is_err());
         let item = inbox.list()[0].item.clone();
         assert_eq!((item.status, item.filed_to, item.filed_as), (Status::New, None, None));
         assert_eq!(Inbox::open(d.0.join("inbox")).list()[0].item.status, Status::New, "saved as new too");
@@ -1348,21 +1378,77 @@ mod tests {
         let inbox = Inbox::open(d.0.join("inbox"));
         upload(&inbox, "m1", "memo", &[("rec.m4a", b"take".to_vec())]);
         let song = d.0.join("Envy");
-        assert_eq!(inbox.attach_to_song_folder("dev.m1", &song).unwrap_err(), "This song's folder isn't there any more.");
+        assert_eq!(inbox.attach_to_song_folder("dev.m1", &song, "/Envy/Envy.flp", None).unwrap_err(), "This song's folder isn't there any more.");
         fs::create_dir_all(&song).unwrap();
-        let out = inbox.attach_to_song_folder("dev.m1", &song).unwrap();
+        let out = inbox.attach_to_song_folder("dev.m1", &song, "/Envy/Envy.flp", None).unwrap();
         assert_eq!(PathBuf::from(&out[0]), song.join(MEMOS_DIR).join("Night run.m4a"));
         // A retry: the same copy, not a second one.
-        assert_eq!(inbox.attach_to_song_folder("dev.m1", &song).unwrap(), out);
+        assert_eq!(inbox.attach_to_song_folder("dev.m1", &song, "/Envy/Envy.flp", None).unwrap(), out);
         // Back to new ("File elsewhere") and attached again: never over the first copy.
         inbox.mark("dev.m1", Status::New, None).unwrap();
-        let out2 = inbox.attach_to_song_folder("dev.m1", &song).unwrap();
+        let out2 = inbox.attach_to_song_folder("dev.m1", &song, "/Envy/Envy.flp", None).unwrap();
         assert_ne!(out2[0], out[0]);
         assert_eq!(fs::read(&out[0]).unwrap(), b"take");
         assert_eq!(inbox.list()[0].item.status, Status::Filed);
         inbox.remove("dev.m1").unwrap();
         assert!(inbox.list().is_empty());
         assert!(!d.0.join("inbox").join("files").join("dev.m1").exists());
+    }
+
+    #[test]
+    fn a_memo_is_filed_by_song_key_in_its_own_folder_when_songs_share_one() {
+        let d = temp("memo-flat");
+        let inbox = Inbox::open(d.0.join("inbox"));
+        upload(&inbox, "m1", "memo", &[("rec.m4a", b"take".to_vec())]);
+        let projects = d.0.join("Projects");
+        fs::create_dir_all(&projects).unwrap();
+        let key = projects.join("Envy.flp").to_string_lossy().to_string();
+        let out = inbox.attach_to_song_folder("dev.m1", &projects, &key, Some("Envy")).unwrap();
+        assert_eq!(PathBuf::from(&out[0]), projects.join(MEMOS_DIR).join("Envy").join("Night run.m4a"));
+        let item = inbox.list()[0].item.clone();
+        assert_eq!(item.filed_to, Some(format!("song:{key}")), "matched by song key, not by folder");
+        assert_eq!(item.copied_to.as_deref(), Some(out[0].as_str()));
+        // A retry answers the same copy.
+        assert_eq!(inbox.attach_to_song_folder("dev.m1", &projects, &key, Some("Envy")).unwrap(), out);
+    }
+
+    #[test]
+    fn removing_a_half_arrived_item_makes_the_phone_send_it_all_again() {
+        let d = temp("remove-resume");
+        let inbox = Inbox::open(d.0.clone());
+        // Two of three files in, the third under way.
+        for i in 0..2 {
+            start(&inbox, "s", "sketch", i, 3, &format!("{i}.wav"), 2).unwrap();
+            chunk(&inbox, "s", i, 0, b"ab").unwrap();
+            finish(&inbox, "s", i).unwrap();
+        }
+        start(&inbox, "s", "sketch", 2, 3, "2.wav", 2).unwrap();
+        inbox.remove("dev.s").unwrap();
+        // The phone resumes file 2: unknown, so it doesn't rebuild a one-file item.
+        assert_eq!(chunk(&inbox, "s", 2, 0, b"ab").unwrap_err(), UNKNOWN_UPLOAD);
+        assert_eq!(start(&inbox, "s", "sketch", 2, 3, "2.wav", 2).unwrap_err(), UNKNOWN_UPLOAD);
+        assert_eq!(inbox.receiving(), 0, "nothing half made");
+        // From file 0 again: all three arrive and the item is ready.
+        for i in 0..3 {
+            assert_eq!(start(&inbox, "s", "sketch", i, 3, &format!("{i}.wav"), 2).unwrap(), json!({ "offset": 0 }));
+            chunk(&inbox, "s", i, 0, b"ab").unwrap();
+            let (body, _) = finish(&inbox, "s", i).unwrap();
+            assert_eq!(body["status"], if i == 2 { "stored" } else { "waiting" });
+        }
+        assert_eq!(inbox.list().len(), 1);
+    }
+
+    #[test]
+    fn a_vanished_item_folder_is_an_unknown_upload() {
+        let d = temp("vanished");
+        let inbox = Inbox::open(d.0.clone());
+        start(&inbox, "m", "memo", 0, 1, "a.m4a", 4).unwrap();
+        chunk(&inbox, "m", 0, 0, b"ab").unwrap();
+        // The folder went away between the lookup and the write.
+        fs::remove_dir_all(d.0.join("files").join("dev.m")).unwrap();
+        assert_eq!(chunk(&inbox, "m", 0, 2, b"cd").unwrap_err(), UNKNOWN_UPLOAD);
+        assert_eq!(finish(&inbox, "m", 0).unwrap_err(), UNKNOWN_UPLOAD);
+        assert_eq!(upload_io_error(&io::Error::from(io::ErrorKind::NotFound), "x"), UNKNOWN_UPLOAD);
     }
 
     #[test]
