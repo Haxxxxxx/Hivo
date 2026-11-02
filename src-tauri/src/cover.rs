@@ -88,9 +88,10 @@ fn valid_token(token: &str) -> bool {
 }
 
 /// Writes `bytes` readable by the owner only, from the moment the file
-/// exists (no world-readable window). On Windows the per-user %APPDATA% ACL
-/// is what protects it.
-pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// exists (no world-readable window), in place: a crash mid-write can leave
+/// it half-written. Use `write_private` for a file that must survive one.
+/// On Windows the per-user %APPDATA% ACL is what protects it.
+pub(crate) fn write_private_in_place(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -103,7 +104,22 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         }
     }
     let mut file = options.open(path)?;
-    std::io::Write::write_all(&mut file, bytes)
+    std::io::Write::write_all(&mut file, bytes)?;
+    file.sync_all()
+}
+
+/// Owner-only (0600 on unix) and atomic: written next to the file
+/// (`<name>.tmp`), then renamed over it, so a crash never leaves a
+/// half-written file in place of the old one.
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = crate::workspace::sibling(path, "tmp");
+    if let Err(e) = write_private_in_place(&tmp, bytes) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = fs::remove_file(&tmp);
+    })
 }
 
 /// Saves both values, or removes the file when both are None/empty.
@@ -464,6 +480,28 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn private_writes_are_atomic_and_owner_only() {
+        let dir = temp_dir("private");
+        let path = dir.join("secret.json");
+        fs::write(&path, b"old, world-readable").unwrap();
+        write_private(&path, b"new").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        assert!(!crate::workspace::sibling(&path, "tmp").exists(), "no temp file left");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        // A write that can't happen leaves the old file whole.
+        let blocked = dir.join("blocked.json");
+        fs::write(&blocked, b"kept").unwrap();
+        fs::create_dir_all(crate::workspace::sibling(&blocked, "tmp")).unwrap();
+        assert!(write_private(&blocked, b"lost").is_err());
+        assert_eq!(fs::read(&blocked).unwrap(), b"kept");
+        let _ = fs::remove_dir_all(dir);
     }
 
     /// A minimal JPEG header: SOI, an APP0 segment, then SOF0 with 1024×768.
