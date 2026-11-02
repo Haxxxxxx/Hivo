@@ -108,6 +108,10 @@ const TEXT = {
     fr: "{who} l'a déplacé dans {stage} juste avant toi. Redéplace-le si tu veux toujours.",
   },
   someone: { en: "A crewmate", fr: "Quelqu'un du crew" },
+  inviteMessage: {
+    en: "Join {crew} on Hivo.\n1. First send me the email you'll sign in with, so I can add it.\n2. Get the app or open {url}, then sign in with that email (you get a 6-digit code, no password).\n3. Enter this invite code: {code} (valid 7 days).",
+    fr: "Rejoins {crew} sur Hivo.\n1. Envoie-moi d'abord l'email avec lequel tu vas te connecter, pour que je l'ajoute.\n2. Télécharge l'app ou ouvre {url}, puis connecte-toi avec cet email (tu reçois un code à 6 chiffres, sans mot de passe).\n3. Entre ce code d'invitation\u202f: {code} (valable 7 jours).",
+  },
   signInHint: {
     en: "Your crew admin adds your email first. Then you get a 6-digit code here, no password.",
     fr: "L'admin de ton crew ajoute d'abord ton email. Ensuite tu reçois ici un code à 6 chiffres, sans mot de passe.",
@@ -118,6 +122,15 @@ export type CrewTextKey = keyof typeof TEXT;
 
 export function crewText(key: CrewTextKey, lang: UiLang = currentUiLang(), vars: Record<string, string> = {}): string {
   return TEXT[key][lang].replace(/\{(\w+)\}/g, (_, k: string) => vars[k] ?? "");
+}
+
+/** The website, where a new crewmate signs in and finds the downloads. */
+export const WEBSITE_URL = "https://www.hi-vo.fr";
+
+/** What an owner sends a new crewmate: the steps, the website and the code,
+ * in the app's (or page's) language. */
+export function inviteMessage(code: string, crew: string, lang: UiLang = currentUiLang()): string {
+  return crewText("inviteMessage", lang, { code, crew, url: `${WEBSITE_URL}/${lang}` });
 }
 
 /** Supabase and database errors in words the crew can act on. */

@@ -44,7 +44,7 @@ const en: PrivacyCopy = {
       title: "Crew sharing (optional)",
       body: [
         "If you join a crew, you sign in with your email address (we email you a one-time code) and pick a display name your crew sees. Accounts are added by Hivo's admin: there is no open sign-up.",
-        "Only the songs you choose to share are sent: title, stage, BPM, key, tags, credits (names, roles, splits), dates (the release date, and when the project was last saved, which your crew sees), and whether a mixdown or an accepted release kit exists. Releases you share send their title, type, colour, date and tracks. Never audio, file paths, notes, samples or track names.",
+        "Only the songs you choose to share are sent: title, stage, BPM, key, tags, credits (names, roles, splits), dates (the release date, and when the project was last saved, which your crew sees), whether a mixdown exists and is up to date, and whether an accepted release kit exists. Releases you share send their title, type, colour, date and tracks. Never audio, file paths, notes, samples or track names.",
         "This goes to Hivo's database, hosted by Supabase in the EU (Ireland). Only members of your crew can read it. It stays there until you unshare the song, leave the crew, or ask for your account to be deleted.",
       ],
     },
@@ -137,7 +137,7 @@ const fr: PrivacyCopy = {
       title: "Partage avec le crew (optionnel)",
       body: [
         "Si tu rejoins un crew, tu te connectes avec ton adresse email (on t'envoie un code à usage unique) et tu choisis un nom que ton crew voit. Les comptes sont ajoutés par l'admin de Hivo : pas d'inscription libre.",
-        "Seuls les sons que tu choisis de partager sont envoyés : titre, étape, BPM, tonalité, tags, crédits (noms, rôles, parts), dates (la date de sortie, et la dernière sauvegarde du projet, que ton crew voit), et s'il existe un mixdown ou un kit de sortie validé. Les sorties que tu partages envoient leur titre, type, couleur, date et morceaux. Jamais d'audio, de chemins de fichiers, de notes, de samples ni de noms de pistes.",
+        "Seuls les sons que tu choisis de partager sont envoyés : titre, étape, BPM, tonalité, tags, crédits (noms, rôles, parts), dates (la date de sortie, et la dernière sauvegarde du projet, que ton crew voit), s'il existe un mixdown et s'il est à jour, et s'il existe un kit de sortie validé. Les sorties que tu partages envoient leur titre, type, couleur, date et morceaux. Jamais d'audio, de chemins de fichiers, de notes, de samples ni de noms de pistes.",
         "Tout ça va dans la base de données de Hivo, hébergée par Supabase dans l'UE (Irlande). Seuls les membres de ton crew peuvent la lire. Ça y reste jusqu'à ce que tu arrêtes de partager le son, que tu quittes le crew ou que tu demandes la suppression de ton compte.",
       ],
     },

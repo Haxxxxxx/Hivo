@@ -264,7 +264,7 @@ export function moveCard(
 
   const stageChanged = (meta.status ?? null) !== to.stage;
   const nextMeta: SongMeta = { ...meta, column: to.id };
-  if (stageChanged) Object.assign(nextMeta, { status: to.stage ?? undefined, stageUpdatedAtMs: now, stagePending: true });
+  if (stageChanged) Object.assign(nextMeta, { status: to.stage ?? undefined, stageUpdatedAtMs: now, stagePending: true, stageMovedBy: undefined });
   const nextSongs = { ...ws.songs, [path]: nextMeta };
 
   // Keep each hand-sorted list to the songs actually in that column now, so

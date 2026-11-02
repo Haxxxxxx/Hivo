@@ -72,10 +72,13 @@ export const T_PIPELINE = dict(
     savedAgo: (when: string) => `saved ${when}`,
     out: (date: string) => `· out ${date}`,
     hasMixdown: "Has a mixdown",
+    mixdownFresh: "Mixdown up to date",
+    mixdownStale: "Mixdown older than the last save",
     kitAccepted: "Launch Kit accepted",
     movedBy: (who: string) => `moved by ${who}`,
     youLower: "you",
     aCrewmate: "a crewmate",
+    credits: "Credits",
   },
   {
     board: "Tableau",
@@ -135,10 +138,13 @@ export const T_PIPELINE = dict(
     savedAgo: (when: string) => `enregistré ${when}`,
     out: (date: string) => `· sortie le ${date}`,
     hasMixdown: "A un mixdown",
+    mixdownFresh: "Mixdown à jour",
+    mixdownStale: "Mixdown plus vieux que la dernière sauvegarde",
     kitAccepted: "Launch Kit validé",
     movedBy: (who: string) => `déplacé par ${who}`,
     youLower: "toi",
     aCrewmate: "quelqu'un du crew",
+    credits: "Crédits",
   },
 );
 
