@@ -24,6 +24,7 @@ import {
   MAX_CHANGES,
   noteFor,
   parseItem,
+  parsePushResults,
   parseSnapshot,
   pendingChanges,
   runSync,
@@ -137,6 +138,23 @@ describe("applyPushResults", () => {
     s = editNote(s, "beat", "a", "A2", 5);
     s = applyPushResults(s, sent, [{ kind: "beat", id: "a", status: "applied", note: "A", noteHash: fnv1a("A") }], 9);
     expect(s.pending[itemKey("beat", "a")]).toMatchObject({ text: "A2", baseHash: fnv1a("A") });
+  });
+
+  it("'too long': keeps the phone's text, doesn't resend it unchanged, sends again once edited", () => {
+    const k = itemKey("beat", "a");
+    let s = applyPushResults(base(), sent, [{ kind: "beat", id: "a", status: "too long", note: "DESK", noteHash: fnv1a("DESK") }], 9);
+    expect(s.pending[k]?.text).toBe("A");
+    expect(s.tooLong?.[k]).toBe(9);
+    expect(s.items.find((i) => i.id === "a")?.note).toBe("DESK");
+    expect(pendingChanges(s).map((c) => c.id)).not.toContain("a");
+    s = editNote(s, "beat", "a", "A shorter", 10);
+    expect(s.tooLong?.[k]).toBeUndefined();
+    expect(pendingChanges(s).map((c) => c.id)).toContain("a");
+  });
+
+  it("reads 'too long' from the computer's answer (older phones skipped it)", () => {
+    const parsed = parsePushResults({ results: [{ kind: "beat", id: "a", status: "too long", note: "x", noteHash: fnv1a("x") }] });
+    expect(parsed?.[0]?.status).toBe("too long");
   });
 });
 

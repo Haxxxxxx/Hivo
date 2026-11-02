@@ -167,7 +167,7 @@ export const W = dict(
     livePaused: "Mises à jour en direct en pause, recharge la page.",
     ownerTools: "Outils du propriétaire",
     invitesTitle: "Codes d'invitation",
-    invitesHelp: "Envoie un code à quelqu'un du crew : connexion sur hi-vo.fr ou dans Hivo, puis le code. Un code marche 10 fois pendant 7 jours.",
+    invitesHelp: "Envoie un code à quelqu'un du crew : connexion sur hi-vo.fr ou dans Hivo, puis le code. Un code marche 10 fois pendant 7 jours.",
     newInvite: "Nouveau code d'invitation",
     noInvites: "Aucun code ouvert.",
     inviteLine: (uses: number, max: number, until: string) => `${uses}/${max} utilisé${uses > 1 ? "s" : ""} · jusqu'au ${until}`,
