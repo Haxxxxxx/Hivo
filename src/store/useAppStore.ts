@@ -7,11 +7,12 @@ import { ALBUM_COLORS, EMPTY_WORKSPACE, migrateWorkspace, newId, newerWorkspaceV
 import { logStageChanges } from "../lib/stageLog";
 import { addColumn, moveCard, moveColumn, removeColumn, renameColumn } from "../lib/pipeline";
 import type { DashboardLayout } from "../lib/dashboardLayout";
-import { applyRelinks, findRelinks, isUnder, rootRelinks, type Relink } from "../lib/relink";
+import { applyRelinks, emptyScanMemory, isUnder, relinksAfterScan, rootRelinks, type Relink, type ScanMemory } from "../lib/relink";
 import { setNote } from "../lib/notes";
 import { relinkBeatNotes } from "../lib/digger";
 import { addRenames } from "../lib/phoneSync";
 import { canRenderInApp, dawOf, splitRenderable } from "../lib/daws";
+import { renderSampleNote } from "../lib/renderNotes";
 import type {
   DetectedFolder,
   CaptionLang,
@@ -162,6 +163,9 @@ interface AppState {
   /** Linked folders the last scan couldn't read (unplugged drive, unmounted
    * share): their songs are missing for now, never taken for moved. */
   unreachable: string[];
+  /** Symlinked folders / junctions under the linked folders the last scan
+   * didn't follow (how many, a few of them). */
+  skippedLinks: { count: number; examples: string[] };
   /** A linked folder that moved: pick its new place (native picker in Rust);
    * every song's data under it follows. */
   repointFolder: (folder: string) => Promise<void>;
@@ -409,6 +413,10 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null;
 /** The daily update re-check (started once by init). */
 let updateTimer: ReturnType<typeof setInterval> | null = null;
 let scanSeq = 0;
+/** What the relink check remembers between scans (lib/relink.ts): a record
+ * moves only once its file was missing from two scans in a row. */
+let scanMemory: ScanMemory = emptyScanMemory();
+const NO_LINKS = { count: 0, examples: [] as string[] };
 
 /** Errors the store throws (shown as they are in the UI). */
 const STORE_ERRORS = dict(
@@ -714,6 +722,7 @@ export const useAppStore = create<AppState>((set, get) => {
     projects: [],
     scanning: false,
     unreachable: [],
+    skippedLinks: NO_LINKS,
     rescanOrReport: () => scanOrReport(),
     repointFolder: async (folder) => {
       if (get().demoMode) throw new Error(tr(STORE_ERRORS).sample);
@@ -852,8 +861,9 @@ export const useAppStore = create<AppState>((set, get) => {
             const next = new Map(state.renderJobs);
             next.set(event.projectPath, {
               status: event.status,
-              // Coded in Rust (render.rs): translated here, once.
-              message: event.message ? errorReason(event.message) : null,
+              // Errors are coded in Rust (render.rs) and translated here; the
+              // sample warnings are counts and paths, worded here too.
+              message: event.message ? errorReason(event.message) : event.status === "done" ? renderSampleNote(event.movedSamples, event.missingSamples) : null,
               outputPath: event.outputPath,
             });
             return { renderJobs: next };
@@ -955,7 +965,8 @@ export const useAppStore = create<AppState>((set, get) => {
       if (get().demoMode) return;
       const folders = get().settings.watchedFolders;
       if (folders.length === 0) {
-        set({ projects: [], unreachable: [] });
+        scanMemory = emptyScanMemory();
+        set({ projects: [], unreachable: [], skippedLinks: NO_LINKS });
         return;
       }
       // Scans can overlap (window focus + adding a folder); only the newest
@@ -963,18 +974,22 @@ export const useAppStore = create<AppState>((set, get) => {
       const id = ++scanSeq;
       set({ scanning: true });
       try {
-        const { projects, unreachable } = await api.scanProjects();
+        const { projects, unreachable, skippedLinks, skippedLinkExamples } = await api.scanProjects();
         if (id === scanSeq && !get().demoMode) {
           // Renamed/moved .flp files keep their stage, tags, notes, credits,
           // crew share and album slot (lib/relink.ts). Only on the real,
           // writable workspace, never sample data. Songs under a linked
-          // folder that's unreachable right now are missing, not moved.
-          const relinks = get().workspaceWritable ? findRelinks(projects, get().workspace, folders, unreachable) : [];
-          if (relinks.length) {
-            followRelinks(relinks);
-            set({ relinked: [...get().relinked, ...relinks] });
+          // folder that's unreachable right now are missing, not moved; a
+          // file missing from one scan only (FL saving it) isn't moved yet.
+          if (get().workspaceWritable) {
+            const after = relinksAfterScan(projects, get().workspace, folders, unreachable, scanMemory);
+            scanMemory = after.memory;
+            if (after.relinks.length) {
+              followRelinks(after.relinks);
+              set({ relinked: [...get().relinked, ...after.relinks] });
+            }
           }
-          set({ projects, unreachable });
+          set({ projects, unreachable, skippedLinks: { count: skippedLinks ?? 0, examples: skippedLinkExamples ?? [] } });
         }
       } finally {
         if (id === scanSeq) set({ scanning: false });

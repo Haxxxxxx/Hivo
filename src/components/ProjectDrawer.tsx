@@ -74,6 +74,8 @@ const T = dict(
     archive: "Archive",
     readError: (err: string) =>
       `Couldn't read inside this project: ${err}. It's still tracked; tempo, samples and plugins are missing.`,
+    inCloud:
+      "In the cloud, not downloaded to this computer: Hivo doesn't open it, since that would download it. Download it (Finder or Explorer: \"Download now\" or \"Always keep on this device\") for its tempo, samples and plugins to show here.",
     archivedNote: "Archived — hidden from the library, board and stats.",
     unarchive: "Unarchive",
     stage: "Stage",
@@ -189,6 +191,8 @@ const T = dict(
     archive: "Archiver",
     readError: (err: string) =>
       `Impossible de lire l'intérieur de ce projet : ${err}. Il reste suivi ; il manque le tempo, les samples et les plugins.`,
+    inCloud:
+      "Dans le cloud, pas téléchargé sur cet ordinateur : Hivo ne l'ouvre pas, ça le téléchargerait. Télécharge-le (Finder ou Explorateur : « Télécharger maintenant » ou « Toujours conserver sur cet appareil ») pour voir ici son tempo, ses samples et ses plugins.",
     archivedNote: "Archivé — caché de la bibliothèque, du tableau et des stats.",
     unarchive: "Désarchiver",
     stage: "Étape",
@@ -502,6 +506,11 @@ export function ProjectDrawer() {
         {project.readError && (
           <div className="mt-3 rounded-md border border-amber-400/20 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-200/80">
             {t.readError(project.readError)}
+          </div>
+        )}
+        {project.inCloud && (
+          <div className="mt-3 rounded-md border border-amber-400/20 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-200/80">
+            {t.inCloud}
           </div>
         )}
 

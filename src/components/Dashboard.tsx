@@ -3,6 +3,7 @@ import type React from "react";
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronRight,
   Disc3,
   FolderInput,
   FolderSearch,
@@ -12,6 +13,7 @@ import {
   Trophy,
 } from "lucide-react";
 import { useAppStore } from "../store/useAppStore";
+import { usePipelineView } from "../store/usePipelineView";
 import { formatBytes, formatRelative } from "../lib/format";
 import { localDayMs } from "../lib/launchKit";
 import { isKitAccepted } from "../lib/kitState";
@@ -156,11 +158,10 @@ const T = dict(
     moved: (days: number) => `Moved · ${days} days`,
     crewPipeline: "Crew pipeline",
     whosOnWhat: "Who's on what",
-    memberTitle: "Shared songs · finished (Prep or later)",
-    memberSongs: (n: number, done: number) => `${n} song${s(n)} · ${done} done`,
-    movedTitle: (days: number) => `Songs they last moved in the past ${days} days`,
-    movedCount: (n: number) => `${n} moved`,
-    nothingShared: "nothing shared",
+    memberTitle: "Shared songs · being made · finished (Prep or later)",
+    memberSongs: (n: number, making: number, done: number) => `${n} song${s(n)} · ${making} being made · ${done} done`,
+    openTheirs: (name: string) => `Open ${name}'s songs on the crew board`,
+    openYours: "Open your songs on the crew board",
     readyToShip: (n: number) => `Ready to ship · ${n}`,
     nothingReady: "Nothing in Prep with a mixdown and an accepted Launch Kit yet.",
     noDate: "no date",
@@ -252,11 +253,11 @@ const T = dict(
     moved: (days: number) => `Bougés · ${days} jours`,
     crewPipeline: "Pipeline du crew",
     whosOnWhat: "Qui est sur quoi",
-    memberTitle: "Sons partagés · finis (Prépa ou après)",
-    memberSongs: (n: number, done: number) => `${n} son${s(n)} · ${done} fini${done > 1 ? "s" : ""}`,
-    movedTitle: (days: number) => `Sons qu'il ou elle a bougés ces ${days} derniers jours`,
-    movedCount: (n: number) => `${n} bougé${s(n)}`,
-    nothingShared: "rien de partagé",
+    memberTitle: "Sons partagés · en cours · finis (Prépa ou après)",
+    memberSongs: (n: number, making: number, done: number) =>
+      `${n} son${s(n)} · ${making} en cours · ${done} fini${done > 1 ? "s" : ""}`,
+    openTheirs: (name: string) => `Ouvrir les sons de ${name} sur le tableau du crew`,
+    openYours: "Ouvrir tes sons sur le tableau du crew",
     readyToShip: (n: number) => `Prêt à sortir · ${n}`,
     nothingReady: "Rien en Prépa avec un mixdown et un Launch Kit validé pour l'instant.",
     noDate: "pas de date",
@@ -1196,6 +1197,11 @@ function CrewDashboard() {
     if (path) openDetail(path);
     else setView("crewBoard");
   };
+  // A member row opens the crew board on that member's songs.
+  const openMember = (id: string) => {
+    usePipelineView.getState().setCrewMember(id);
+    setView("crewBoard");
+  };
   const t = tr(T);
   const who = (id: string, name: string) => (id === userId ? t.you : name);
 
@@ -1241,16 +1247,19 @@ function CrewDashboard() {
           <Card title={t.whosOnWhat}>
             <div className="flex flex-col gap-2 text-xs">
               {stats.members.map((m) => (
-                <div key={m.userId} className="flex items-center gap-3">
+                <button
+                  key={m.userId}
+                  type="button"
+                  onClick={() => openMember(m.userId)}
+                  title={m.userId === userId ? t.openYours : t.openTheirs(m.name)}
+                  className="flex items-center gap-3 rounded px-1 py-0.5 text-left hover:bg-raised"
+                >
                   <span className="min-w-0 flex-1 truncate text-cream">{who(m.userId, m.name)}</span>
                   <span className="tabular-nums text-engrave" title={t.memberTitle}>
-                    {t.memberSongs(m.songs, m.finished)}
+                    {t.memberSongs(m.songs, m.making, m.finished)}
                   </span>
-                  <span className="w-20 text-right tabular-nums text-body" title={t.movedTitle(RECENT_DAYS)}>
-                    {m.recentMoves ? t.movedCount(m.recentMoves) : "—"}
-                  </span>
-                  <span className="w-24 text-right text-engrave">{m.lastActivityMs ? formatRelative(m.lastActivityMs) : t.nothingShared}</span>
-                </div>
+                  <ChevronRight size={12} className="shrink-0 text-engrave" aria-hidden />
+                </button>
               ))}
             </div>
           </Card>

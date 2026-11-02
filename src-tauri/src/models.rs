@@ -72,6 +72,12 @@ pub struct ProjectInfo {
     /// name doesn't say which one it came from.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub ambiguous_exports: u32,
+    /// The project file is a cloud placeholder (iCloud Drive, OneDrive,
+    /// Dropbox): its contents aren't on this computer, and the scan doesn't
+    /// open it (that would download it). Metadata comes from an earlier read
+    /// when there was one, else there's none.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_cloud: bool,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -87,6 +93,11 @@ fn is_zero(n: &u32) -> bool {
 pub struct ScanResult {
     pub projects: Vec<ProjectInfo>,
     pub unreachable: Vec<String>,
+    /// Folders under the linked ones that are symlinks or junctions: the
+    /// walk doesn't follow them (it could loop or leave the linked folder),
+    /// so their songs aren't listed. How many, and a few of them.
+    pub skipped_links: u32,
+    pub skipped_link_examples: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -223,6 +234,14 @@ pub struct RenderEvent {
     pub project_path: String,
     pub project_name: String,
     pub status: RenderStatus,
+    /// An error, in English (Rust's own message). Warnings are the fields
+    /// below, worded by the webview in the app's language.
     pub message: Option<String>,
     pub output_path: Option<String>,
+    /// Samples staged from where the scanner found them (moved) for this render.
+    #[serde(default)]
+    pub moved_samples: u32,
+    /// Stored sample paths that couldn't be staged: silent in the mixdown.
+    #[serde(default)]
+    pub missing_samples: Vec<String>,
 }

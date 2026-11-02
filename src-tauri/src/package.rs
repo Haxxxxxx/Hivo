@@ -54,7 +54,7 @@ pub struct PackagePlan {
 /// Why a path the project names can't go in a package, if it can't. Checked
 /// on the path as found and on its real location (a `kick.wav` symlink to a
 /// key file is refused for what it points at).
-fn refuse_reason(path: &Path) -> Option<&'static str> {
+pub(crate) fn refuse_reason(path: &Path) -> Option<&'static str> {
     fn check(p: &Path) -> Option<&'static str> {
         if is_remote_or_device(&p.to_string_lossy()) {
             return Some("network or device path");

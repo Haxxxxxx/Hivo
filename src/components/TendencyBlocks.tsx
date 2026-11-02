@@ -16,6 +16,7 @@ import {
   NOT_LATELY_DAYS,
   RECENT_COLLAB_DAYS,
   collaborators,
+  isFromFileDates,
   keyName,
   songShape,
   tempoKeyTendencies,
@@ -24,6 +25,7 @@ import {
   yourSound,
   type Chronotype,
 } from "../lib/tendencies";
+import { statusInfo } from "../lib/songs";
 import { dict, locale, tr } from "../i18n";
 
 const s = (n: number) => (n === 1 ? "" : "s");
@@ -92,6 +94,12 @@ const T = dict(
     finished: (n: number) => `${n} finished`,
     perMonthMax: (n: number) => `max ${n}`,
     noStarts: "No song started in the last 12 months.",
+    daysIn: (stage: string) => `Days in ${stage}`,
+    fromStageLog: "Days in each stage come from Hivo's stage log, not from file dates.",
+    // File-date blocks
+    approx: "Approximate: from file dates",
+    approxWhy:
+      "Read from the dates on your project, backup and render files. Copying or syncing a folder, or FL Studio pruning old backups, changes those dates, so treat these numbers as estimates.",
   },
   {
     bars: "Barres",
@@ -146,6 +154,11 @@ const T = dict(
     finished: (n: number) => `${n} fini${s(n)}`,
     perMonthMax: (n: number) => `max ${n}`,
     noStarts: "Aucun son démarré ces 12 derniers mois.",
+    daysIn: (stage: string) => `Jours en ${stage}`,
+    fromStageLog: "Les jours par étape viennent du journal des étapes de Hivo, pas des dates des fichiers.",
+    approx: "Approximatif : d'après les dates des fichiers",
+    approxWhy:
+      "Lu dans les dates de tes fichiers de projet, de sauvegarde et de rendu. Copier ou synchroniser un dossier, ou FL Studio qui supprime les vieilles sauvegardes, change ces dates : prends ces chiffres comme des estimations.",
   },
 );
 
@@ -198,12 +211,21 @@ export function TendencyBlock({ id, variant, control }: { id: TendencyBlockId; v
 /** A card with the block's title and its "what this reads" line under it. */
 function TendencyCard({ id, action, children }: { id: TendencyBlockId; action: ReactNode; children: ReactNode }) {
   const t = tr(T_LAYOUT);
+  const tt = tr(T);
   return (
     <div className="h-full rounded border border-rule bg-panel p-5 shadow-panel">
       <div className="mb-3 flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className={engrave}>{t.blockTitle(id)}</div>
           <div className="mt-0.5 text-[11px] text-engrave">{t.blockSubtitle(id)}</div>
+          {isFromFileDates(id) && (
+            <div className="mt-0.5 text-[11px] text-engrave">
+              <span title={tt.approxWhy} className="cursor-help underline decoration-dotted underline-offset-2">
+                {tt.approx}
+              </span>
+              <span className="sr-only">. {tt.approxWhy}</span>
+            </div>
+          )}
         </div>
         {action}
       </div>
@@ -553,9 +575,14 @@ function SongShapeBlock({ starts, control }: { starts: boolean; control: ReactNo
       <TendencyCard id="songShape" action={control}>
         <div className="flex flex-wrap items-end gap-x-8 gap-y-3">
           <HeroStat label={`${t.versions} · ${t.median}`} value={out.medianVersions ?? "—"} />
-          <HeroStat label={`${t.daysToMix} · ${t.median}`} value={out.medianDaysToMixdown ?? "—"} />
+          {out.timingSource === "stageLog" ? (
+            out.stageDays.map((d) => <HeroStat key={d.stage} label={`${t.daysIn(statusInfo(d.stage).label)} · ${t.median}`} value={d.medianDays} />)
+          ) : (
+            <HeroStat label={`${t.daysToMix} · ${t.median}`} value={out.medianDaysToMixdown ?? "—"} />
+          )}
           <HeroStat label={t.withMix} value={`${share}%`} />
         </div>
+        {out.timingSource === "stageLog" && <div className="mt-3 text-xs text-engrave">{t.fromStageLog}</div>}
         {out.withMixdown === 0 && <div className="mt-3 text-xs text-engrave">{t.noMix}</div>}
       </TendencyCard>
     );

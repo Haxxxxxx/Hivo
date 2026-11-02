@@ -653,7 +653,8 @@ export const useCrewStore = create<CrewState>((set, get) => {
     }
 
     const remote = new Map(get().songs.filter((s) => s.owner_id === sc.userId && s.crew_id === sc.crewId).map((s) => [s.id, s]));
-    const rows = sharedPayloads(useAppStore.getState().projects, useAppStore.getState().workspace, sc);
+    // An unreadable project (caught mid-save, damaged) keeps the server's bpm.
+    const rows = sharedPayloads(useAppStore.getState().projects, useAppStore.getState().workspace, sc, remote);
     // 3. Details of rows already there, without the stage, only when they
     // differ from what the server has (a restart sends nothing unchanged).
     const changed = rows

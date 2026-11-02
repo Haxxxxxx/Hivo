@@ -19,10 +19,14 @@ interface PipelineViewState {
   tableSort: Record<PipelineScope, Sort>;
   /** Search, per scope, while the app is open (not saved). */
   query: Record<PipelineScope, string>;
+  /** The crew board shows one member's songs only (from the crew
+   * dashboard's member rows); null = everyone. Not saved. */
+  crewMember: string | null;
   setView: (scope: PipelineScope, view: PipelineViewKind) => void;
   toggleCollapsed: (scope: PipelineScope, view: PipelineViewKind, columnId: string) => void;
   setTableSort: (scope: PipelineScope, key: SortKey) => void;
   setQuery: (scope: PipelineScope, query: string) => void;
+  setCrewMember: (userId: string | null) => void;
 }
 
 const KEY = "hivo.pipelineView";
@@ -72,6 +76,7 @@ export const usePipelineView = create<PipelineViewState>((set, get) => {
   return {
     ...load(),
     query: { mine: "", crew: "" },
+    crewMember: null,
     setView: (scope, view) => update({ view: { ...get().view, [scope]: view } }),
     toggleCollapsed: (scope, view, columnId) => {
       const k = `${scope}.${view}`;
@@ -84,6 +89,7 @@ export const usePipelineView = create<PipelineViewState>((set, get) => {
       update({ tableSort: { ...get().tableSort, [scope]: next } });
     },
     setQuery: (scope, query) => set({ query: { ...get().query, [scope]: query } }),
+    setCrewMember: (crewMember) => set({ crewMember }),
   };
 });
 

@@ -143,9 +143,11 @@ export function embedUrl(id: string): string | null {
 }
 
 /** Letters and digits only, lowercased, single spaces: what a title and a
- * file name share once a converter or a download has mangled punctuation. */
+ * file name share once a converter or a download has mangled punctuation.
+ * NFC first: a macOS file name is often decomposed ("E" + accent), and the
+ * accent alone isn't a letter. */
 export function titleKey(s: string): string {
-  return s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  return s.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 }
 
 /** Containment only counts when the shorter name is at least this share of

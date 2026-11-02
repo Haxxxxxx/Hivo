@@ -20,6 +20,12 @@ export const PRIVACY_UPDATED = "2026-11-02";
 
 /** The owner sets VITE_CONTACT_EMAIL in Vercel; never a hardcoded address. */
 const CONTACT = (import.meta.env.VITE_CONTACT_EMAIL ?? "").trim();
+/** Who runs Hivo (the GDPR data controller), set in Vercel like the contact:
+ * VITE_OPERATOR_NAME, and optionally VITE_OPERATOR_ADDRESS. Never hardcoded.
+ * Without a name, the page keeps its unnamed wording. */
+const OPERATOR = (import.meta.env.VITE_OPERATOR_NAME ?? "").trim();
+const OPERATOR_ADDRESS = (import.meta.env.VITE_OPERATOR_ADDRESS ?? "").trim();
+const operatorAt = OPERATOR_ADDRESS ? `, ${OPERATOR_ADDRESS}` : "";
 
 const en: PrivacyCopy = {
   title: "Privacy policy",
@@ -29,7 +35,9 @@ const en: PrivacyCopy = {
     {
       title: "Who runs Hivo",
       body: [
-        "Hivo is made and run by its developer, an individual, for one rap crew. It isn't a company and has no business model: nothing is sold, and no data is sold or shared for advertising.",
+        OPERATOR
+          ? `Hivo is run by ${OPERATOR}${operatorAt}, who is responsible for the data described here (the data controller under the GDPR). It's made for one rap crew and has no business model: nothing is sold, and no data is sold or shared for advertising.`
+          : "Hivo is made and run by its developer, an individual, for one rap crew. It isn't a company and has no business model: nothing is sold, and no data is sold or shared for advertising.",
         CONTACT ? `Contact: ${CONTACT}, or the Feedback button in the desktop app.` : "Contact: use the Feedback button in the desktop app's menu (“Report a bug or send feedback”).",
       ],
     },
@@ -44,7 +52,7 @@ const en: PrivacyCopy = {
       title: "Crew sharing (optional)",
       body: [
         "If you join a crew, you sign in with your email address (we email you a one-time code) and pick a display name your crew sees. Accounts are added by Hivo's admin: there is no open sign-up.",
-        "Only the songs you choose to share are sent: title, stage, BPM, key, tags, credits (names, roles, splits), dates (the release date, and when the project was last saved, which your crew sees), whether a mixdown exists and is up to date, and whether an accepted release kit exists. Releases you share send their title, type, colour, date and tracks. Never audio, file paths, notes, samples or track names.",
+        "Only the songs you choose to share are sent: title, stage, BPM, key, tags, credits (names, roles, splits), dates (the release date, and when the project was last saved: your crew sees it on the song's card, to spot a stalled song or an out-of-date mixdown; Hivo never shows a per-person activity time), whether a mixdown exists and is up to date, and whether an accepted release kit exists. Releases you share send their title, type, colour, date and tracks. Never audio, file paths, notes, samples or track names.",
         "This goes to Hivo's database, hosted by Supabase in the EU (Ireland). Only members of your crew can read it. It stays there until you unshare the song, leave the crew, or ask for your account to be deleted.",
       ],
     },
@@ -62,7 +70,7 @@ const en: PrivacyCopy = {
       body: [
         "To find beats, Gemini can search the web with Google (on a dig and with Go deeper). Hivo then checks where each link it found leads: your computer asks those sites for the final address only (HEAD requests, nothing downloaded).",
         "Video thumbnails load from YouTube's servers. The player loads YouTube's own player (youtube-nocookie.com) inside a small page of this website (hi-vo.fr/embed.html), so YouTube and this website's host see that request.",
-        "Convert opens the converter site you set in Settings in your browser, with the video's address. Hivo itself never downloads audio.",
+        "Convert opens the converter site you set yourself in Settings, in your browser, with the video's address. Hivo suggests no converter site, and never downloads audio itself.",
       ],
     },
     {
@@ -122,8 +130,10 @@ const fr: PrivacyCopy = {
     {
       title: "Qui fait tourner Hivo",
       body: [
-        "Hivo est fait et géré par son développeur, un particulier, pour un crew de rap. Ce n'est pas une entreprise et il n'y a pas de modèle commercial : rien n'est vendu, et aucune donnée n'est vendue ni partagée pour de la pub.",
-        CONTACT ? `Contact : ${CONTACT}, ou le bouton de retour dans l'appli de l'ordi.` : "Contact : utilise le bouton de retour dans le menu de l'appli de l'ordi (« Signaler un bug ou donner ton avis »).",
+        OPERATOR
+          ? `Hivo est géré par ${OPERATOR}${operatorAt}, responsable des données décrites ici (le responsable du traitement au sens du RGPD). Il est fait pour un crew de rap et n'a pas de modèle commercial : rien n'est vendu, et aucune donnée n'est vendue ni partagée pour de la pub.`
+          : "Hivo est fait et géré par son développeur, un particulier, pour un crew de rap. Ce n'est pas une entreprise et il n'y a pas de modèle commercial : rien n'est vendu, et aucune donnée n'est vendue ni partagée pour de la pub.",
+        CONTACT ? `Contact : ${CONTACT}, ou le bouton de retour dans l'appli de l'ordi.` : "Contact : utilise le bouton de retour dans le menu de l'appli de l'ordi (« Signaler un bug ou donner ton avis »).",
       ],
     },
     {
@@ -137,7 +147,7 @@ const fr: PrivacyCopy = {
       title: "Partage avec le crew (optionnel)",
       body: [
         "Si tu rejoins un crew, tu te connectes avec ton adresse email (on t'envoie un code à usage unique) et tu choisis un nom que ton crew voit. Les comptes sont ajoutés par l'admin de Hivo : pas d'inscription libre.",
-        "Seuls les sons que tu choisis de partager sont envoyés : titre, étape, BPM, tonalité, tags, crédits (noms, rôles, parts), dates (la date de sortie, et la dernière sauvegarde du projet, que ton crew voit), s'il existe un mixdown et s'il est à jour, et s'il existe un kit de sortie validé. Les sorties que tu partages envoient leur titre, type, couleur, date et morceaux. Jamais d'audio, de chemins de fichiers, de notes, de samples ni de noms de pistes.",
+        "Seuls les sons que tu choisis de partager sont envoyés : titre, étape, BPM, tonalité, tags, crédits (noms, rôles, parts), dates (la date de sortie, et la dernière sauvegarde du projet, que ton crew voit sur la carte du son pour repérer un son à l'arrêt ou un mixdown pas à jour ; Hivo n'affiche jamais d'heure d'activité par personne), s'il existe un mixdown et s'il est à jour, et s'il existe un kit de sortie validé. Les sorties que tu partages envoient leur titre, type, couleur, date et morceaux. Jamais d'audio, de chemins de fichiers, de notes, de samples ni de noms de pistes.",
         "Tout ça va dans la base de données de Hivo, hébergée par Supabase dans l'UE (Irlande). Seuls les membres de ton crew peuvent la lire. Ça y reste jusqu'à ce que tu arrêtes de partager le son, que tu quittes le crew ou que tu demandes la suppression de ton compte.",
       ],
     },
@@ -155,7 +165,7 @@ const fr: PrivacyCopy = {
       body: [
         "Pour trouver des beats, Gemini peut chercher sur le web avec Google (pendant une recherche et avec Creuser plus loin). Hivo vérifie ensuite où mène chaque lien trouvé : ton ordi demande à ces sites l'adresse finale seulement (requêtes HEAD, rien n'est téléchargé).",
         "Les miniatures des vidéos se chargent depuis les serveurs de YouTube. Le lecteur charge celui de YouTube (youtube-nocookie.com) dans une petite page de ce site (hi-vo.fr/embed.html) : YouTube et l'hébergeur de ce site voient donc cette requête.",
-        "Convertir ouvre dans ton navigateur le site de conversion que tu as choisi dans les Réglages, avec l'adresse de la vidéo. Hivo lui-même ne télécharge jamais d'audio.",
+        "Convertir ouvre dans ton navigateur le site de conversion que tu as toi-même choisi dans les Réglages, avec l'adresse de la vidéo. Hivo ne propose aucun site de conversion et ne télécharge jamais d'audio lui-même.",
       ],
     },
     {

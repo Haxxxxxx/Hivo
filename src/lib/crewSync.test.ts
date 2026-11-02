@@ -438,3 +438,19 @@ describe("crew review round 2", () => {
     expect(canMoveShare(w, "/old.flp", "/brand-new.flp", scope)).toBe(true);
   });
 });
+
+describe("an unreadable project keeps its last good values (r3 #9)", () => {
+  const shared = { "/a.flp": { shared: true, shareId: "s1", shareCrewId: CREW, shareUserId: ME } };
+  it("pushes the server's bpm, not null, while the project can't be read", () => {
+    const halfSaved = { ...project("/a.flp"), tempoBpm: null, readError: "its data size doesn't match the file" } as ProjectInfo;
+    const remote = new Map([["s1", row("s1", { bpm: 140 })]]);
+    expect(sharedPayloads([halfSaved], ws(shared), scope, remote)[0].bpm).toBe(140);
+    // Read again: the file's own value.
+    expect(sharedPayloads([{ ...project("/a.flp"), tempoBpm: 92 } as ProjectInfo], ws(shared), scope, remote)[0].bpm).toBe(92);
+    // A cloud placeholder never read before counts as unread too.
+    const inCloud = { ...project("/a.flp"), tempoBpm: null, inCloud: true } as ProjectInfo;
+    expect(sharedPayloads([inCloud], ws(shared), scope, remote)[0].bpm).toBe(140);
+    // Nothing on the server yet: nothing better than null.
+    expect(sharedPayloads([halfSaved], ws(shared), scope)[0].bpm).toBeNull();
+  });
+});
