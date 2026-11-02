@@ -236,6 +236,7 @@ interface AppState {
    * (failing to save it throws). */
   detectFlStudio: () => Promise<boolean>;
   pickFfmpeg: () => Promise<void>;
+  useDetectedFfmpeg: (shown: string) => Promise<void>;
   clearPathSetting: (which: "flStudio" | "ffmpeg" | "outputFolder") => Promise<void>;
   rescan: () => Promise<void>;
   toggleSelected: (path: string) => void;
@@ -884,6 +885,7 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     pickFfmpeg: async () => keepPaths(await api.pickFfmpeg()),
+    useDetectedFfmpeg: async (shown) => keepPaths(await api.useDetectedFfmpeg(shown)),
 
     clearPathSetting: async (which) => {
       keepPaths(await api.clearPathSetting(which));

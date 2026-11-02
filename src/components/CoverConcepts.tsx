@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Check, FolderOpen, ImageIcon, Images, RefreshCw, Save } from "lucide-react";
 import { useAppStore } from "../store/useAppStore";
 import * as api from "../lib/tauri";
+import { previousKitFolder } from "../lib/kitState";
 import { buildCoverPrompt, COVER_VARIANTS, FREE_NEURONS_PER_DAY, NEURONS_PER_IMAGE, randomSeeds } from "../lib/cover";
 import type { CoverImage } from "../types";
 import { btn, btnPrimary } from "./ui";
@@ -115,6 +116,7 @@ export function CoverConcepts({ path, title, artists, brief, releaseType }: { pa
   const settings = useAppStore((s) => s.settings);
   const demoMode = useAppStore((s) => s.demoMode);
   const saved = useAppStore((s) => s.workspace.songs[path]?.launchKit?.cover);
+  const songMeta = useAppStore((s) => s.workspace.songs[path]);
   const setKitCover = useAppStore((s) => s.setKitCover);
   const setView = useAppStore((s) => s.setView);
   const session = useSession(path);
@@ -179,7 +181,7 @@ export function CoverConcepts({ path, title, artists, brief, releaseType }: { pa
     if (!settings.outputFolder) return setMessage({ kind: "error", text: t.needExportFolder });
     setSaving(true);
     try {
-      const file = await api.saveCover({ folderName: title, imageB64: picked.image.imageB64 });
+      const file = await api.saveCover({ song: path, previousFolder: previousKitFolder(songMeta), folderName: title, imageB64: picked.image.imageB64 });
       setKitCover(path, { seed: picked.seed, prompt: picked.prompt, variant: picked.variant, savedPath: file, savedAtMs: Date.now() });
       setMessage({ kind: "ok", text: t.saved, dir: file });
     } catch (e) {

@@ -7,6 +7,7 @@ mod digger;
 mod cover;
 mod files;
 mod key;
+mod kits;
 mod leads;
 mod lookup;
 mod location;
@@ -81,6 +82,7 @@ pub fn run() {
             settings::pick_fl_studio,
             settings::use_detected_fl_studio,
             settings::pick_ffmpeg,
+            settings::use_detected_ffmpeg,
             settings::clear_path_setting,
             render::render_projects,
             workspace::get_workspace,

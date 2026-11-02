@@ -416,7 +416,7 @@ pub async fn generate_cover(app: AppHandle, prompt: String, seed: Option<u32>) -
 /// Biggest image we accept to save (FLUX answers are ~100–300 KB).
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 
-fn write_cover(output_folder: &str, folder_name: &str, image_b64: &str) -> Result<PathBuf, String> {
+fn write_cover(output_folder: &str, owner: &str, folder_name: &str, previous: Option<&str>, image_b64: &str) -> Result<PathBuf, String> {
     if output_folder.trim().is_empty() || !Path::new(output_folder).is_dir() {
         return Err("Set an export folder in Settings first.".to_string());
     }
@@ -427,22 +427,24 @@ fn write_cover(output_folder: &str, folder_name: &str, image_b64: &str) -> Resul
     if !is_jpeg(&bytes) {
         return Err("Only JPEG concepts can be saved.".to_string());
     }
-    // <export folder>/Launch Kits/<song>, the song part sanitized like the
-    // kit export so a title like ".." can't climb out.
-    let dir = PathBuf::from(output_folder)
-        .join(crate::scanner::LAUNCH_KITS_DIR)
-        .join(crate::audio::safe_name(folder_name));
-    fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    // This song's kit folder (kits.rs: sanitized, owned, never a symlink).
+    let dir = crate::kits::resolve_kit_dir(Path::new(output_folder), folder_name, owner, previous)?;
     let path = dir.join(COVER_FILE);
-    fs::write(&path, &bytes).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    crate::kits::write_new(&path, &bytes).map_err(|e| format!("could not write {}: {e}", path.display()))?;
     Ok(path)
 }
 
-/// Saves the picked concept as `<export folder>/Launch Kits/<song>/cover-concept.jpg`.
+/// Saves the picked concept as `<export folder>/Launch Kits/<song>/cover-concept.jpg`
+/// (`song` = the workspace key, `previous_folder` = the kit folder the app
+/// recorded for it, see `kits::resolve_kit_dir`).
 #[tauri::command]
-pub async fn save_cover(app: AppHandle, folder_name: String, image_b64: String) -> Result<String, String> {
-    let output_folder = crate::scope::Scope::load(&app)?.output()?.to_string_lossy().to_string();
-    tauri::async_runtime::spawn_blocking(move || write_cover(&output_folder, &folder_name, &image_b64).map(|p| p.to_string_lossy().to_string()))
+pub async fn save_cover(app: AppHandle, song: String, folder_name: String, previous_folder: Option<String>, image_b64: String) -> Result<String, String> {
+    let scope = crate::scope::Scope::load(&app)?;
+    let output_folder = scope.output()?.to_string_lossy().to_string();
+    let owner = crate::kits::kit_owner(&scope.known_file(&song)?.to_string_lossy());
+    tauri::async_runtime::spawn_blocking(move || {
+        write_cover(&output_folder, &owner, &folder_name, previous_folder.as_deref(), &image_b64).map(|p| p.to_string_lossy().to_string())
+    })
         .await
         .map_err(|e| format!("saving failed: {e}"))?
 }
@@ -732,11 +734,11 @@ mod tests {
     fn saves_the_concept_into_the_kit_folder() {
         let out = temp_dir("save");
         let jpeg = tiny_jpeg(1024, 1024);
-        let path = write_cover(out.to_str().unwrap(), "../Envy: v2", &b64(&jpeg)).unwrap();
+        let path = write_cover(out.to_str().unwrap(), "o", "../Envy: v2", None, &b64(&jpeg)).unwrap();
         assert_eq!(path, out.join(crate::scanner::LAUNCH_KITS_DIR).join("_Envy_ v2").join(COVER_FILE));
         assert_eq!(fs::read(&path).unwrap(), jpeg);
-        assert!(write_cover(out.to_str().unwrap(), "x", &b64(b"not a jpeg")).unwrap_err().contains("JPEG"));
-        assert!(write_cover(out.join("missing").to_str().unwrap(), "x", &b64(&jpeg)).unwrap_err().contains("export folder"));
+        assert!(write_cover(out.to_str().unwrap(), "o", "x", None, &b64(b"not a jpeg")).unwrap_err().contains("JPEG"));
+        assert!(write_cover(out.join("missing").to_str().unwrap(), "o", "x", None, &b64(&jpeg)).unwrap_err().contains("export folder"));
         let _ = fs::remove_dir_all(out);
     }
 }

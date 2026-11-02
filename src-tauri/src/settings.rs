@@ -354,6 +354,21 @@ pub async fn pick_ffmpeg(app: AppHandle) -> Result<Settings, String> {
     Ok(saved)
 }
 
+/// Saves the ffmpeg found on this machine, once the user confirmed the path
+/// Settings showed. Detected again here (never a path from the webview);
+/// `shown` must be that same path, so what gets saved is what was confirmed.
+#[tauri::command]
+pub fn use_detected_ffmpeg(app: AppHandle, shown: String) -> Result<Settings, String> {
+    let found = crate::shorts::detect_ffmpeg().ok_or("ffmpeg wasn't found. Pick it by hand.")?;
+    if found.to_string_lossy() != shown {
+        return Err("ffmpeg isn't where it was a moment ago. Check again.".to_string());
+    }
+    let mut saved = load(&app)?;
+    saved.ffmpeg_path = Some(found.to_string_lossy().to_string());
+    store(&app, &saved)?;
+    Ok(saved)
+}
+
 /// Clears a path setting: "flStudio", "ffmpeg" or "outputFolder".
 #[tauri::command]
 pub fn clear_path_setting(app: AppHandle, which: String) -> Result<Settings, String> {
