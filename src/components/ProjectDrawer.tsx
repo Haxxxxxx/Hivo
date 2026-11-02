@@ -29,7 +29,7 @@ import { KEYS, albumsOf, backupsBytes, formatBpm, lastSaveMs, missingPlugins, re
 import type { ProjectInfo } from "../types";
 import { detectKey } from "../lib/people";
 import { SongCredits, SongPitches } from "./SongPeople";
-import { ShareToggle, StageConflictBanner } from "./CrewPanel";
+import { CrewMoveNote, MoveShareOffer, ShareToggle, StageConflictBanner } from "./CrewPanel";
 import { FilesPanel } from "./FilesPanel";
 import { NotesEditor } from "./NotesEditor";
 import { PhoneMemos } from "./PhoneMemos";
@@ -344,6 +344,8 @@ export function ProjectDrawer() {
   const openLaunchKit = useAppStore((s) => s.openLaunchKit);
 
   const [versionName, setVersionName] = useState<string | null>(null);
+  /** The version just saved, to offer moving the crew card to it. */
+  const [newVersion, setNewVersion] = useState<{ from: string; to: string } | null>(null);
   const [message, setMessage] = useState<{ kind: "ok" | "warn" | "error"; text: string } | null>(null);
   const [showAllBackups, setShowAllBackups] = useState(false);
   /** Backups to clean up that sit on a drive with no Recycle Bin: waiting for an explicit OK. */
@@ -475,6 +477,7 @@ export function ProjectDrawer() {
         </div>
         <ShareToggle path={project.path} />
         <StageConflictBanner path={project.path} />
+        <CrewMoveNote path={project.path} />
         {canRenderInApp(project) && missingCount > 0 && (
           <div className="mt-3 rounded-md border border-amber-400/20 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-200/80">
             {t.renderMissingSamples(missingCount)}
@@ -698,7 +701,11 @@ export function ProjectDrawer() {
                   e.preventDefault();
                   const name = versionName;
                   setVersionName(null);
-                  run(() => duplicateProject(project.path, name), (p) => t.created(fileName(String(p))));
+                  const from = project.path;
+                  run(
+                    () => duplicateProject(from, name),
+                    (p) => (setNewVersion({ from, to: String(p) }), t.created(fileName(String(p)))),
+                  );
                 }}
               >
                 <input autoFocus value={versionName} onChange={(e) => setVersionName(e.target.value)} className={`${input} py-1.5`} />
@@ -710,6 +717,7 @@ export function ProjectDrawer() {
                 </button>
               </form>
             )}
+            {newVersion?.from === project.path && <MoveShareOffer from={newVersion.from} to={newVersion.to} onDone={() => setNewVersion(null)} />}
 
             {project.backups.length > 0 && (
               <ol className="mt-3 border-l border-rule pl-3">

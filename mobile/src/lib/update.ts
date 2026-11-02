@@ -76,3 +76,16 @@ export function checkDue(lastCheckAt: number | null, now: number): boolean {
   if (lastCheckAt === null || !Number.isFinite(lastCheckAt)) return true;
   return now - lastCheckAt >= CHECK_EVERY_MS || now < lastCheckAt;
 }
+
+/**
+ * The computer's Hivo (`hivoVersion` from /v1/hello) is older than this
+ * phone's by major.minor (patches always talk to each other): the phone
+ * says "Update Hivo on the computer". False when either is unknown.
+ */
+export function desktopIsOlder(desktop: unknown, phone: string): boolean {
+  const d = typeof desktop === "string" ? /^v?(\d{1,6})\.(\d{1,6})/.exec(desktop.trim()) : null;
+  const p = /^v?(\d{1,6})\.(\d{1,6})/.exec(phone.trim());
+  if (!d || !p) return false;
+  const [dm, dn, pm, pn] = [d[1], d[2], p[1], p[2]].map(Number);
+  return dm < pm || (dm === pm && dn < pn);
+}

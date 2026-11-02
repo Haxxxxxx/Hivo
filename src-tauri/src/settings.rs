@@ -15,12 +15,12 @@ fn settings_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(dir.join("settings.json"))
 }
 
-/// Where an unreadable settings.json was moved (`settings.json.bad`), until
+/// Where an unreadable settings.json was moved (`settings.json.bad-<ms>`), until
 /// the webview has been told once (`take_settings_recovery`).
 static RECOVERED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 /// Reads settings.json. One that doesn't parse is moved aside to
-/// `settings.json.bad` (kept for the user) and the defaults are used, so a
+/// `settings.json.bad-<ms>` (kept for the user, never over an older one) and the defaults are used, so a
 /// corrupt file never blocks every save and picker. Returns where it went.
 fn load_from(path: &Path) -> Result<(Settings, Option<PathBuf>), String> {
     if !path.exists() {
@@ -30,7 +30,7 @@ fn load_from(path: &Path) -> Result<(Settings, Option<PathBuf>), String> {
     match serde_json::from_slice(&raw) {
         Ok(settings) => Ok((settings, None)),
         Err(parse) => {
-            let bad = crate::workspace::sibling(path, "bad");
+            let bad = crate::workspace::bad_path(path);
             fs::rename(path, &bad).map_err(|e| format!("could not parse settings ({parse}) or move them aside: {e}"))?;
             eprintln!("settings.json didn't parse ({parse}): moved to {}", bad.display());
             Ok((Settings::default(), Some(bad)))
@@ -430,6 +430,21 @@ pub async fn pick_ffmpeg(app: AppHandle) -> Result<Settings, String> {
     Ok(saved)
 }
 
+/// Saves the ffmpeg found on this machine, once the user confirmed the path
+/// Settings showed. Detected again here (never a path from the webview);
+/// `shown` must be that same path, so what gets saved is what was confirmed.
+#[tauri::command]
+pub fn use_detected_ffmpeg(app: AppHandle, shown: String) -> Result<Settings, String> {
+    let found = crate::shorts::detect_ffmpeg().ok_or("ffmpeg wasn't found. Pick it by hand.")?;
+    if found.to_string_lossy() != shown {
+        return Err("ffmpeg isn't where it was a moment ago. Check again.".to_string());
+    }
+    let mut saved = load(&app)?;
+    saved.ffmpeg_path = Some(found.to_string_lossy().to_string());
+    store(&app, &saved)?;
+    Ok(saved)
+}
+
 /// Clears a path setting: "flStudio", "ffmpeg" or "outputFolder".
 #[tauri::command]
 pub fn clear_path_setting(app: AppHandle, which: String) -> Result<Settings, String> {
@@ -708,7 +723,7 @@ mod tests {
         let (settings, moved) = load_from(&path).unwrap();
         assert_eq!(settings.watched_folders, Vec::<String>::new());
         let bad = moved.expect("moved aside");
-        assert_eq!(bad, dir.join("settings.json.bad"));
+        assert!(bad.file_name().unwrap().to_string_lossy().starts_with("settings.json.bad-"), "timestamped: {}", bad.display());
         assert_eq!(fs::read(&bad).unwrap(), b"{\"watchedFolders\": [\"/mus", "the broken file is kept");
         // Saving works again, atomically, and reads back.
         let saved = Settings { render_format: "mp3".into(), ..Settings::default() };

@@ -180,6 +180,9 @@ export interface SongMeta {
   stagePending?: boolean;
   /** A crewmate moved the song while this computer's move was waiting. */
   stageConflict?: StageConflict;
+  /** The crewmate (user id) whose move on the crew board set the current
+   * stage (its time is `stageUpdatedAtMs`). Cleared by a move of mine. */
+  stageMovedBy?: string;
   /** Every stage the song entered, oldest first (`src/lib/stageLog.ts`).
    * Starts empty: nothing before the log existed is guessed. Local only. */
   stageLog?: StageLogEntry[];
@@ -534,12 +537,23 @@ export interface Workspace {
   leadNotes?: Record<string, string>;
   /** Notes on beats (Settings → Beats folders), by file path. */
   beatNotes?: Record<string, string>;
-  /** The size of each noted beat, so a renamed or moved file finds its
-   * notes again on the next scan (`relinkBeatNotes`). */
+  /** The size of each tracked beat (noted, or linked to a saved prod by
+   * hand), so a moved or renamed file finds its notes and links again on the
+   * next complete scan (`relinkBeatNotes`). */
   beatNoteSizes?: Record<string, number>;
+  /** Tombstones of beat notes/links moved to another path, by old path:
+   * dropped once a later complete scan finds the new path, undone (the note
+   * restored) if the old path comes back first. */
+  beatNoteMoves?: Record<string, BeatMove>;
   /** Saved prod (lead hash) → the beat file that is it (path), set by hand
-   * ("This is…"); null = "not in your prods", overriding the name match. */
+   * ("This is…"); null = "not in your prods", overriding the name match.
+   * Follows the beat when it moves (`relinkBeatNotes`); a path the scan
+   * no longer has falls back to the name match (`matchBeat`). */
   leadBeats?: Record<string, string | null>;
+  /** Songs and beats that moved to a new path (relinks, renames, "Continue
+   * in FL Studio"), kept a few days for the phone's `/v1/snapshot`
+   * `renamed` list, so its pending note edits follow (src/lib/phoneSync.ts). */
+  phoneRenames?: { kind: "song" | "beat"; from: string; to: string; at: number }[];
   /** Set only on generated sample data (src/lib/sampleData.ts): a workspace
    * carrying it is never written to disk. */
   sample?: true;
@@ -586,6 +600,9 @@ export interface CrewSongRow {
   credits: CrewCredit[];
   release_date: string | null;
   has_mixdown: boolean;
+  /** The newest mixdown is at least as new as the last save. Null: no
+   * mixdown, or sent by a Hivo from before this column (freshness unknown). */
+  mixdown_fresh?: boolean | null;
   kit_accepted: boolean;
   last_saved_at: string | null;
   stage_updated_at: string;
@@ -654,6 +671,15 @@ export interface BeatFile {
   modifiedAtMs: number;
 }
 
+/** A beat's notes (or a lead's link) moved from one path to another: kept
+ * until the move is confirmed, so the note comes back if the old path does. */
+export interface BeatMove {
+  to: string;
+  size: number;
+  /** The note as it was moved (absent when only lead links moved). */
+  text?: string;
+}
+
 /** The beats scan (src-tauri/src/beats.rs BeatScan). */
 export interface BeatScan {
   beats: BeatFile[];
@@ -663,6 +689,9 @@ export interface BeatScan {
   capped: boolean;
   /** Audio files in formats the Digger can't read (opus, aac…). */
   ignored: number;
+  /** Beats folders (or folders in them) that couldn't be read: their beats
+   * are missing from `beats`, not gone. */
+  unreachable: number;
 }
 
 /** One beat's offline analysis (src-tauri/src/beats.rs analyze_beats). */
@@ -781,6 +810,8 @@ export interface PhoneDevice {
   lastSeenMs: number | null;
   /** Paired on another port than the one open now: it needs a new QR (Re-pair). */
   needsNewQr: boolean;
+  /** Its Hivo is older (major.minor) than this computer's. Absent from older builds. */
+  phoneOutdated?: boolean;
 }
 
 export interface PhoneSyncStatus {

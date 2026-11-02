@@ -7,6 +7,7 @@ mod digger;
 mod cover;
 mod files;
 mod key;
+mod kits;
 mod leads;
 mod lookup;
 mod location;
@@ -81,6 +82,7 @@ pub fn run() {
             settings::pick_fl_studio,
             settings::use_detected_fl_studio,
             settings::pick_ffmpeg,
+            settings::use_detected_ffmpeg,
             settings::clear_path_setting,
             render::render_projects,
             workspace::get_workspace,
@@ -101,6 +103,7 @@ pub fn run() {
             package::package_preview,
             package::package_projects,
             files::kit_files,
+            files::bandlab_files,
             audio::analyze_audio,
             audio::export_launch_kit,
             audio::read_kit_cover,
@@ -119,6 +122,7 @@ pub fn run() {
             phone_sync::phone_sync_status,
             phone_sync::phone_sync_enable,
             phone_sync::phone_sync_pair,
+            phone_sync::phone_sync_open_firewall,
             phone_sync::phone_sync_forget,
             phone_sync::phone_sync_repair,
             phone_sync::phone_inbox_link_memo,

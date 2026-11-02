@@ -66,8 +66,20 @@ const FORWARDED: [&str; 2] = ["/v1/snapshot", "/v1/notes"];
 /// v1.1 (step 4): answered here from the phone inbox (crate::phone_inbox).
 const INBOX_PATHS: [&str; 5] = ["/v1/ideas", "/v1/upload/start", "/v1/upload/chunk", "/v1/upload/finish", "/v1/inbox"];
 pub const INBOX_EVENT: &str = "phone-inbox-changed";
-/// Progress events (upload start/chunk/finish) at most this often.
+/// Progress events (upload start/chunk/finish) at most this often, per item,
+/// with a trailing one so the last progress always shows.
 const INBOX_EVENT_EVERY: Duration = Duration::from_millis(1000);
+/// A request body must arrive within this; a slower client loses its slot.
+const BODY_DEADLINE: Duration = Duration::from_secs(20);
+/// Connections one address can hold at once (bodies still being read
+/// included), so a slow client on the LAN can't take every slot.
+const MAX_PER_IP: usize = 4;
+/// A paired phone that never said hello within this is forgotten (an
+/// abandoned QR whose key shouldn't stay valid).
+const UNSEEN_TTL_MS: i64 = 24 * 3600 * 1000;
+/// A phone said hello with a newer Hivo than this computer's: the webview
+/// checks for an update.
+pub const PHONE_NEWER_EVENT: &str = "phone-sync-phone-newer";
 
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
@@ -209,8 +221,53 @@ pub struct SyncFile {
     pub devices: Vec<StoredDevice>,
 }
 
+/// Something wrong with `phone-sync.json` at launch, shown in Settings →
+/// Phone sync until a save works.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoreProblem {
+    pub message: String,
+    /// The file couldn't be read (it may be fine) or moved aside: nothing is
+    /// saved over it while this app runs.
+    pub blocks_saving: bool,
+}
+
+/// The paired phones, or defaults when there's no file. A file that can't
+/// be read is left alone and blocks saving (it may be fine: a permission,
+/// a locked disk); one that doesn't parse is kept as
+/// `phone-sync.json.bad-<ms>` (never over an older one) and phones pair again.
+pub fn load_store(path: &Path) -> (SyncFile, Option<StoreProblem>) {
+    let raw = match fs::read(path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (SyncFile::default(), None),
+        Err(e) => {
+            let message = format!("The paired phones (phone-sync.json) can't be read right now ({e}). Nothing is saved over them: fix that and restart Hivo.");
+            return (SyncFile::default(), Some(StoreProblem { message, blocks_saving: true }));
+        }
+    };
+    let parse = match serde_json::from_slice(&raw) {
+        Ok(file) => return (file, None),
+        Err(e) => e,
+    };
+    let bad = crate::workspace::bad_path(path);
+    let problem = match fs::rename(path, &bad) {
+        Ok(()) => {
+            let kept = bad.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            StoreProblem {
+                message: format!("The paired phones couldn't be read ({parse}), so every phone needs pairing again. The old file is kept as {kept} in Hivo's settings folder."),
+                blocks_saving: false,
+            }
+        }
+        Err(e) => StoreProblem {
+            message: format!("The paired phones couldn't be read ({parse}) or moved aside ({e}). Nothing is saved over them: fix that and restart Hivo."),
+            blocks_saving: true,
+        },
+    };
+    (SyncFile::default(), Some(problem))
+}
+
+#[cfg(test)]
 pub fn read_store(path: &Path) -> SyncFile {
-    fs::read_to_string(path).ok().and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_default()
+    load_store(path).0
 }
 
 pub fn write_store(path: &Path, file: &SyncFile) -> Result<(), String> {
@@ -380,6 +437,54 @@ pub trait Host: Send + Sync {
     fn desktop_name(&self) -> String;
     /// Something new is in the phone inbox (the desktop's Inbox refreshes).
     fn inbox_changed(&self) {}
+    /// The same, `after` from now (the trailing progress event). Tests run it at once.
+    fn inbox_changed_after(&self, _after: Duration) {
+        self.inbox_changed();
+    }
+    /// A phone with a newer Hivo (major.minor) said hello.
+    fn phone_newer(&self) {}
+}
+
+/// One item's progress throttle (`next` = when an event may go, `scheduled`
+/// = when the trailing one fires): Some(0) = send now, Some(d) = schedule
+/// one in `d`, None = an event already covers this move. At most one a
+/// second, and the last move always gets one.
+fn progress_step(entry: &mut (Instant, Option<Instant>), now: Instant) -> Option<Duration> {
+    let (next, scheduled) = entry;
+    if scheduled.is_some_and(|s| now >= s) {
+        *scheduled = None;
+    }
+    if now >= *next {
+        *next = now + INBOX_EVENT_EVERY;
+        return Some(Duration::ZERO);
+    }
+    if scheduled.is_some() {
+        return None;
+    }
+    let wait = *next - now;
+    *scheduled = Some(*next);
+    *next += INBOX_EVENT_EVERY;
+    Some(wait)
+}
+
+/// `major.minor` of a version ("0.6.3" → (0, 6)); None when it isn't one.
+pub fn major_minor(v: &str) -> Option<(u64, u64)> {
+    let mut parts = v.trim().trim_start_matches('v').split(['.', '-', '+']);
+    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+}
+
+/// How the phone's version compares with the desktop's, by major.minor
+/// (patch releases always talk to each other). None when either is unknown.
+pub fn compare_versions(phone: &str, desktop: &str) -> Option<std::cmp::Ordering> {
+    Some(major_minor(phone)?.cmp(&major_minor(desktop)?))
+}
+
+/// Drops paired phones that never said hello within `UNSEEN_TTL_MS` (their
+/// QR was never scanned, or scanned and abandoned). True when one went.
+pub fn expire_unseen(file: &mut SyncFile, now: i64) -> bool {
+    let before = file.devices.len();
+    file.devices.retain(|d| d.last_seen_ms.is_some() || now - d.paired_at_ms <= UNSEEN_TTL_MS);
+    file.devices.len() != before
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -407,11 +512,18 @@ pub struct Inner {
     in_flight: AtomicUsize,
     next_id: AtomicU64,
     error: Mutex<Option<String>>,
+    /// What went wrong reading phone-sync.json at launch (`load_store`).
+    store_problem: Mutex<Option<StoreProblem>>,
     pub inbox: Arc<crate::phone_inbox::Inbox>,
     /// The webview says so when it shows sample data: uploads are refused.
     demo: AtomicBool,
-    /// When the last progress event went out (`inbox_progress`).
-    last_progress: Mutex<Option<Instant>>,
+    /// Per uploading item: when its next progress event may go, and when the
+    /// trailing one is scheduled, if one is (`inbox_progress`).
+    last_progress: Mutex<HashMap<String, (Instant, Option<Instant>)>>,
+    /// Connections open per remote address (`MAX_PER_IP`).
+    per_ip: Arc<Mutex<HashMap<IpAddr, usize>>>,
+    /// `BODY_DEADLINE` (shorter in tests).
+    pub body_deadline_ms: AtomicU64,
 }
 
 /// `<config dir>/phone-inbox` next to `phone-sync.json` (tests: `<file>.inbox`).
@@ -429,9 +541,13 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl Inner {
     pub fn new(path: PathBuf) -> Arc<Inner> {
-        let store = read_store(&path);
+        let (store, problem) = load_store(&path);
+        if let Some(p) = &problem {
+            eprintln!("phone sync: {}", p.message);
+        }
         let inbox = Arc::new(crate::phone_inbox::Inbox::open(inbox_root(&path)));
         Arc::new(Inner {
+            store_problem: Mutex::new(problem),
             inbox,
             demo: AtomicBool::new(false),
             path,
@@ -443,28 +559,57 @@ impl Inner {
             in_flight: AtomicUsize::new(0),
             next_id: AtomicU64::new(1),
             error: Mutex::new(None),
-            last_progress: Mutex::new(None),
+            last_progress: Mutex::new(HashMap::new()),
+            per_ip: Arc::new(Mutex::new(HashMap::new())),
+            body_deadline_ms: AtomicU64::new(BODY_DEADLINE.as_millis() as u64),
         })
     }
 
-    /// An upload moved: the desktop's "Receiving…" line refreshes, at most
-    /// once a second.
-    fn inbox_progress(&self, host: &dyn Host) {
-        let mut last = lock(&self.last_progress);
-        if last.is_some_and(|t| t.elapsed() < INBOX_EVENT_EVERY) {
-            return;
+    /// An upload moved: the desktop's "Still arriving" line refreshes, at
+    /// most once a second per item, and once more at the end of that second
+    /// when moves were skipped meanwhile (else the last progress never shows).
+    fn inbox_progress(&self, host: &dyn Host, item: &str) {
+        let now = Instant::now();
+        let action = {
+            let mut last = lock(&self.last_progress);
+            // Items quiet for a while are forgotten (the map stays small).
+            last.retain(|_, (next, _)| now < *next + INBOX_EVENT_EVERY * 10);
+            progress_step(last.entry(item.to_string()).or_insert((now, None)), now)
+        };
+        match action {
+            Some(wait) if wait.is_zero() => host.inbox_changed(),
+            Some(wait) => host.inbox_changed_after(wait),
+            None => {}
         }
-        *last = Some(Instant::now());
-        drop(last);
-        host.inbox_changed();
     }
 
     fn save(&self, file: &SyncFile) -> Result<(), String> {
-        write_store(&self.path, file)
+        let mut problem = lock(&self.store_problem);
+        if let Some(p) = problem.as_ref().filter(|p| p.blocks_saving) {
+            return Err(p.message.clone());
+        }
+        write_store(&self.path, file)?;
+        // Paired again since the reset: the note has done its job.
+        *problem = None;
+        Ok(())
     }
 
+    /// A paired device, unless it never said hello within `UNSEEN_TTL_MS`
+    /// (dropped from the store then).
     fn device(&self, id: &str) -> Option<StoredDevice> {
+        self.expire_unseen();
         lock(&self.store).devices.iter().find(|d| d.id == id).cloned()
+    }
+
+    fn expire_unseen(&self) {
+        let mut store = lock(&self.store);
+        if expire_unseen(&mut store, now_ms()) {
+            let snapshot = store.clone();
+            drop(store);
+            if let Err(e) = self.save(&snapshot) {
+                eprintln!("phone sync: {e}");
+            }
+        }
     }
 
     /// Marks the device seen (and named, on hello). Written at most once a minute unless the name changed.
@@ -550,6 +695,11 @@ pub fn start(inner: &Arc<Inner>, host: Arc<dyn Host>, ip: IpAddr) -> Result<u16,
             .name("phone-sync".into())
             .spawn(move || {
                 for request in server.incoming_requests() {
+                    // One address can't take every slot (a slow client on the LAN).
+                    let Some(slot) = IpSlot::take(&inner.per_ip, request.remote_addr().map(SocketAddr::ip)) else {
+                        let _ = request.respond(tiny_http::Response::empty(503));
+                        continue;
+                    };
                     if inner.in_flight.fetch_add(1, Ordering::SeqCst) >= MAX_IN_FLIGHT {
                         inner.in_flight.fetch_sub(1, Ordering::SeqCst);
                         let _ = request.respond(tiny_http::Response::empty(503));
@@ -558,7 +708,7 @@ pub fn start(inner: &Arc<Inner>, host: Arc<dyn Host>, ip: IpAddr) -> Result<u16,
                     let worker = inner.clone();
                     let host = host.clone();
                     let spawned = std::thread::Builder::new().name("phone-sync-req".into()).spawn(move || {
-                        handle(&worker, host.as_ref(), request);
+                        handle(&worker, host.as_ref(), request, slot);
                         worker.in_flight.fetch_sub(1, Ordering::SeqCst);
                     });
                     if spawned.is_err() {
@@ -620,9 +770,61 @@ pub enum Outcome {
     Status(u16),
 }
 
-fn handle(inner: &Arc<Inner>, host: &dyn Host, mut req: tiny_http::Request) {
+/// One connection counted against its address (`MAX_PER_IP`), released when
+/// dropped: when the answer went, or when a body that never came is given up.
+pub struct IpSlot {
+    map: Arc<Mutex<HashMap<IpAddr, usize>>>,
+    ip: Option<IpAddr>,
+}
+
+impl IpSlot {
+    /// None when that address already holds `MAX_PER_IP` connections.
+    pub fn take(map: &Arc<Mutex<HashMap<IpAddr, usize>>>, ip: Option<IpAddr>) -> Option<IpSlot> {
+        if let Some(ip) = ip {
+            let mut m = lock(map);
+            let n = m.entry(ip).or_insert(0);
+            if *n >= MAX_PER_IP {
+                return None;
+            }
+            *n += 1;
+        }
+        Some(IpSlot { map: map.clone(), ip })
+    }
+}
+
+impl Drop for IpSlot {
+    fn drop(&mut self) {
+        let Some(ip) = self.ip else { return };
+        let mut m = lock(&self.map);
+        if let Some(n) = m.get_mut(&ip) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                m.remove(&ip);
+            }
+        }
+    }
+}
+
+/// Reads the body on its own thread, at most `deadline`: a client that
+/// sends its body slower loses its slot (the reader thread keeps the
+/// connection, and its address's `IpSlot`, until the client goes away).
+fn read_body(req: tiny_http::Request, slot: IpSlot, deadline: Duration) -> Option<(tiny_http::Request, IpSlot, std::io::Result<Vec<u8>>)> {
+    let (tx, rx) = mpsc::channel();
+    let spawned = std::thread::Builder::new().name("phone-sync-body".into()).spawn(move || {
+        let mut req = req;
+        let mut body = Vec::new();
+        let read = req.as_reader().take(MAX_BODY_BYTES as u64 + 1).read_to_end(&mut body).map(|_| body);
+        // Given up on: the request (and the slot) drop here.
+        let _ = tx.send((req, slot, read));
+    });
+    spawned.ok()?;
+    rx.recv_timeout(deadline).ok()
+}
+
+fn handle(inner: &Arc<Inner>, host: &dyn Host, req: tiny_http::Request, slot: IpSlot) {
     let path = req.url().split('?').next().unwrap_or("").to_string();
     let method = req.method().clone();
+    let mut req = req;
     let outcome = match (&method, path.as_str()) {
         (tiny_http::Method::Get, "/v1/ping") => {
             let _ = req.respond(json_response(200, &json!({ "app": "hivo", "v": 1 })));
@@ -631,14 +833,36 @@ fn handle(inner: &Arc<Inner>, host: &dyn Host, mut req: tiny_http::Request) {
         (tiny_http::Method::Post, p) if p == "/v1/hello" || FORWARDED.contains(&p) || INBOX_PATHS.contains(&p) => {
             let device = header(&req, "X-Hivo-Device").map(str::to_string);
             let too_big = req.body_length().is_some_and(|n| n > MAX_BODY_BYTES);
-            if too_big {
-                Outcome::Status(413)
+            // An unknown device is refused before its body is read.
+            let known = device.as_deref().is_some_and(|d| !d.is_empty() && d.len() <= 64 && inner.device(d).is_some());
+            if !known || too_big {
+                // Answered without reading the body: tiny_http drains what's
+                // left when the request drops, so that happens off this slot
+                // (still counted against the address until the client is done).
+                let status = if known { 413 } else { 401 };
+                let _ = std::thread::Builder::new().name("phone-sync-drain".into()).spawn(move || {
+                    let _slot = slot;
+                    let _ = req.respond(tiny_http::Response::empty(status));
+                });
+                return;
             } else {
-                let mut body = Vec::new();
-                match req.as_reader().take(MAX_BODY_BYTES as u64 + 1).read_to_end(&mut body) {
-                    Err(_) => Outcome::Status(400),
-                    Ok(_) if body.len() > MAX_BODY_BYTES => Outcome::Status(413),
-                    Ok(_) => handle_sealed(inner, host, &path, device.as_deref(), &body),
+                match read_body(req, slot, Duration::from_millis(inner.body_deadline_ms.load(Ordering::Relaxed))) {
+                    // Too slow: the slot goes to someone else, no answer.
+                    None => return,
+                    Some((r, slot, read)) => {
+                        req = r;
+                        let outcome = match read {
+                            Err(_) => Outcome::Status(400),
+                            Ok(body) if body.len() > MAX_BODY_BYTES => Outcome::Status(413),
+                            Ok(body) => handle_sealed(inner, host, &path, device.as_deref(), &body),
+                        };
+                        let _ = match outcome {
+                            Outcome::Sealed(env) => req.respond(json_response(200, &env)),
+                            Outcome::Status(s) => req.respond(tiny_http::Response::empty(s)),
+                        };
+                        drop(slot);
+                        return;
+                    }
                 }
             }
         }
@@ -685,8 +909,13 @@ pub fn handle_sealed(inner: &Arc<Inner>, host: &dyn Host, path: &str, device_id:
         "/v1/hello" => {
             let name = sealed.body.get("phoneName").and_then(Value::as_str).map(|s| clip(s, MAX_PHONE_NAME)).filter(|s| !s.is_empty());
             let version = sealed.body.get("appVersion").and_then(Value::as_str).map(|s| clip(s, 20)).filter(|s| !s.is_empty());
+            let desktop_version = host.hivo_version();
+            // A newer phone: this computer may have an update waiting.
+            if version.as_deref().and_then(|v| compare_versions(v, &desktop_version)) == Some(std::cmp::Ordering::Greater) {
+                host.phone_newer();
+            }
             inner.touch(device_id, Some(name.unwrap_or_else(|| "Phone".to_string())), version);
-            Ok(json!({ "desktopName": host.desktop_name(), "hivoVersion": host.hivo_version() }))
+            Ok(json!({ "desktopName": host.desktop_name(), "hivoVersion": desktop_version }))
         }
         p if INBOX_PATHS.contains(&p) => {
             inner.touch(device_id, None, None);
@@ -733,6 +962,8 @@ fn answer_inbox(inner: &Inner, host: &dyn Host, path: &str, device_id: &str, pho
         return Err("demo".to_string());
     }
     let now = now_ms();
+    // The throttle is per item: two phones sending at once both show progress.
+    let item = format!("{device_id}.{}", body.get("itemId").and_then(Value::as_str).unwrap_or(""));
     match path {
         "/v1/ideas" => {
             let r = inner.inbox.push_ideas(device_id, phone, body, now);
@@ -741,13 +972,14 @@ fn answer_inbox(inner: &Inner, host: &dyn Host, path: &str, device_id: &str, pho
             }
             r
         }
-        "/v1/upload/start" => inner.inbox.upload_start(device_id, phone, body, now).inspect(|_| inner.inbox_progress(host)),
-        "/v1/upload/chunk" => inner.inbox.upload_chunk(device_id, body).inspect(|_| inner.inbox_progress(host)),
+        "/v1/upload/start" => inner.inbox.upload_start(device_id, phone, body, now).inspect(|_| inner.inbox_progress(host, &item)),
+        "/v1/upload/chunk" => inner.inbox.upload_chunk(device_id, body).inspect(|_| inner.inbox_progress(host, &item)),
         "/v1/upload/finish" => inner.inbox.upload_finish(device_id, body, now).map(|(v, ready)| {
             if ready {
+                lock(&inner.last_progress).remove(&item);
                 host.inbox_changed();
             } else {
-                inner.inbox_progress(host);
+                inner.inbox_progress(host, &item);
             }
             v
         }),
@@ -803,6 +1035,16 @@ impl Host for TauriHost {
     fn inbox_changed(&self) {
         let _ = self.app.emit(INBOX_EVENT, ());
     }
+    fn inbox_changed_after(&self, after: Duration) {
+        let app = self.app.clone();
+        let _ = std::thread::Builder::new().name("phone-inbox-progress".into()).spawn(move || {
+            std::thread::sleep(after);
+            let _ = app.emit(INBOX_EVENT, ());
+        });
+    }
+    fn phone_newer(&self) {
+        let _ = self.app.emit(PHONE_NEWER_EVENT, ());
+    }
 }
 
 fn store_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -848,6 +1090,8 @@ pub struct DeviceInfo {
     pub last_seen_ms: Option<i64>,
     /// Paired on another port than the one open now: it needs a new QR.
     pub needs_new_qr: bool,
+    /// Its Hivo is older (major.minor) than this computer's: "Update Hivo on this phone".
+    pub phone_outdated: bool,
 }
 
 #[derive(Serialize)]
@@ -860,7 +1104,8 @@ pub struct PhoneSyncStatus {
     pub error: Option<String>,
 }
 
-fn status_of(inner: &Inner) -> PhoneSyncStatus {
+fn status_of(inner: &Inner, desktop_version: &str) -> PhoneSyncStatus {
+    inner.expire_unseen();
     let store = lock(&inner.store).clone();
     let port = inner.port();
     PhoneSyncStatus {
@@ -872,6 +1117,7 @@ fn status_of(inner: &Inner) -> PhoneSyncStatus {
             .into_iter()
             .map(|d| DeviceInfo {
                 needs_new_qr: port.is_some() && d.paired_port.is_some_and(|p| Some(p) != port),
+                phone_outdated: d.app_version.as_deref().and_then(|v| compare_versions(v, desktop_version)) == Some(std::cmp::Ordering::Less),
                 id: d.id,
                 name: d.name,
                 app_version: d.app_version,
@@ -879,8 +1125,73 @@ fn status_of(inner: &Inner) -> PhoneSyncStatus {
                 last_seen_ms: d.last_seen_ms,
             })
             .collect(),
-        error: lock(&inner.error).clone(),
+        // A file problem first: it outlasts a listener error.
+        error: lock(&inner.store_problem).as_ref().map(|p| p.message.clone()).or_else(|| lock(&inner.error).clone()),
     }
+}
+
+/// Windows: opens "Allow an app through Windows Firewall" (the phone can't
+/// reach Hivo when it's blocked there). A fixed system command, no input.
+#[tauri::command]
+pub fn phone_sync_open_firewall() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        std::process::Command::new("control.exe")
+            .args(["/name", "Microsoft.WindowsFirewall", "/page", "pageConfigureApps"])
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("could not open the firewall settings: {e}"))
+    }
+    #[cfg(not(windows))]
+    {
+        Err("Only on Windows.".to_string())
+    }
+}
+
+/// What `phone_sync_pair` answers when the user said no in the dialog.
+pub const CANCELLED: &str = "cancelled";
+
+#[derive(Clone, Copy)]
+enum Confirm {
+    Enable,
+    Pair,
+}
+
+/// The native confirmation (Rust-side text, the app's language from the
+/// webview: only "fr" switches it). True when the user said yes.
+async fn confirm(app: &AppHandle, what: Confirm, lang: Option<&str>) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let fr = lang == Some("fr");
+    let (title, message, ok) = match (what, fr) {
+        (Confirm::Enable, false) => (
+            "Turn on phone sync?",
+            "Hivo will listen on this computer's local network so paired phones can read your songs, beats and prods and edit their notes. Only phones you pair can do anything. Your firewall may ask to allow it.",
+            "Turn on",
+        ),
+        (Confirm::Enable, true) => (
+            "Activer la sync téléphone ?",
+            "Hivo va écouter sur le réseau local de cet ordi pour que les téléphones associés lisent tes sons, prods et beats et modifient leurs notes. Seuls les téléphones que tu associes peuvent faire quoi que ce soit. Ton pare-feu peut demander de l'autoriser.",
+            "Activer",
+        ),
+        (Confirm::Pair, false) => (
+            "Pair a new phone?",
+            "The QR code that comes next lets the phone that scans it read and edit your notes and send files to this computer. Show it only to your own phone.",
+            "Show the QR code",
+        ),
+        (Confirm::Pair, true) => (
+            "Associer un nouveau téléphone ?",
+            "Le QR code qui suit permet au téléphone qui le scanne de lire et modifier tes notes et d'envoyer des fichiers à cet ordi. Ne le montre qu'à ton propre téléphone.",
+            "Afficher le QR code",
+        ),
+    };
+    let cancel = if fr { "Annuler" } else { "Cancel" };
+    let builder = app
+        .dialog()
+        .message(message)
+        .title(title)
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(ok.to_string(), cancel.to_string()));
+    tauri::async_runtime::spawn_blocking(move || builder.blocking_show()).await.unwrap_or(false)
 }
 
 fn state_inner(app: &AppHandle) -> Result<Arc<Inner>, String> {
@@ -890,12 +1201,17 @@ fn state_inner(app: &AppHandle) -> Result<Arc<Inner>, String> {
 #[tauri::command]
 pub fn phone_sync_status(app: AppHandle) -> Result<PhoneSyncStatus, String> {
     let inner = state_inner(&app)?;
-    Ok(status_of(&inner))
+    Ok(status_of(&inner, &app.package_info().version.to_string()))
 }
 
 #[tauri::command]
-pub fn phone_sync_enable(app: AppHandle, on: bool) -> Result<PhoneSyncStatus, String> {
+pub async fn phone_sync_enable(app: AppHandle, on: bool, lang: Option<String>) -> Result<PhoneSyncStatus, String> {
     let inner = state_inner(&app)?;
+    // Opening a port on the network: the user says so in a native dialog
+    // (the webview can't turn it on by itself).
+    if on && inner.port().is_none() && !confirm(&app, Confirm::Enable, lang.as_deref()).await {
+        return Ok(status_of(&inner, &app.package_info().version.to_string()));
+    }
     {
         let mut store = lock(&inner.store);
         store.enabled = on;
@@ -909,7 +1225,7 @@ pub fn phone_sync_enable(app: AppHandle, on: bool) -> Result<PhoneSyncStatus, St
         stop(&inner);
         *lock(&inner.error) = None;
     }
-    Ok(status_of(&inner))
+    Ok(status_of(&inner, &app.package_info().version.to_string()))
 }
 
 #[derive(Serialize)]
@@ -921,7 +1237,7 @@ pub struct Pairing {
 }
 
 #[tauri::command]
-pub fn phone_sync_pair(app: AppHandle) -> Result<Pairing, String> {
+pub async fn phone_sync_pair(app: AppHandle, lang: Option<String>) -> Result<Pairing, String> {
     let inner = state_inner(&app)?;
     let Some(port) = inner.port() else {
         return Err("Turn phone sync on first.".to_string());
@@ -929,6 +1245,10 @@ pub fn phone_sync_pair(app: AppHandle) -> Result<Pairing, String> {
     let hosts = lan_addresses();
     if hosts.is_empty() {
         return Err("No local network address found. Connect this computer to Wi-Fi (or a local network) first.".to_string());
+    }
+    // A new key that unlocks this computer's songs and notes: confirmed natively.
+    if !confirm(&app, Confirm::Pair, lang.as_deref()).await {
+        return Err(CANCELLED.to_string());
     }
     let mut store = lock(&inner.store);
     let device = add_device(&mut store, now_ms())?;
@@ -970,7 +1290,7 @@ pub fn phone_sync_forget(app: AppHandle, device_id: String) -> Result<PhoneSyncS
         drop(store);
         inner.save(&snapshot)?;
     }
-    Ok(status_of(&inner))
+    Ok(status_of(&inner, &app.package_info().version.to_string()))
 }
 
 /// The webview's answer to a `phone-sync-request`: a body, or a short error.
@@ -1031,7 +1351,7 @@ pub async fn phone_inbox_file_sketch(app: AppHandle, id: String, parent_folder: 
 }
 
 /// The folder of a song: its project's folder, or a sketch's song folder.
-fn song_folder(scope: &crate::scope::Scope, key: &str) -> Result<PathBuf, String> {
+pub fn song_folder(scope: &crate::scope::Scope, key: &str) -> Result<PathBuf, String> {
     if let Ok(p) = scope.project(key) {
         return p.parent().map(Path::to_path_buf).ok_or_else(|| "invalid project path".to_string());
     }
@@ -1042,13 +1362,36 @@ fn song_folder(scope: &crate::scope::Scope, key: &str) -> Result<PathBuf, String
     Err("That isn't a song in a linked folder.".to_string())
 }
 
-/// Copies a memo into `<song folder>/Voice memos/`. Returns the copies.
+/// The memo sub-folder for a project whose folder holds other projects too
+/// (FL's flat `Projects/*.flp`): its file stem. None for a song alone in its
+/// folder, and for a sketch (keyed by its BandLab folder).
+pub fn memo_sub_for(song_key: &Path, folder: &Path) -> Option<String> {
+    crate::daws::Daw::of_project(song_key)?;
+    let projects = fs::read_dir(folder)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_file() && crate::daws::Daw::of_project(&e.path()).is_some())
+        .count();
+    if projects > 1 {
+        song_key.file_stem().map(|s| s.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
+/// Copies a memo into `<song folder>/Voice memos/` (`Voice memos/<song>/`
+/// when the folder holds several projects). Returns the copies.
 #[tauri::command]
 pub async fn phone_inbox_attach_song(app: AppHandle, id: String, song_path: String) -> Result<Vec<String>, String> {
     let scope = crate::scope::Scope::load(&app)?;
     let folder = song_folder(&scope, &song_path)?;
     let inner = state_inner(&app)?;
-    tauri::async_runtime::spawn_blocking(move || inner.inbox.attach_to_song_folder(&id, &folder)).await.map_err(|e| format!("copy failed: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        let sub = memo_sub_for(Path::new(&song_path), &folder);
+        inner.inbox.attach_to_song_folder(&id, &folder, &song_path, sub.as_deref())
+    })
+    .await
+    .map_err(|e| format!("copy failed: {e}"))?
 }
 
 /// Links a memo to a beat or a saved prod and copies its audio into that
@@ -1189,9 +1532,44 @@ mod tests {
         assert!(!forget_device(&mut f2, &d.id));
         write_store(&path, &f2).unwrap();
         assert_eq!(read_store(&path).devices.len(), 1);
-        // Missing or broken file = defaults.
+        assert!(!dir.join("phone-sync.json.tmp").exists(), "written atomically");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_broken_store_is_kept_aside_and_reported() {
+        let dir = std::env::temp_dir().join(format!("hivo-phone-sync-bad-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("phone-sync.json");
+        // Missing: defaults, nothing to say.
+        assert_eq!(load_store(&path), (SyncFile::default(), None));
+        // Broken: kept as .bad-<ms>, reported, and saving works again.
         fs::write(&path, "not json").unwrap();
-        assert_eq!(read_store(&path), SyncFile::default());
+        let (file, problem) = load_store(&path);
+        assert_eq!(file, SyncFile::default());
+        let problem = problem.expect("reported");
+        assert!(!problem.blocks_saving && problem.message.contains("pairing again"), "{}", problem.message);
+        let kept: Vec<_> = fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().starts_with("phone-sync.json.bad-")).collect();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(fs::read(kept[0].path()).unwrap(), b"not json", "the broken file is kept");
+        assert!(!path.exists());
+        // Shown in the status until a save works.
+        fs::write(&path, "still not json").unwrap();
+        let inner = Inner::new(path.clone());
+        assert!(status_of(&inner, "0.7.0").error.is_some_and(|e| e.contains("pairing again")));
+        inner.save(&SyncFile::default()).unwrap();
+        assert_eq!(status_of(&inner, "0.7.0").error, None);
+        let bads = fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().starts_with("phone-sync.json.bad-")).count();
+        assert_eq!(bads, 2, "a second broken file never replaces the first");
+        // Can't be read at all (here: a folder in its place): left alone, saving refused.
+        let blocked = dir.join("blocked").join("phone-sync.json");
+        fs::create_dir_all(&blocked).unwrap();
+        let (_, problem) = load_store(&blocked);
+        assert!(problem.is_some_and(|p| p.blocks_saving));
+        let inner = Inner::new(blocked.clone());
+        assert!(inner.save(&SyncFile::default()).is_err());
+        assert!(blocked.is_dir(), "nothing written over it");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1247,6 +1625,25 @@ mod tests {
         assert!(!ranked.contains(&Ipv4Addr::new(82, 1, 2, 3)));
         assert_eq!(ranked.len(), 4);
         assert!(rank_addresses(&list, None).iter().all(Ipv4Addr::is_private));
+    }
+
+    #[test]
+    fn memo_folder_per_song_when_songs_share_a_folder() {
+        let d = std::env::temp_dir().join(format!("hivo-memo-sub-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let alone = d.join("Envy");
+        let flat = d.join("Projects");
+        fs::create_dir_all(&alone).unwrap();
+        fs::create_dir_all(&flat).unwrap();
+        fs::write(alone.join("Envy.flp"), b"x").unwrap();
+        fs::write(alone.join("Envy mix.wav"), b"x").unwrap();
+        fs::write(flat.join("One.flp"), b"x").unwrap();
+        fs::write(flat.join("Two.als"), b"x").unwrap();
+        assert_eq!(memo_sub_for(&alone.join("Envy.flp"), &alone), None, "alone in its folder: Voice memos/");
+        assert_eq!(memo_sub_for(&flat.join("One.flp"), &flat).as_deref(), Some("One"));
+        // A sketch is keyed by its BandLab folder: never a sub-folder.
+        assert_eq!(memo_sub_for(&flat.join("X").join("BandLab"), &flat.join("X")), None);
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -1309,6 +1706,91 @@ mod tests {
     fn open_reply(dev: &StoredDevice, path: &str, body: &[u8]) -> Value {
         let env: Envelope = serde_json::from_slice(body).unwrap();
         serde_json::from_slice(&open(&dev.key_bytes().unwrap(), &aad(&dev.id, &resp_path(path)), &env).unwrap()).unwrap()
+    }
+
+    /// Opens a connection that sends headers announcing a body, then nothing.
+    fn slow_client(port: u16, device: &str) -> TcpStream {
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let head = format!("POST /v1/hello HTTP/1.1\r\nHost: x\r\nContent-Length: 5000\r\nX-Hivo-Device: {device}\r\n\r\n{{");
+        s.write_all(head.as_bytes()).unwrap();
+        s
+    }
+
+    fn wait_until(what: &str, mut ok: impl FnMut() -> bool) {
+        let until = Instant::now() + Duration::from_secs(5);
+        while !ok() {
+            assert!(Instant::now() < until, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn live_listener_body_deadline_per_ip_cap_and_device_first() {
+        let dir = std::env::temp_dir().join(format!("hivo-phone-slow-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("phone-sync.json");
+        let _ = fs::remove_file(&path);
+        let inner = Inner::new(path.clone());
+        inner.body_deadline_ms.store(300, Ordering::Relaxed);
+        let dev = add_device(&mut lock(&inner.store), now_ms()).unwrap();
+        let host = Arc::new(FakeHost { inner: Mutex::new(Some(inner.clone())) });
+        let port = start(&inner, host, IpAddr::V4(Ipv4Addr::LOCALHOST)).unwrap();
+
+        // An unknown device is refused before its body is read (it never comes).
+        let mut s = slow_client(port, "nobody");
+        let mut out = Vec::new();
+        let _ = s.read_to_end(&mut out);
+        assert!(String::from_utf8_lossy(&out).starts_with("HTTP/1.1 401"));
+        wait_until("no slot held while its body is drained", || inner.in_flight.load(Ordering::SeqCst) == 0);
+        drop(s);
+        wait_until("the refused connection to close", || lock(&inner.per_ip).is_empty());
+
+        // A known device that never sends its body loses its slot after the deadline.
+        let slow: Vec<TcpStream> = (0..MAX_PER_IP).map(|_| slow_client(port, &dev.id)).collect();
+        wait_until("every slow request to give its slot back", || inner.in_flight.load(Ordering::SeqCst) == 0 && lock(&inner.per_ip).values().sum::<usize>() == MAX_PER_IP);
+        // Its address still holds MAX_PER_IP connections: one more is refused…
+        assert_eq!(http(port, "GET", "/v1/ping", &[], b"").0, 503);
+        // …until they go away.
+        drop(slow);
+        wait_until("the slow connections to close", || lock(&inner.per_ip).is_empty());
+        assert_eq!(http(port, "GET", "/v1/ping", &[], b"").0, 200);
+        stop(&inner);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn versions_unseen_devices_and_the_progress_throttle() {
+        use std::cmp::Ordering as O;
+        assert_eq!(major_minor("0.6.3"), Some((0, 6)));
+        assert_eq!(major_minor("v1.2.0-beta"), Some((1, 2)));
+        assert_eq!(major_minor("x"), None);
+        assert_eq!(compare_versions("0.6.9", "0.6.1"), Some(O::Equal), "patches talk to each other");
+        assert_eq!(compare_versions("0.7.0", "0.6.5"), Some(O::Greater));
+        assert_eq!(compare_versions("0.5.9", "0.6.0"), Some(O::Less));
+        assert_eq!(compare_versions("?", "0.6.0"), None);
+
+        let mut file = SyncFile::default();
+        let now = 1_000_000_000;
+        let fresh = add_device(&mut file, now).unwrap();
+        let mut old = add_device(&mut file, now - UNSEEN_TTL_MS - 1).unwrap();
+        old.last_seen_ms = None;
+        let mut seen = add_device(&mut file, now - UNSEEN_TTL_MS * 10).unwrap();
+        seen.last_seen_ms = Some(now);
+        file.devices = vec![fresh.clone(), old, seen.clone()];
+        assert!(expire_unseen(&mut file, now));
+        assert_eq!(file.devices.iter().map(|d| d.id.clone()).collect::<Vec<_>>(), vec![fresh.id, seen.id]);
+        assert!(!expire_unseen(&mut file, now));
+
+        // At most one event a second per item, and the last move always gets one.
+        let t0 = Instant::now();
+        let mut e = (t0, None);
+        assert_eq!(progress_step(&mut e, t0), Some(Duration::ZERO));
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        assert_eq!(progress_step(&mut e, ms(200)), Some(Duration::from_millis(800)), "a trailing one");
+        assert_eq!(progress_step(&mut e, ms(500)), None, "already covered");
+        assert_eq!(progress_step(&mut e, ms(1200)), Some(Duration::from_millis(800)), "after the trailing one fired: the next one");
+        assert_eq!(progress_step(&mut e, ms(5000)), Some(Duration::ZERO));
     }
 
     #[test]

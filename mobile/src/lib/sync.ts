@@ -20,10 +20,14 @@ export type Item = {
 };
 
 export type Change = { kind: Kind; id: string; text: string; baseHash: string };
+/** A gone item keeps the base hash its edit started from (absent on older states). */
+export type GoneItem = Item & { baseHash?: string };
 /** `title`: the item's name when the edit was made, so an edit kept across
  * a re-pairing can still be shown (and copied) before any snapshot. */
 export type PendingEdit = Change & { editedAt: number; title?: string };
-export type PushResult = { kind: Kind; id: string; status: "applied" | "conflict" | "missing"; note: string; noteHash: string };
+/** "too long": both sides changed the note and the merge would pass
+ * MAX_NOTE_CHARS; the computer wrote nothing and the phone keeps its text. */
+export type PushResult = { kind: Kind; id: string; status: "applied" | "conflict" | "missing" | "too long"; note: string; noteHash: string };
 
 export type SyncState = {
   items: Item[];
@@ -35,7 +39,10 @@ export type SyncState = {
   conflicts: Record<string, number>;
   /** Items the desktop no longer has ("missing" on push), kept with the
    * phone's text so nothing typed is lost. By itemKey. */
-  gone: Record<string, Item>;
+  gone: Record<string, GoneItem>;
+  /** Edits the computer refused as too long to merge, by itemKey → when.
+   * Not sent again until edited (optional: older saved states lack it). */
+  tooLong?: Record<string, number>;
   helloDone: boolean;
   /** The pending edits were made against another pairing (unpaired, then
    * paired again): the next sync pulls a snapshot first and re-bases them. */
@@ -82,12 +89,27 @@ export function parseItem(raw: unknown): Item | null {
   };
 }
 
-export function parseSnapshot(body: unknown): { items: Item[]; generatedAt: number } | null {
+/** An item the desktop moved to a new id (a renamed or relinked song, a
+ * moved beat, "Continue in FL Studio"): `/v1/snapshot`'s optional `renamed`. */
+export type Renamed = { kind: Kind; from: string; to: string };
+
+export type Snapshot = { items: Item[]; generatedAt: number; renamed?: Renamed[] };
+
+export function parseRenamed(raw: unknown): Renamed[] {
+  if (!Array.isArray(raw)) return [];
+  const out: Renamed[] = [];
+  for (const r of raw.slice(0, 1000) as Record<string, unknown>[]) {
+    if (r && isKind(r.kind) && typeof r.from === "string" && typeof r.to === "string" && r.from && r.to && r.from !== r.to) out.push({ kind: r.kind, from: r.from, to: r.to });
+  }
+  return out;
+}
+
+export function parseSnapshot(body: unknown): Snapshot | null {
   if (!body || typeof body !== "object") return null;
   const b = body as Record<string, unknown>;
   if (!Array.isArray(b.items)) return null;
   const items = b.items.map(parseItem).filter((i): i is Item => i !== null);
-  return { items, generatedAt: typeof b.generatedAt === "number" ? b.generatedAt : Date.now() };
+  return { items, generatedAt: typeof b.generatedAt === "number" ? b.generatedAt : Date.now(), renamed: parseRenamed(b.renamed) };
 }
 
 export function parsePushResults(body: unknown): PushResult[] | null {
@@ -97,7 +119,7 @@ export function parsePushResults(body: unknown): PushResult[] | null {
     if (!raw || typeof raw !== "object") continue;
     const r = raw as Record<string, unknown>;
     if (!isKind(r.kind) || typeof r.id !== "string") continue;
-    if (r.status !== "applied" && r.status !== "conflict" && r.status !== "missing") continue;
+    if (r.status !== "applied" && r.status !== "conflict" && r.status !== "missing" && r.status !== "too long") continue;
     const note = typeof r.note === "string" ? r.note : "";
     out.push({ kind: r.kind, id: r.id, status: r.status, note, noteHash: typeof r.noteHash === "string" ? r.noteHash : fnv1a(note) });
   }
@@ -159,7 +181,11 @@ export function editNote(state: SyncState, kind: Kind, id: string, text: string,
     const title = item?.title ?? prev?.title;
     pending[k] = { kind, id, text: clipped, baseHash, editedAt: now, ...(title ? { title } : {}) };
   }
-  return { ...state, pending };
+  // Edited since the computer said "too long": it may go again.
+  if (state.tooLong?.[k] === undefined) return { ...state, pending };
+  const tooLong = { ...state.tooLong };
+  delete tooLong[k];
+  return { ...state, pending, tooLong };
 }
 
 /** The next batch to push, oldest edit first: at most MAX_CHANGES and
@@ -167,7 +193,10 @@ export function editNote(state: SyncState, kind: Kind, id: string, text: string,
 export function pendingChanges(state: SyncState): Change[] {
   const out: Change[] = [];
   let bytes = 0;
-  for (const { kind, id, text, baseHash } of Object.values(state.pending).sort((a, b) => a.editedAt - b.editedAt)) {
+  for (const { kind, id, text, baseHash, editedAt } of Object.values(state.pending).sort((a, b) => a.editedAt - b.editedAt)) {
+    // Refused as too long and not edited since: sending it again would fail again.
+    const refused = state.tooLong?.[itemKey(kind, id)];
+    if (refused !== undefined && editedAt <= refused) continue;
     const size = utf8(text).length + utf8(id).length + 64;
     if (out.length >= MAX_CHANGES || (out.length > 0 && bytes + size > MAX_PUSH_TEXT_BYTES)) break;
     out.push({ kind, id, text, baseHash });
@@ -182,6 +211,7 @@ export function applyPushResults(state: SyncState, sent: Change[], results: Push
   const pending = { ...state.pending };
   const conflicts = { ...state.conflicts };
   const gone = { ...state.gone };
+  const tooLong = { ...(state.tooLong ?? {}) };
   let items = state.items;
   for (const r of results) {
     const k = itemKey(r.kind, r.id);
@@ -193,12 +223,22 @@ export function applyPushResults(state: SyncState, sent: Change[], results: Push
       // Deleted on the desktop since: keep the phone's text, marked as gone.
       const text = cur?.text ?? was.text;
       const base = findItem(state, r.kind, r.id) ?? bareItem(r.kind, r.id, cur?.title);
-      gone[k] = { ...base, note: text, noteHash: fnv1a(text) };
+      // The base it was edited from: if the item only moved (`renamed`), the
+      // edit goes to its new id against the same base (a merge, never an overwrite).
+      gone[k] = { ...base, note: text, noteHash: fnv1a(text), baseHash: cur?.baseHash ?? was.baseHash };
       delete pending[k];
       delete conflicts[k];
       items = items.filter((i) => !(i.kind === r.kind && i.id === r.id));
       continue;
     }
+    if (r.status === "too long") {
+      // Nothing written on the computer: its note stays, the phone keeps its
+      // edit pending (not resent until edited) and says why.
+      items = items.map((i) => (i.kind === r.kind && i.id === r.id ? { ...i, note: r.note, noteHash: r.noteHash } : i));
+      tooLong[k] = now;
+      continue;
+    }
+    delete tooLong[k];
     items = items.map((i) => (i.kind === r.kind && i.id === r.id ? { ...i, note: r.note, noteHash: r.noteHash } : i));
     if (r.status === "conflict") conflicts[k] = now;
     if (unchanged) delete pending[k];
@@ -210,21 +250,69 @@ export function applyPushResults(state: SyncState, sent: Change[], results: Push
     // After a conflict a newer edit keeps its old base: the next push
     // conflicts again and the desktop keeps both texts. Nothing is lost.
   }
-  return { ...state, items, pending, conflicts, gone };
+  return { ...state, items, pending, conflicts, gone, tooLong };
 }
 
 /** Replaces the cached items with a fresh snapshot. Pending edits stay on
  * top. A gone item that came back (relinked folder) becomes a normal edit
  * again, so its text goes to the desktop on the next push. */
-export function applySnapshot(state: SyncState, snap: { items: Item[]; generatedAt: number }, now: number): SyncState {
-  let next: SyncState = { ...state, items: snap.items, generatedAt: snap.generatedAt, lastSyncAt: now };
-  for (const [k, g] of Object.entries(state.gone)) {
+export function applySnapshot(state: SyncState, snap: Snapshot, now: number): SyncState {
+  let next: SyncState = { ...applyRenames(state, snap, now), items: snap.items, generatedAt: snap.generatedAt, lastSyncAt: now };
+  for (const [k, g] of Object.entries(next.gone)) {
     const back = snap.items.find((i) => itemKey(i.kind, i.id) === k);
     if (!back) continue;
     next = forgetGone(next, g.kind, g.id);
     if (g.note !== back.note) next = editNote(next, g.kind, g.id, g.note, now);
   }
   return next;
+}
+
+/**
+ * Follows the desktop's `renamed` list: a pending edit, a gone item, a
+ * conflict mark and a "too long" mark under an old id move to the new one.
+ * A gone item whose new id is in the snapshot becomes a pending edit again,
+ * against the base it was edited from (unknown: "", so the desktop merges
+ * instead of overwriting). An edit already pending under the new id wins.
+ */
+export function applyRenames(state: SyncState, snap: Snapshot, now: number): SyncState {
+  const renamed = snap.renamed ?? [];
+  if (renamed.length === 0) return state;
+  const there = indexOf(snap.items);
+  const pending = { ...state.pending };
+  const gone = { ...state.gone };
+  const conflicts = { ...state.conflicts };
+  const tooLong = { ...(state.tooLong ?? {}) };
+  let changed = false;
+  for (const r of renamed) {
+    const from = itemKey(r.kind, r.from);
+    const to = itemKey(r.kind, r.to);
+    const p = pending[from];
+    if (p) {
+      delete pending[from];
+      if (!pending[to]) pending[to] = { ...p, id: r.to };
+      changed = true;
+    }
+    const g = gone[from];
+    if (g) {
+      delete gone[from];
+      const item = there.get(to);
+      if (pending[to]) {
+        // Already being edited under the new id: keep both texts.
+        if (pending[to].text !== g.note) gone[to] = { ...g, id: r.to };
+      } else if (item) {
+        if (item.note !== g.note) pending[to] = { kind: r.kind, id: r.to, text: g.note, baseHash: g.baseHash ?? "", editedAt: now, title: g.title };
+      } else gone[to] = { ...g, id: r.to };
+      changed = true;
+    }
+    for (const marks of [conflicts, tooLong]) {
+      if (marks[from] !== undefined) {
+        if (marks[to] === undefined) marks[to] = marks[from];
+        delete marks[from];
+        changed = true;
+      }
+    }
+  }
+  return changed ? { ...state, pending, gone, conflicts, tooLong } : state;
 }
 
 /** An item known only by its key (and maybe the title it had). */
@@ -281,7 +369,8 @@ export function parseEdits(raw: unknown): Edits {
   if (r.gone && typeof r.gone === "object") {
     for (const [k, v] of Object.entries(r.gone as Record<string, unknown>)) {
       const g = parseItem(v);
-      if (g && k === itemKey(g.kind, g.id)) out.gone[k] = g;
+      const base = (v as { baseHash?: unknown } | null)?.baseHash;
+      if (g && k === itemKey(g.kind, g.id)) out.gone[k] = typeof base === "string" ? { ...g, baseHash: base } : g;
     }
   }
   return out;
@@ -322,11 +411,15 @@ export async function runSync(
   set: (s: SyncState) => void,
   hello: { phoneName: string; appVersion: string },
   now: () => number,
-): Promise<{ desktopName?: string; conflicts: number; missing: number }> {
+  /** Say hello even after the first time (once per app run: versions change). */
+  opts: { hello?: boolean } = {},
+): Promise<{ desktopName?: string; desktopVersion?: string; conflicts: number; missing: number }> {
   let desktopName: string | undefined;
-  if (!get().helloDone) {
-    const h = (await call("/v1/hello", hello)) as { desktopName?: unknown } | null;
+  let desktopVersion: string | undefined;
+  if (!get().helloDone || opts.hello) {
+    const h = (await call("/v1/hello", hello)) as { desktopName?: unknown; hivoVersion?: unknown } | null;
     if (h && typeof h.desktopName === "string" && h.desktopName.trim()) desktopName = h.desktopName.trim().slice(0, 80);
+    if (h && typeof h.hivoVersion === "string") desktopVersion = h.hivoVersion.slice(0, 20);
     set({ ...get(), helloDone: true });
   }
   // Edits kept from an earlier pairing: see what this computer has first.
@@ -338,21 +431,34 @@ export async function runSync(
   let conflicts = 0;
   let missing = 0;
   // Push in batches until the queue is empty (or stops shrinking).
-  for (let round = 0; round < 50; round++) {
-    const changes = pendingChanges(get());
-    if (changes.length === 0) break;
-    const results = parsePushResults(await call("/v1/notes", { changes }));
-    if (!results) throw new Error("bad notes response");
-    conflicts += results.filter((r) => r.status === "conflict").length;
-    missing += results.filter((r) => r.status === "missing").length;
-    const before = Object.keys(get().pending).length;
-    set(applyPushResults(get(), changes, results, now()));
-    if (Object.keys(get().pending).length >= before) break;
-  }
+  const push = async () => {
+    for (let round = 0; round < 50; round++) {
+      const changes = pendingChanges(get());
+      if (changes.length === 0) break;
+      const results = parsePushResults(await call("/v1/notes", { changes }));
+      if (!results) throw new Error("bad notes response");
+      conflicts += results.filter((r) => r.status === "conflict").length;
+      missing += results.filter((r) => r.status === "missing").length;
+      const before = Object.keys(get().pending).length;
+      set(applyPushResults(get(), changes, results, now()));
+      if (Object.keys(get().pending).length >= before) break;
+    }
+  };
+  await push();
   const snap = parseSnapshot(await call("/v1/snapshot", {}));
   if (!snap) throw new Error("bad snapshot response");
-  set(applySnapshot(get(), snap, now()));
-  return { desktopName, conflicts, missing };
+  const before = get();
+  set(applySnapshot(before, snap, now()));
+  // Edits that followed a renamed item go now, not at the next sync (and
+  // weren't really missing: the item only moved).
+  const renamed = applyRenames(before, snap, now());
+  if (renamed !== before && pendingChanges(get()).length > 0) {
+    missing = Math.max(0, missing - Object.keys(before.gone).filter((k) => !(k in renamed.gone)).length);
+    await push();
+    const again = parseSnapshot(await call("/v1/snapshot", {}));
+    if (again) set(applySnapshot(get(), again, now()));
+  }
+  return { desktopName, desktopVersion, conflicts, missing };
 }
 
 /** Search + tab filter for the Library. */

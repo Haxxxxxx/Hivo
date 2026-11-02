@@ -44,12 +44,18 @@ fn candidate_paths() -> Vec<PathBuf> {
     out
 }
 
-/// The ffmpeg from Settings (already checked to be ffmpeg), else
-/// FFMPEG_PATH, else the first ffmpeg found on PATH or in the usual install
-/// folders. Only files called ffmpeg / ffmpeg.exe are ever run.
+/// The ffmpeg to run: only the one saved in Settings (picked by hand, or a
+/// found one the user confirmed), and only if it's still a file called
+/// ffmpeg / ffmpeg.exe. Nothing found on PATH runs before it's confirmed.
 pub fn find_ffmpeg(configured: Option<PathBuf>) -> Option<PathBuf> {
+    configured.filter(|p| crate::scope::is_ffmpeg(p))
+}
+
+/// An ffmpeg on this machine (FFMPEG_PATH, then PATH and the usual install
+/// folders), for Settings to show and the user to confirm. Never run here.
+pub fn detect_ffmpeg() -> Option<PathBuf> {
     let env = std::env::var_os("FFMPEG_PATH").map(PathBuf::from);
-    configured.into_iter().chain(env).chain(candidate_paths()).find(|p| crate::scope::is_ffmpeg(p))
+    env.into_iter().chain(candidate_paths()).find(|p| crate::scope::is_ffmpeg(p))
 }
 
 /// Best available H.264 encoder from `ffmpeg -encoders` output.
@@ -78,8 +84,49 @@ fn encoder_args(encoder: &str) -> Vec<String> {
     v.iter().map(|s| s.to_string()).collect()
 }
 
+/// Furthest into a mixdown a short may start (a song, not a DJ set).
+pub const MAX_START_SEC: f64 = 3.0 * 3600.0;
+/// Biggest layout PNG accepted (the app's are ~1-3 MB).
+const MAX_LAYOUT_BYTES: usize = 16 * 1024 * 1024;
+const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+/// ffmpeg's demuxer for a mixdown, by extension: the format is forced so a
+/// file that's really something else (a playlist, a concat list) is never
+/// probed as that. None for anything a mixdown can't be.
+pub fn audio_format(path: &Path) -> Option<&'static str> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "wav" => Some("wav"),
+        "mp3" => Some("mp3"),
+        "flac" => Some("flac"),
+        "ogg" => Some("ogg"),
+        _ => None,
+    }
+}
+
+/// The layout image as sent by the app: a PNG (magic + IHDR), not too big.
+pub fn check_layout_png(bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() > MAX_LAYOUT_BYTES {
+        return Err("the layout image is too large".to_string());
+    }
+    if bytes.len() < 24 || !bytes.starts_with(PNG_MAGIC) || &bytes[12..16] != b"IHDR" {
+        return Err("the layout image isn't a PNG".to_string());
+    }
+    let dim = |i: usize| u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+    let (w, h) = (dim(16), dim(20));
+    if w == 0 || h == 0 || w > 4096 || h > 4096 {
+        return Err("the layout image has an odd size".to_string());
+    }
+    Ok(())
+}
+
+/// Whether a clip range can be rendered.
+pub fn valid_range(start: f64, length: f64) -> bool {
+    start.is_finite() && length.is_finite() && length > 0.0 && length <= 90.0 && (0.0..=MAX_START_SEC).contains(&start)
+}
+
 /// The full ffmpeg argument list for one short (pure, so it's testable).
-pub fn build_args(layout: &Path, master: &Path, start: f64, length: f64, encoder: &str, out: &Path) -> Vec<String> {
+/// `audio_fmt` is `audio_format(master)`.
+pub fn build_args(layout: &Path, master: &Path, audio_fmt: &str, start: f64, length: f64, encoder: &str, out: &Path) -> Vec<String> {
     let fade_out = (length - 0.6).max(0.0);
     let filter = format!(
         "[1:a]asplit=2[aw][ao];\
@@ -92,8 +139,10 @@ pub fn build_args(layout: &Path, master: &Path, start: f64, length: f64, encoder
         "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
         // Plain local files only: a mixdown that is really a playlist can't
         // make ffmpeg open other files or URLs.
-        "-protocol_whitelist", "file", "-loop", "1", "-framerate", &FPS.to_string(), "-i", &format!("file:{}", layout.to_string_lossy()),
-        "-protocol_whitelist", "file", "-ss", &format!("{start:.3}"), "-t", &format!("{length:.3}"), "-i", &format!("file:{}", master.to_string_lossy()),
+        // Formats are forced: the layout is read as a PNG image and the
+        // mixdown with the demuxer its extension names, nothing probed.
+        "-protocol_whitelist", "file", "-f", "image2", "-c:v", "png", "-loop", "1", "-framerate", &FPS.to_string(), "-i", &format!("file:{}", layout.to_string_lossy()),
+        "-protocol_whitelist", "file", "-f", audio_fmt, "-ss", &format!("{start:.3}"), "-t", &format!("{length:.3}"), "-i", &format!("file:{}", master.to_string_lossy()),
         "-filter_complex", &filter,
         "-map", "[v]", "-map", "[a]",
         "-t", &format!("{length:.3}"), "-r", &FPS.to_string(),
@@ -148,7 +197,10 @@ fn run_ffmpeg(ffmpeg: &Path, args: &[String]) -> Result<(), String> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShortsStatus {
+    /// The ffmpeg saved in Settings (the only one ever run).
     pub path: Option<String>,
+    /// An ffmpeg found on this machine but not confirmed yet (never run).
+    pub found: Option<String>,
     pub encoder: Option<String>,
     pub error: Option<String>,
 }
@@ -157,14 +209,14 @@ pub struct ShortsStatus {
 pub async fn shorts_status(app: tauri::AppHandle) -> ShortsStatus {
     let configured = crate::scope::Scope::load(&app).ok().and_then(|s| s.ffmpeg());
     tauri::async_runtime::spawn_blocking(move || match find_ffmpeg(configured) {
-        None => ShortsStatus { path: None, encoder: None, error: None },
+        None => ShortsStatus { path: None, found: detect_ffmpeg().map(|p| p.to_string_lossy().into()), encoder: None, error: None },
         Some(p) => match encoder_for(&p) {
-            Ok(e) => ShortsStatus { path: Some(p.to_string_lossy().into()), encoder: Some(e.into()), error: None },
-            Err(err) => ShortsStatus { path: Some(p.to_string_lossy().into()), encoder: None, error: Some(err) },
+            Ok(e) => ShortsStatus { path: Some(p.to_string_lossy().into()), found: None, encoder: Some(e.into()), error: None },
+            Err(err) => ShortsStatus { path: Some(p.to_string_lossy().into()), found: None, encoder: None, error: Some(err) },
         },
     })
     .await
-    .unwrap_or(ShortsStatus { path: None, encoder: None, error: Some("couldn't check for ffmpeg".into()) })
+    .unwrap_or(ShortsStatus { path: None, found: None, encoder: None, error: Some("couldn't check for ffmpeg".into()) })
 }
 
 #[derive(Debug, Deserialize)]
@@ -216,31 +268,33 @@ fn decode_base64(s: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// Renders each clip to `<export>/Launch Kits/<song>/shorts/<label>.mp4`.
+/// Renders each clip to `<export>/Launch Kits/<song>/shorts/<label>.mp4`
+/// (`song` = the workspace key, `previous_folder` = the kit folder the app
+/// recorded for it, see `kits::resolve_kit_dir`).
 #[tauri::command]
 pub async fn render_shorts(
     app: tauri::AppHandle,
+    song: String,
     master: String,
     clips: Vec<ShortClip>,
     folder_name: String,
+    previous_folder: Option<String>,
 ) -> Result<Vec<ShortResult>, String> {
     let scope = crate::scope::Scope::load(&app)?;
     let configured = scope.ffmpeg();
+    let owner = crate::kits::kit_owner(&scope.known_file(&song)?.to_string_lossy());
     let master = scope.audio(&master)?.to_string_lossy().to_string();
     let output_folder = scope.output()?.to_string_lossy().to_string();
     tauri::async_runtime::spawn_blocking(move || {
-        let ffmpeg = find_ffmpeg(configured)
-            .ok_or("ffmpeg isn't installed (or wasn't found). See Settings → Shorts.")?;
+        let ffmpeg = find_ffmpeg(configured).ok_or("ffmpeg isn't set up yet. See Settings → Shorts (ffmpeg).")?;
         let encoder = encoder_for(&ffmpeg)?;
         let master = PathBuf::from(&master);
         if !master.is_file() {
             return Err(format!("The mixdown is missing: {}", master.display()));
         }
-        let out_dir = PathBuf::from(&output_folder)
-            .join(crate::scanner::LAUNCH_KITS_DIR)
-            .join(safe_name(&folder_name))
-            .join("shorts");
-        fs::create_dir_all(&out_dir).map_err(|e| format!("could not create {}: {e}", out_dir.display()))?;
+        let audio_fmt = audio_format(&master).ok_or("That mixdown isn't WAV, MP3, FLAC or OGG.")?;
+        let kit = crate::kits::resolve_kit_dir(Path::new(&output_folder), &folder_name, &owner, previous_folder.as_deref())?;
+        let out_dir = crate::kits::sub_dir(&kit, "shorts")?;
         let temp = std::env::temp_dir().join(format!("flsm-shorts-{}", std::process::id()));
         fs::create_dir_all(&temp).map_err(|e| format!("could not create a temp folder: {e}"))?;
 
@@ -248,13 +302,20 @@ pub async fn render_shorts(
             .iter()
             .map(|clip| {
                 let render = || -> Result<PathBuf, String> {
-                    if !(clip.length_sec > 0.0 && clip.length_sec <= 90.0 && clip.start_sec >= 0.0) {
+                    if !valid_range(clip.start_sec, clip.length_sec) {
                         return Err("invalid clip range".to_string());
                     }
+                    if clip.layout_png.len() > MAX_LAYOUT_BYTES * 4 / 3 + 64 {
+                        return Err("the layout image is too large".to_string());
+                    }
+                    let png = decode_base64(&clip.layout_png)?;
+                    check_layout_png(&png)?;
                     let layout = temp.join(format!("{}.png", safe_name(&clip.label)));
-                    fs::write(&layout, decode_base64(&clip.layout_png)?).map_err(|e| format!("could not write the layout: {e}"))?;
+                    fs::write(&layout, png).map_err(|e| format!("could not write the layout: {e}"))?;
                     let out = out_dir.join(format!("{}.mp4", safe_name(&clip.label)));
-                    let result = run_ffmpeg(&ffmpeg, &build_args(&layout, &master, clip.start_sec, clip.length_sec, encoder, &out));
+                    // ffmpeg -y would write through a planted link.
+                    crate::kits::clear_target(&out).map_err(|e| format!("could not write {}: {e}", out.display()))?;
+                    let result = run_ffmpeg(&ffmpeg, &build_args(&layout, &master, audio_fmt, clip.start_sec, clip.length_sec, encoder, &out));
                     let _ = fs::remove_file(&layout);
                     result.map(|_| out)
                 };
@@ -285,10 +346,10 @@ mod tests {
 
     #[test]
     fn builds_a_nine_by_sixteen_command() {
-        let args = build_args(Path::new("/tmp/l.png"), Path::new("/tmp/m.wav"), 12.5, 15.0, "libx264", Path::new("/tmp/o.mp4"));
+        let args = build_args(Path::new("/tmp/l.png"), Path::new("/tmp/m.wav"), "wav", 12.5, 15.0, "libx264", Path::new("/tmp/o.mp4"));
         let joined = args.join(" ");
-        assert!(joined.contains("-protocol_whitelist file -ss 12.500 -t 15.000 -i file:/tmp/m.wav"), "{joined}");
-        assert!(joined.contains("-protocol_whitelist file -loop 1"), "{joined}");
+        assert!(joined.contains("-protocol_whitelist file -f wav -ss 12.500 -t 15.000 -i file:/tmp/m.wav"), "{joined}");
+        assert!(joined.contains("-protocol_whitelist file -f image2 -c:v png -loop 1"), "{joined}");
         assert!(joined.contains("scale=1080:1920"));
         // Default draw=scale makes the strokes ~6% opaque (murky on dark).
         assert!(joined.contains("draw=full"));
@@ -302,6 +363,32 @@ mod tests {
         assert_eq!(decode_base64("aGVsbG8=").unwrap(), b"hello");
         assert_eq!(decode_base64("data:image/png;base64,aGk=").unwrap(), b"hi");
         assert!(decode_base64("a$b=").is_err());
+    }
+
+    #[test]
+    fn forces_formats_and_checks_inputs() {
+        assert_eq!(audio_format(Path::new("/m/Mix.WAV")), Some("wav"));
+        assert_eq!(audio_format(Path::new("/m/mix.flac")), Some("flac"));
+        assert_eq!(audio_format(Path::new("/m/list.m3u8")), None);
+        assert_eq!(audio_format(Path::new("/m/mix")), None);
+
+        let mut png = PNG_MAGIC.to_vec();
+        png.extend_from_slice(&[0, 0, 0, 13]);
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&1080u32.to_be_bytes());
+        png.extend_from_slice(&1920u32.to_be_bytes());
+        assert!(check_layout_png(&png).is_ok());
+        assert!(check_layout_png(b"GIF89a not a png at all.....").is_err());
+        let mut huge = png.clone();
+        huge[16..20].copy_from_slice(&100_000u32.to_be_bytes());
+        assert!(check_layout_png(&huge).is_err());
+        assert!(check_layout_png(&vec![0u8; MAX_LAYOUT_BYTES + 1]).is_err());
+
+        assert!(valid_range(12.0, 15.0));
+        assert!(!valid_range(MAX_START_SEC + 1.0, 15.0));
+        assert!(!valid_range(f64::NAN, 15.0));
+        assert!(!valid_range(-1.0, 15.0));
+        assert!(!valid_range(0.0, 91.0));
     }
 
     #[test]
@@ -323,7 +410,7 @@ mod tests {
     #[test]
     fn renders_a_given_layout() {
         let (Ok(layout), Ok(out)) = (std::env::var("FLSM_SHORT_LAYOUT"), std::env::var("FLSM_SHORT_OUT")) else { return };
-        let ffmpeg = find_ffmpeg(None).expect("ffmpeg");
+        let ffmpeg = detect_ffmpeg().expect("ffmpeg");
         let rate = 44100u32;
         // A pulsing tone so the waveform visibly moves.
         let tone: Vec<f32> = (0..rate * 8)
@@ -335,7 +422,7 @@ mod tests {
             .collect();
         let master = std::env::temp_dir().join(format!("flsm-given-{}.wav", std::process::id()));
         crate::audio::write_wav(&master, &tone, 1, rate).unwrap();
-        let result = run_ffmpeg(&ffmpeg, &build_args(Path::new(&layout), &master, 0.0, 6.0, encoder_for(&ffmpeg).unwrap(), Path::new(&out)));
+        let result = run_ffmpeg(&ffmpeg, &build_args(Path::new(&layout), &master, "wav", 0.0, 6.0, encoder_for(&ffmpeg).unwrap(), Path::new(&out)));
         let _ = fs::remove_file(&master);
         result.expect("render");
     }
@@ -344,7 +431,7 @@ mod tests {
     /// short must come out 1080×1920 H.264 + AAC, about 3 s long.
     #[test]
     fn renders_a_real_short_if_ffmpeg_is_installed() {
-        let Some(ffmpeg) = find_ffmpeg(None) else {
+        let Some(ffmpeg) = detect_ffmpeg() else {
             eprintln!("ffmpeg not found; skipping");
             return;
         };
@@ -363,7 +450,7 @@ mod tests {
             .unwrap();
         assert!(made.success());
         let out = dir.join("short.mp4");
-        run_ffmpeg(&ffmpeg, &build_args(&layout, &master, 1.0, 3.0, encoder, &out)).expect("render");
+        run_ffmpeg(&ffmpeg, &build_args(&layout, &master, "wav", 1.0, 3.0, encoder, &out)).expect("render");
         let probe = Command::new(ffmpeg.with_file_name(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" }))
             .args(["-v", "error", "-show_entries", "stream=codec_name,width,height:format=duration", "-of", "default=nw=1"])
             .arg(&out)

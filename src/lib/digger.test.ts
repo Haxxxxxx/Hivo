@@ -98,8 +98,9 @@ describe("digger links", () => {
     expect(matchBeat({ title: "Night" }, beats)).toBe(beats[0]);
     expect(matchBeat({ title: "Night" }, beats, null)).toBeNull();
     expect(matchBeat({ title: "Night" }, beats, "/b/other.mp3")).toBe(beats[1]);
-    // The linked file is gone: nothing, not a guess.
-    expect(matchBeat({ title: "Night" }, beats, "/b/gone.mp3")).toBeNull();
+    // The linked file is gone from the scan: back to the name match.
+    expect(matchBeat({ title: "Night" }, beats, "/b/gone.mp3")).toBe(beats[0]);
+    expect(matchBeat({ title: "Elsewhere" }, beats, "/b/gone.mp3")).toBeNull();
   });
 
   it("normalises YouTube addresses so one video is one lead", () => {
@@ -111,20 +112,59 @@ describe("digger links", () => {
     expect(canonicalUrl(" https://www.beatstars.com/beat/night-123 ")).toBe("https://www.beatstars.com/beat/night-123");
   });
 
-  it("re-attaches notes to a renamed or moved beat", () => {
-    const notes = { "/b/old name.mp3": "hook idea", "/b/kept.mp3": "x" };
-    const sizes = { "/b/old name.mp3": 1234, "/b/kept.mp3": 9 };
-    // Renamed: same size, one candidate.
-    const renamed = relinkBeatNotes(notes, sizes, [{ path: "/b/kept.mp3", name: "kept", sizeBytes: 9 }, { path: "/b/new name.mp3", name: "new name", sizeBytes: 1234 }, { path: "/b/z.mp3", name: "z", sizeBytes: 5 }]);
-    expect(renamed?.notes).toEqual({ "/b/new name.mp3": "hook idea", "/b/kept.mp3": "x" });
-    expect(renamed?.sizes["/b/new name.mp3"]).toBe(1234);
-    // Moved: same file name in another folder.
-    expect(relinkBeatNotes(notes, {}, [{ path: "/b/kept.mp3", name: "kept", sizeBytes: 9 }, { path: "/b/sub/old name.mp3", name: "old name", sizeBytes: 1 }])?.notes["/b/sub/old name.mp3"]).toBe("hook idea");
-    // Two beats of that size: no guess.
-    expect(relinkBeatNotes(notes, sizes, [{ path: "/b/a.mp3", name: "a", sizeBytes: 1234 }, { path: "/b/b.mp3", name: "b", sizeBytes: 1234 }])).toBeNull();
-    // Nothing lost: nothing to do.
-    expect(relinkBeatNotes(notes, sizes, [{ path: "/b/old name.mp3", name: "old name", sizeBytes: 1234 }, { path: "/b/kept.mp3", name: "kept", sizeBytes: 9 }])).toBeNull();
-    expect(relinkBeatNotes(undefined, undefined, [])).toBeNull();
+  describe("notes and lead links follow a moved beat", () => {
+    const b = (path: string, sizeBytes: number) => ({ path, name: path.split("/").pop()!.replace(/\.[^.]+$/, ""), sizeBytes });
+    const links = { beatNotes: { "/b/Untitled.mp3": "hook idea", "/b/kept.mp3": "x" }, beatNoteSizes: { "/b/Untitled.mp3": 1234, "/b/kept.mp3": 9 } };
+
+    it("moves on the same name AND size, keeping a tombstone", () => {
+      const next = relinkBeatNotes(links, [b("/b/kept.mp3", 9), b("/b/sub/Untitled.mp3", 1234)], true);
+      expect(next?.beatNotes).toEqual({ "/b/sub/Untitled.mp3": "hook idea", "/b/kept.mp3": "x" });
+      expect(next?.beatNoteSizes).toEqual({ "/b/sub/Untitled.mp3": 1234, "/b/kept.mp3": 9 });
+      expect(next?.beatNoteMoves).toEqual({ "/b/Untitled.mp3": { to: "/b/sub/Untitled.mp3", size: 1234, text: "hook idea" } });
+    });
+
+    it("never guesses on the name or the size alone", () => {
+      // Another "Untitled" of another size, a same-size file of another name.
+      expect(relinkBeatNotes(links, [b("/b/kept.mp3", 9), b("/b/other/Untitled.mp3", 999), b("/b/renamed.mp3", 1234)], true)).toBeNull();
+      // Two files fit: no guess.
+      expect(relinkBeatNotes(links, [b("/b/kept.mp3", 9), b("/b/x/Untitled.mp3", 1234), b("/b/y/Untitled.mp3", 1234)], true)).toBeNull();
+      // A noted beat is never a target.
+      const both = { beatNotes: { "/b/Untitled.mp3": "a", "/b/x/Untitled.mp3": "b" }, beatNoteSizes: { "/b/Untitled.mp3": 1, "/b/x/Untitled.mp3": 1 } };
+      expect(relinkBeatNotes(both, [b("/b/x/Untitled.mp3", 1)], true)).toBeNull();
+    });
+
+    it("does nothing after a capped scan or with a beats folder unreachable", () => {
+      // `complete` is false for both (useDigger: !capped && !unreachable).
+      expect(relinkBeatNotes(links, [b("/b/kept.mp3", 9), b("/b/sub/Untitled.mp3", 1234)], false)).toBeNull();
+    });
+
+    it("restores the note when the old path comes back, forgets the tombstone once confirmed", () => {
+      const moved = relinkBeatNotes(links, [b("/b/kept.mp3", 9), b("/b/sub/Untitled.mp3", 1234)], true)!;
+      // The old file is back (it was a copy, or a drive came back): its note too.
+      const back = relinkBeatNotes(moved, [b("/b/kept.mp3", 9), b("/b/sub/Untitled.mp3", 1234), b("/b/Untitled.mp3", 1234)], false);
+      expect(back?.beatNotes["/b/Untitled.mp3"]).toBe("hook idea");
+      expect(back?.beatNotes["/b/sub/Untitled.mp3"]).toBe("hook idea");
+      expect(back?.beatNoteMoves).toEqual({});
+      // A partial scan never confirms; a complete one that sees the new path does.
+      expect(relinkBeatNotes(moved, [b("/b/sub/Untitled.mp3", 1234)], false)).toBeNull();
+      expect(relinkBeatNotes(moved, [b("/b/kept.mp3", 9), b("/b/sub/Untitled.mp3", 1234)], true)?.beatNoteMoves).toEqual({});
+    });
+
+    it("moves a hand-made lead link with the beat, even without a note", () => {
+      const l = { leadBeats: { h1: "/b/Night.mp3", h2: null }, beatNoteSizes: { "/b/Night.mp3": 77 } };
+      const next = relinkBeatNotes(l, [b("/b/2026/Night.mp3", 77)], true);
+      expect(next?.leadBeats).toEqual({ h1: "/b/2026/Night.mp3", h2: null });
+      expect(next?.beatNoteMoves["/b/Night.mp3"]).toEqual({ to: "/b/2026/Night.mp3", size: 77 });
+      // Sizes are learnt for linked beats too, so the next move can follow.
+      expect(relinkBeatNotes({ leadBeats: { h1: "/b/Night.mp3" } }, [b("/b/Night.mp3", 77)], true)?.beatNoteSizes).toEqual({ "/b/Night.mp3": 77 });
+    });
+
+    it("leaves everything alone when nothing moved", () => {
+      expect(relinkBeatNotes(links, [b("/b/Untitled.mp3", 1234), b("/b/kept.mp3", 9)], true)).toBeNull();
+      // A noted beat missing from the scan keeps its note and its last size.
+      expect(relinkBeatNotes(links, [b("/b/kept.mp3", 9)], true)).toBeNull();
+      expect(relinkBeatNotes({}, [], true)).toBeNull();
+    });
   });
 
   it("sorts beats by name, tempo or key, unmeasured last", () => {

@@ -36,7 +36,10 @@ const T = dict(
     needsQr: "This computer listens on a new port now: this phone needs the new QR. Re-pair it.",
     unnamed: "Phone",
     security:
-      "Each phone gets its own key, kept on this computer in an owner-only file and never shown again. Every request is encrypted and signed with it; Forget deletes the key, and that phone can't sync any more.",
+      "Each phone gets its own key, kept on this computer in an owner-only file and never shown again. Every request is encrypted and signed with it; Forget deletes the key, and that phone can't sync any more. A phone that never connects within a day is forgotten.",
+    phoneOutdated: "Update Hivo on this phone: it's older than this computer's.",
+    openFirewall: "Open the firewall settings",
+    firewallWindows: "Phone says it's not on the same Wi-Fi? Windows Firewall may be blocking Hivo: allow it on private networks.",
   },
   {
     title: "Synchro téléphone",
@@ -67,7 +70,10 @@ const T = dict(
     needsQr: "Cet ordi écoute maintenant sur un autre port : ce téléphone a besoin du nouveau QR. Réappaire-le.",
     unnamed: "Téléphone",
     security:
-      "Chaque téléphone a sa propre clé, gardée sur cet ordi dans un fichier réservé à ton compte et jamais réaffichée. Chaque requête est chiffrée et signée avec ; Oublier supprime la clé, et ce téléphone ne peut plus synchroniser.",
+      "Chaque téléphone a sa propre clé, gardée sur cet ordi dans un fichier réservé à ton compte et jamais réaffichée. Chaque requête est chiffrée et signée avec ; Oublier supprime la clé, et ce téléphone ne peut plus synchroniser. Un téléphone qui ne se connecte pas dans la journée est oublié.",
+    phoneOutdated: "Mets Hivo à jour sur ce téléphone : il est plus ancien que celui de cet ordi.",
+    openFirewall: "Ouvrir les réglages du pare-feu",
+    firewallWindows: "Le téléphone dit qu'il n'est pas sur le même Wi-Fi ? Le pare-feu Windows bloque peut-être Hivo : autorise-le sur les réseaux privés.",
   },
 );
 
@@ -128,13 +134,16 @@ export function PhoneSyncSettings() {
       setCopied(false);
       setStatus(await api.phoneSyncStatus());
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      // "No" in the native confirmation: nothing to say.
+      if (msg !== api.PAIR_CANCELLED) setError(msg);
     } finally {
       setBusy(false);
     }
   }
 
   const on = !!status?.on;
+  const windows = navigator.userAgent.includes("Windows");
   const paired = status?.devices ?? [];
   const justPaired = pairing ? paired.find((d) => d.id === pairing.deviceId && d.lastSeenMs) : undefined;
 
@@ -160,6 +169,14 @@ export function PhoneSyncSettings() {
       {on && <div className="mt-1 font-mono text-[11px] text-engrave">{status?.addresses.length ? t.addresses(status.addresses.join(", ")) : t.noAddress}</div>}
       {status?.error && <div className="mt-2 text-xs text-red-300">{status.error}</div>}
       <p className="mt-2 text-[11px] leading-relaxed text-engrave">{t.firewall}</p>
+      {windows && on && (
+        <p className="mt-1 text-[11px] leading-relaxed text-engrave">
+          {t.firewallWindows}{" "}
+          <button onClick={() => void api.phoneSyncOpenFirewall().catch((e) => setError(String(e)))} className="text-body underline hover:text-cream">
+            {t.openFirewall}
+          </button>
+        </p>
+      )}
 
       {on && !pairing && (
         <button onClick={() => void pair()} disabled={busy} className="mt-3 rounded-md bg-orange-500 px-3 py-2 text-sm font-medium text-chassis hover:bg-orange-400 disabled:opacity-40">
@@ -208,6 +225,7 @@ export function PhoneSyncSettings() {
                   {d.appVersion ? ` · ${d.appVersion}` : ""}
                 </div>
                 {d.needsNewQr && <div className="mt-0.5 text-[11px] text-warn">{t.needsQr}</div>}
+                {d.phoneOutdated && <div className="mt-0.5 text-[11px] text-warn">{t.phoneOutdated}</div>}
               </div>
               {on && (
                 <button

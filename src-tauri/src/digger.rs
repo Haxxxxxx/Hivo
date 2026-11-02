@@ -641,7 +641,8 @@ fn local_v6(ip: std::net::Ipv6Addr) -> bool {
 /// A hop a redirect chain may take: https, no credentials, and a public
 /// host (no LAN or loopback IP literal, no "localhost", ".local" or
 /// ".internal" name). A search result must never make the desktop send
-/// requests into the user's network.
+/// requests into the user's network. Lexical only: the follower's DNS
+/// (`PublicDns`) refuses a name that resolves to a local address.
 pub fn public_https(url: &reqwest::Url) -> bool {
     if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
         return false;
@@ -694,8 +695,85 @@ async fn follow_checked(client: &reqwest::Client, first: reqwest::Url, max_hops:
     None
 }
 
-fn resolver() -> reqwest::Client {
-    reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(RESOLVE_TIMEOUT).build().unwrap_or_else(|_| reqwest::Client::new())
+/// A public address: none of the LAN, loopback, link-local or CGNAT ranges
+/// `public_https` refuses as literals.
+fn public_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => !local_v4(v4),
+        std::net::IpAddr::V6(v6) => !local_v6(v6),
+    }
+}
+
+/// The addresses a name resolved to, or an error when there are none or any
+/// of them is local: a public-looking name that resolves into the user's
+/// network (or answers with a public and a local address, a rebinding
+/// trick) is refused before a connection is made.
+pub fn only_public(host: &str, addrs: Vec<std::net::SocketAddr>) -> Result<Vec<std::net::SocketAddr>, String> {
+    if addrs.is_empty() {
+        return Err(format!("{host}: no address"));
+    }
+    if addrs.iter().any(|a| !public_ip(a.ip())) {
+        return Err(format!("{host} resolves to a local address"));
+    }
+    Ok(addrs)
+}
+
+type Lookup = std::sync::Arc<dyn Fn(&str) -> std::io::Result<Vec<std::net::SocketAddr>> + Send + Sync>;
+
+/// The redirect follower's DNS: the system lookup, then `only_public`.
+/// `public_https` sees only the name; this sees where it really goes, so no
+/// hop (an IP literal is checked by `public_https`, a name here) can reach
+/// a LAN or loopback host.
+pub struct PublicDns {
+    lookup: Lookup,
+}
+
+impl PublicDns {
+    pub fn system() -> Self {
+        Self::with_lookup(std::sync::Arc::new(|host: &str| {
+            use std::net::ToSocketAddrs;
+            (host, 0u16).to_socket_addrs().map(|a| a.collect())
+        }))
+    }
+
+    fn with_lookup(lookup: Lookup) -> Self {
+        Self { lookup }
+    }
+}
+
+fn dns_error(e: String) -> Box<dyn std::error::Error + Send + Sync> {
+    Box::new(std::io::Error::other(e))
+}
+
+impl reqwest::dns::Resolve for PublicDns {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        let lookup = self.lookup.clone();
+        Box::pin(async move {
+            let h = host.clone();
+            let addrs = tauri::async_runtime::spawn_blocking(move || lookup(&h))
+                .await
+                .map_err(|e| dns_error(e.to_string()))?
+                .map_err(|e| dns_error(e.to_string()))?;
+            let ok = only_public(&host, addrs).map_err(dns_error)?;
+            Ok(Box::new(ok.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// The redirect follower's client: no automatic redirects (each hop is
+/// vetted), a timeout, and `PublicDns`. Never built without the DNS check.
+fn resolver() -> Result<reqwest::Client, String> {
+    resolver_with(PublicDns::system())
+}
+
+fn resolver_with(dns: PublicDns) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(RESOLVE_TIMEOUT)
+        .dns_resolver(std::sync::Arc::new(dns))
+        .build()
+        .map_err(|e| e.to_string())
 }
 
 /// `link` with a grounding redirect replaced by the page it leads to (https
@@ -718,7 +796,21 @@ fn settle(mut link: WebLink, target: Option<String>) -> WebLink {
 /// Every grounding redirect followed to its page, in parallel; links that
 /// end on the same page are kept once.
 pub async fn resolve_links(links: Vec<WebLink>) -> Vec<WebLink> {
-    resolve_links_with(&resolver(), links, is_grounding_redirect).await
+    match resolver() {
+        Ok(client) => resolve_links_with(&client, links, is_grounding_redirect).await,
+        // No safe client: the redirects stay unresolved (never followed).
+        Err(_) => links
+            .into_iter()
+            .map(|link| {
+                if link.resolved || !is_grounding_redirect(&link.url) {
+                    let url = link.url.clone();
+                    settle(link, Some(url))
+                } else {
+                    link
+                }
+            })
+            .collect(),
+    }
 }
 
 async fn resolve_links_with(client: &reqwest::Client, links: Vec<WebLink>, needs: fn(&str) -> bool) -> Vec<WebLink> {
@@ -880,11 +972,8 @@ pub fn save_last_dig(app: AppHandle, state: Value) -> Result<(), String> {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("could not forget the dig: {e}")),
             _ => Ok(()),
         },
-        Some(raw) => {
-            let tmp = path.with_extension("json.tmp");
-            std::fs::write(&tmp, raw).map_err(|e| format!("could not keep the dig: {e}"))?;
-            std::fs::rename(&tmp, &path).map_err(|e| format!("could not keep the dig: {e}"))
-        }
+        // Owner-only and atomic: it holds notes and paths.
+        Some(raw) => crate::workspace::write_atomic(&path, &raw).map_err(|e| format!("could not keep the dig: {e}")),
     }
 }
 
@@ -1473,7 +1562,7 @@ mod tests {
     #[test]
     fn follows_redirects_without_reading_bodies() {
         let base = redirect_server();
-        let client = resolver();
+        let client = resolver().unwrap();
         assert_eq!(follow_local(&client, &base, "/start"), Some(format!("{base}/end")));
         // Too many hops: unresolved.
         assert_eq!(follow_local(&client, &base, "/loop"), None);
@@ -1482,9 +1571,44 @@ mod tests {
     }
 
     #[test]
+    fn names_that_resolve_into_the_lan_are_refused() {
+        use reqwest::dns::Resolve;
+        use std::net::SocketAddr;
+        let a = |s: &str| s.parse::<SocketAddr>().unwrap();
+        assert!(only_public("pub.test", vec![a("8.8.8.8:0"), a("[2001:4860::8888]:0")]).is_ok());
+        for bad in ["127.0.0.1:0", "10.1.2.3:0", "192.168.1.10:0", "169.254.169.254:0", "100.64.0.1:0", "[::1]:0", "[fe80::1]:0", "[fd00::1]:0", "[::ffff:127.0.0.1]:0"] {
+            assert!(only_public("x.test", vec![a(bad)]).is_err(), "{bad}");
+        }
+        // A public and a local answer together (rebinding): refused.
+        assert!(only_public("mix.test", vec![a("8.8.8.8:0"), a("127.0.0.1:0")]).is_err());
+        assert!(only_public("none.test", vec![]).is_err());
+
+        // The resolver itself, with a fake lookup.
+        let fake = |map: &'static [(&'static str, &'static str)]| {
+            PublicDns::with_lookup(std::sync::Arc::new(move |h: &str| {
+                Ok(map.iter().filter(|(n, _)| *n == h).map(|(_, ip)| format!("{ip}:0").parse().unwrap()).collect())
+            }))
+        };
+        let dns = fake(&[("localhost.test", "127.0.0.1"), ("public.test", "8.8.8.8")]);
+        let run = |name: &str| tauri::async_runtime::block_on(dns.resolve(name.parse().unwrap())).map(|it| it.collect::<Vec<_>>());
+        assert!(run("localhost.test").is_err());
+        assert_eq!(run("public.test").unwrap(), vec![a("8.8.8.8:0")]);
+
+        // End to end: a hop to a name that resolves onto the local mock
+        // server is never connected to, even when the hop check allows it.
+        let base = redirect_server();
+        let port = reqwest::Url::parse(&base).unwrap().port().unwrap();
+        let client = resolver_with(fake(&[("localhost.test", "127.0.0.1")])).unwrap();
+        let start = reqwest::Url::parse(&format!("http://localhost.test:{port}/end")).unwrap();
+        assert_eq!(tauri::async_runtime::block_on(follow_checked(&client, start, MAX_HOPS, &|_: &reqwest::Url| true)), None);
+        // The same server through its IP literal answers: the mock is up.
+        assert!(follow_local(&client, &base, "/end").is_some());
+    }
+
+    #[test]
     fn redirects_never_lead_into_the_lan() {
         let base = redirect_server();
-        let client = resolver();
+        let client = resolver().unwrap();
         // The chain starts on the mock (allowed here only), every next hop
         // gets the production check: both stop before any request is sent.
         for path in ["/to-loopback", "/to-lan"] {
@@ -1539,7 +1663,7 @@ mod tests {
         assert_eq!(title_from_url("https://m.youtube.com/watch?v=dQw4w9WgXcQ"), "youtube.com/watch");
         // Links that don't need resolving are titled and kept once.
         let direct = |u: &str| WebLink { url: u.into(), site: "beatstars.com".into(), text: String::new(), resolved: true };
-        let out = tauri::async_runtime::block_on(resolve_links_with(&resolver(), vec![direct("https://www.beatstars.com/a"), direct("https://www.beatstars.com/a")], is_grounding_redirect));
+        let out = tauri::async_runtime::block_on(resolve_links_with(&resolver().unwrap(), vec![direct("https://www.beatstars.com/a"), direct("https://www.beatstars.com/a")], is_grounding_redirect));
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].text, "beatstars.com/a");
     }

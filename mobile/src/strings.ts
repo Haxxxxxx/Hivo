@@ -38,6 +38,7 @@ export const T = dict(
     savedLocal: "Saved on the phone · waiting for sync",
     savedSynced: "Synced with the computer",
     conflict: "Edited on both sides: the computer kept both versions. Check the note and tidy it up.",
+    noteTooLong: "Edited on both sides, and together the two versions pass 20,000 characters: the computer kept its own. Your text is still here: shorten it, then sync.",
     dismiss: "OK",
     tooLong: (max: number) => `Notes stop at ${max} characters.`,
     gone: "Gone from the computer",
@@ -125,6 +126,7 @@ export const T = dict(
     savedLocal: "Gardé sur le téléphone · en attente de synchro",
     savedSynced: "Synchronisé avec l'ordi",
     conflict: `Modifiée des deux côtés${NB}: l'ordi a gardé les deux versions. Relis la note et fais le tri.`,
+    noteTooLong: `Modifiée des deux côtés, et les deux versions ensemble dépassent 20 000 caractères${NB}: l'ordi a gardé la sienne. Ton texte est toujours là${NB}: raccourcis-le, puis synchronise.`,
     dismiss: "OK",
     tooLong: (max: number) => `Une note s'arrête à ${max} caractères.`,
     gone: "N'est plus sur l'ordi",
@@ -181,8 +183,10 @@ export const T = dict(
 
 const ERRORS = dict(
   {
-    offline: "Not on the same Wi-Fi as your computer",
+    offline: "Not on the same Wi-Fi as your computer, or the computer's firewall blocks Hivo",
     off: "Phone sync is off on the desktop",
+    "read-only": "Hivo on the computer can't save right now: open it to fix",
+    "update-desktop": "Update Hivo on the computer: it's older than this phone's app",
     forgotten: "This phone was forgotten on the desktop: pair again",
     forgottenOrClock: "The computer doesn't recognize this phone: it was forgotten there, or this phone's clock is off (set it to automatic). Else pair again",
     clock: "This phone's clock is off: set it to automatic",
@@ -194,8 +198,10 @@ const ERRORS = dict(
     pairAgain: "Pair again",
   },
   {
-    offline: "Pas sur le même Wi-Fi que ton ordi",
+    offline: "Pas sur le même Wi-Fi que ton ordi, ou le pare-feu de l'ordi bloque Hivo",
     off: "La sync téléphone est coupée sur l'ordi",
+    "read-only": `Hivo sur l'ordi ne peut pas enregistrer pour l'instant${NB}: ouvre-le pour régler ça`,
+    "update-desktop": `Mets Hivo à jour sur l'ordi${NB}: il est plus ancien que l'app de ce téléphone`,
     forgotten: `Ce téléphone a été oublié sur l'ordi${NB}: associe-le à nouveau`,
     forgottenOrClock: `L'ordi ne reconnaît pas ce téléphone${NB}: il y a été oublié, ou l'horloge du téléphone est décalée (mets-la en automatique). Sinon, associe-le à nouveau`,
     clock: `L'horloge de ce téléphone est décalée${NB}: mets-la en automatique`,
@@ -213,6 +219,8 @@ const ERRORS = dict(
  * answers both the same way). */
 export const errorText = (code: SyncErrorCode, syncedBefore = false): string => (code === "forgotten" && syncedBefore ? tr(ERRORS).forgottenOrClock : tr(ERRORS)[code]);
 export const pairAgainText = (): string => tr(ERRORS).pairAgain;
+/** The computer's Hivo is older than this phone's (major.minor). */
+export const updateDesktopText = (): string => tr(ERRORS)["update-desktop"];
 
 const PAIR_ERRORS = dict(
   {

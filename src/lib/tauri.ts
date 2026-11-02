@@ -1,6 +1,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { currentLang } from "../i18n";
 import type {
   DetectedFolder,
   AiStatus,
@@ -122,6 +123,8 @@ export const setSpotifyCredentials = (clientId: string | null, clientSecret: str
 export const pickFlStudio = (): Promise<Settings> => invoke("pick_fl_studio");
 export const useDetectedFlStudio = (): Promise<Settings> => invoke("use_detected_fl_studio");
 export const pickFfmpeg = (): Promise<Settings> => invoke("pick_ffmpeg");
+/** Saves the ffmpeg Rust found, once the user confirmed `shown` (the path it showed). */
+export const useDetectedFfmpeg = (shown: string): Promise<Settings> => invoke("use_detected_ffmpeg", { shown });
 export const clearPathSetting = (which: "flStudio" | "ffmpeg" | "outputFolder"): Promise<Settings> => invoke("clear_path_setting", { which });
 
 export async function getWorkspace(): Promise<Workspace | null> {
@@ -136,11 +139,14 @@ export async function saveWorkspace(workspace: Workspace): Promise<void> {
 export interface WorkspaceFiles {
   hasBackup: boolean;
   backupSavedAtMs: number | null;
+  /** workspace.json reads but doesn't parse: Start fresh / Restore may set
+   * it aside. False when it can't be read at all (it may be fine). */
+  canReset: boolean;
 }
 export const workspaceFiles = (): Promise<WorkspaceFiles> => invoke("workspace_files");
-/** Puts `workspace.json.bak` back (the unreadable file is kept as `.bad`). */
+/** Puts `workspace.json.bak` back (the unreadable file is kept as `.bad-<ms>`). */
 export const restoreWorkspaceBackup = (): Promise<Workspace> => invoke("restore_workspace_backup");
-/** "Start fresh": the unreadable workspace is kept as `workspace.json.bad`. */
+/** "Start fresh": the unreadable workspace is kept as `workspace.json.bad-<ms>`. */
 export const setAsideWorkspace = (): Promise<void> => invoke("set_aside_workspace");
 /** Shows the app's config folder (workspace.json, settings.json) in Finder / Explorer. */
 export const showConfigFolder = (): Promise<void> => invoke("show_config_folder");
@@ -241,23 +247,34 @@ export async function analyzeAudio(path: string, bpm: number | null): Promise<Au
   return invoke("analyze_audio", { path, bpm });
 }
 
-/** Writes `<export folder>/Launch Kits/<folderName>` (text files, master
- * copy, snippet clips). The folder name is sanitized on the Rust side. */
-export async function exportLaunchKit(args: {
-  folderName: string;
-  files: { name: string; content: string }[];
-  master: string | null;
-  masterName: string;
-  clips: Snippet[];
-  /** The folder name of the last export (a title change cleans it up). */
+/** Which song a kit folder belongs to (Rust picks and owns the folder:
+ * `<folderName>`, or `<folderName> (2)` when another song has that one). */
+export type KitOwner = {
+  /** The song's workspace key (its path). */
+  song: string;
+  /** The kit folder the app recorded for this song (`previousKitFolder`). */
   previousFolder: string | null;
-}): Promise<string> {
+};
+
+/** Writes `<export folder>/Launch Kits/<folderName>` (text files, master
+ * copy, snippet clips) and returns the folder. The folder name is
+ * sanitized on the Rust side; this song's old kit folders are cleaned. */
+export async function exportLaunchKit(
+  args: KitOwner & {
+    folderName: string;
+    files: { name: string; content: string }[];
+    master: string | null;
+    masterName: string;
+    clips: Snippet[];
+  },
+): Promise<string> {
   return invoke("export_launch_kit", args);
 }
 
-/** The saved cover concept of a kit (base64 JPEG), or null. */
-export async function readKitCover(folderName: string): Promise<string | null> {
-  return invoke("read_kit_cover", { folderName });
+/** The saved cover concept of a kit (base64 JPEG), or null: the file it
+ * was saved to, else the one in `folderName` (both checked in Rust). */
+export async function readKitCover(savedPath: string | null, folderName: string): Promise<string | null> {
+  return invoke("read_kit_cover", { savedPath, folderName });
 }
 
 /** Whether a Gemini key is set (never the key itself). */
@@ -284,8 +301,10 @@ export async function aiKit(request: {
 }
 
 export interface ShortsStatus {
-  /** Where ffmpeg was found; null = not installed / not found. */
+  /** The ffmpeg saved in Settings, the only one ever run; null = not set. */
   path: string | null;
+  /** An ffmpeg found on this computer, not confirmed yet (never run). */
+  found: string | null;
   encoder: string | null;
   error: string | null;
 }
@@ -301,11 +320,13 @@ export interface ShortResult {
 }
 
 /** Renders 9:16 MP4s into `<export folder>/Launch Kits/<folderName>/shorts/`. */
-export async function renderShorts(args: {
-  master: string;
-  clips: { label: string; startSec: number; lengthSec: number; layoutPng: string }[];
-  folderName: string;
-}): Promise<ShortResult[]> {
+export async function renderShorts(
+  args: KitOwner & {
+    master: string;
+    clips: { label: string; startSec: number; lengthSec: number; layoutPng: string }[];
+    folderName: string;
+  },
+): Promise<ShortResult[]> {
   return invoke("render_shorts", args);
 }
 
@@ -326,7 +347,7 @@ export async function generateCover(prompt: string, seed: number | null): Promis
 }
 
 /** Writes `<export folder>/Launch Kits/<folderName>/cover-concept.jpg`. */
-export async function saveCover(args: { folderName: string; imageB64: string }): Promise<string> {
+export async function saveCover(args: KitOwner & { folderName: string; imageB64: string }): Promise<string> {
   return invoke("save_cover", args);
 }
 
@@ -340,6 +361,11 @@ export interface KitFile {
 /** What's in `<export folder>/Launch Kits/<folderName>/` (empty if never exported). */
 export async function kitFiles(folderName: string): Promise<KitFile[]> {
   return invoke("kit_files", { folderName });
+}
+
+/** What's in a song's `BandLab/` folder (audio attached from the phone; stems in `Stems/`). */
+export async function bandlabFiles(songPath: string): Promise<KitFile[]> {
+  return invoke("bandlab_files", { songPath });
 }
 
 /** URL the webview can stream a local audio file from (asset protocol). */
@@ -367,9 +393,17 @@ export async function revealInFileManager(path: string): Promise<void> {
 // ---- Phone sync (src-tauri/src/phone_sync.rs, docs/PHONE-SYNC.md) ----
 export const phoneSyncStatus = (): Promise<PhoneSyncStatus> => invoke("phone_sync_status");
 /** Opens (true) or closes (false) the local network port; saved. */
-export const phoneSyncEnable = (on: boolean): Promise<PhoneSyncStatus> => invoke("phone_sync_enable", { on });
+export const phoneSyncEnable = (on: boolean): Promise<PhoneSyncStatus> => invoke("phone_sync_enable", { on, lang: currentLang() });
 /** A new device and its QR url. The key in it is never returned again. */
-export const phoneSyncPair = (): Promise<PhonePairing> => invoke("phone_sync_pair");
+export const phoneSyncPair = (): Promise<PhonePairing> => invoke("phone_sync_pair", { lang: currentLang() });
+/** What `phoneSyncPair` rejects with when the user said no in the native dialog. */
+export const PAIR_CANCELLED = "cancelled";
+/** Windows: "Allow an app through Windows Firewall". */
+export const phoneSyncOpenFirewall = (): Promise<void> => invoke("phone_sync_open_firewall");
+/** A phone with a newer Hivo said hello: this computer may have an update. */
+export function onPhoneNewer(handler: () => void): Promise<UnlistenFn> {
+  return listen("phone-sync-phone-newer", () => handler());
+}
 export const phoneSyncForget = (deviceId: string): Promise<PhoneSyncStatus> => invoke("phone_sync_forget", { deviceId });
 /** Answers a forwarded request: a body, or a short error ("demo", "busy"). */
 export const phoneSyncReply = (id: string, reply: { body: unknown } | { error: string }): Promise<void> =>

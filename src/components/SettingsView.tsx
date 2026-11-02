@@ -59,6 +59,8 @@ const T = dict(
     lookingFfmpeg: "Looking for ffmpeg…",
     found: (path: string, encoder: string) => `Found: ${path} (${encoder})`,
     ffmpegMissing: "Not found. Install it, then restart the app, or pick it below.",
+    foundUnconfirmed: (path: string) => `Found ${path}. Hivo only runs an ffmpeg you confirmed: use this one if it's the one you installed.`,
+    useFound: "Use this ffmpeg",
     foundAuto: "Found automatically",
     auto: "Auto",
     keySaved: "Key saved on this computer.",
@@ -139,6 +141,8 @@ const T = dict(
     lookingFfmpeg: "Recherche de ffmpeg…",
     found: (path: string, encoder: string) => `Trouvé : ${path} (${encoder})`,
     ffmpegMissing: "Introuvable. Installe-le puis relance l'appli, ou choisis-le ci-dessous.",
+    foundUnconfirmed: (path: string) => `Trouvé : ${path}. Hivo ne lance qu'un ffmpeg que tu as confirmé : prends celui-ci si c'est bien celui que tu as installé.`,
+    useFound: "Utiliser ce ffmpeg",
     foundAuto: "Trouvé automatiquement",
     auto: "Auto",
     keySaved: "Clé enregistrée sur cet ordi.",
@@ -491,6 +495,7 @@ export function SettingsView() {
 function ShortsSettings() {
   const settings = useAppStore((s) => s.settings);
   const pickFfmpeg = useAppStore((s) => s.pickFfmpeg);
+  const useDetectedFfmpeg = useAppStore((s) => s.useDetectedFfmpeg);
   const clearPathSetting = useAppStore((s) => s.clearPathSetting);
   const [status, setStatus] = useState<api.ShortsStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -507,6 +512,10 @@ function ShortsSettings() {
     setError(null);
     await pickFfmpeg().catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }
+  async function confirmFound(found: string) {
+    setError(null);
+    await useDetectedFfmpeg(found).catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }
   const t = tr(T);
 
   return (
@@ -522,8 +531,13 @@ function ShortsSettings() {
           ? t.lookingFfmpeg
           : status.encoder
             ? t.found(status.path ?? "", status.encoder)
-            : status.error ?? t.ffmpegMissing}
+            : status.error ?? (status.found ? t.foundUnconfirmed(status.found) : t.ffmpegMissing)}
       </div>
+      {status && !status.path && status.found && (
+        <button onClick={() => void confirmFound(status.found!)} className="mt-2 rounded-md border border-rule-strong px-3 py-2 text-sm text-body hover:bg-raised">
+          {t.useFound}
+        </button>
+      )}
       <div className="mt-2 flex items-center gap-2">
         <input value={settings.ffmpegPath ?? ""} readOnly placeholder={t.foundAuto} aria-label="ffmpeg" className={field} />
         <button onClick={browse} className="shrink-0 rounded-md border border-rule-strong px-3 py-2 text-sm text-body hover:bg-raised">
@@ -1280,7 +1294,9 @@ function UpdatesSection() {
         : status === "ready"
           ? t.restarting
           : status === "error"
-            ? { readOnly: t.readOnly, network: t.offline, other: t.failed }[updateErrorKind(update.error)]
+            ? update.blockedBySave && update.error
+              ? update.error
+              : { readOnly: t.readOnly, network: t.offline, other: t.failed }[updateErrorKind(update.error)]
             : checked && status === "idle"
               ? t.upToDate
               : null;

@@ -10,6 +10,7 @@ import type { DashboardLayout } from "../lib/dashboardLayout";
 import { applyRelinks, findRelinks, isUnder, rootRelinks, type Relink } from "../lib/relink";
 import { setNote } from "../lib/notes";
 import { relinkBeatNotes } from "../lib/digger";
+import { addRenames } from "../lib/phoneSync";
 import { canRenderInApp, dawOf, splitRenderable } from "../lib/daws";
 import type {
   DetectedFolder,
@@ -90,6 +91,11 @@ interface RenderOptions {
 interface NewProjectDraft {
   albumId: string | null;
   status: SongStatus;
+  /** A name to start with ("Start a song from this beat"). */
+  name?: string;
+  /** The beat this song starts from: its note and phone memos move to the
+   * song once created (src/store/beatToSong.ts). */
+  fromBeat?: { path: string; name: string; producer: string | null };
 }
 
 /** In-app updates (src/lib/updater.ts): one check at startup, then Settings. */
@@ -100,12 +106,16 @@ export interface UpdateState {
   /** 0..1 while downloading, when the server said how big the file is. */
   progress?: number;
   error?: string;
+  /** The install was stopped because the workspace couldn't be saved first. */
+  blockedBySave?: boolean;
 }
 
 /** Why the workspace is read-only (the strip above the view). */
 export type WorkspaceIssue =
-  /** workspace.json couldn't be read or parsed. */
-  | { kind: "unreadable"; detail: string; hasBackup: boolean }
+  /** workspace.json couldn't be read or parsed. `canReset`: it reads but
+   * doesn't parse, so Start fresh / Restore may set it aside; false = it
+   * can't be read at all (it may be fine): only Retry. */
+  | { kind: "unreadable"; detail: string; hasBackup: boolean; canReset: boolean }
   /** A newer Hivo saved it: shown, never saved over by this version. */
   | { kind: "newer"; version: number };
 
@@ -122,8 +132,12 @@ interface AppState {
   scanError: string | null;
   /** An action failed (a render, a settings save…); never overwrites the others. */
   actionError: string | null;
-  /** The last workspace save failed (cleared by the next successful save). */
+  /** The last workspace save failed: the banner's message (Dismiss clears it). */
   saveError: string | null;
+  /** Edits not on disk since the last good save: why the last save failed.
+   * Only a save that works clears it (never Dismiss), so the "not saving"
+   * strip and the close / update guards keep holding. */
+  unsavedChanges: string | null;
   dismissErrors: () => void;
   /** Try the failed save (or the failed workspace read) again. */
   retrySave: () => Promise<void>;
@@ -131,7 +145,7 @@ interface AppState {
   workspaceIssue: WorkspaceIssue | null;
   /** Unreadable workspace: put `workspace.json.bak` back. */
   restoreWorkspaceBackup: () => Promise<void>;
-  /** Unreadable workspace: keep it as `workspace.json.bad` and save what's in
+  /** Unreadable workspace: keep it as `workspace.json.bad-<ms>` and save what's in
    * memory (an empty workspace plus the edits made since) from now on. */
   startFreshWorkspace: () => Promise<void>;
   showConfigFolder: () => Promise<void>;
@@ -236,6 +250,7 @@ interface AppState {
    * (failing to save it throws). */
   detectFlStudio: () => Promise<boolean>;
   pickFfmpeg: () => Promise<void>;
+  useDetectedFfmpeg: (shown: string) => Promise<void>;
   clearPathSetting: (which: "flStudio" | "ffmpeg" | "outputFolder") => Promise<void>;
   rescan: () => Promise<void>;
   toggleSelected: (path: string) => void;
@@ -330,8 +345,12 @@ interface AppState {
   /** Notes on a saved prod (by lead hash) or a beat (by file path); empty removes. */
   setLeadNote: (hash: string, text: string) => void;
   setBeatNote: (path: string, text: string) => void;
-  /** After a beats scan: notes follow renamed/moved beats, noted beats' sizes are remembered. */
-  syncBeatNotes: (beats: { path: string; name: string; sizeBytes: number }[]) => void;
+  /** After a beats scan: notes and hand-made lead links follow moved or
+   * renamed beats (only after a `complete` scan: not capped, every folder
+   * read), tracked beats' sizes are remembered (`relinkBeatNotes`). */
+  syncBeatNotes: (beats: { path: string; name: string; sizeBytes: number }[], complete: boolean) => void;
+  /** A pure workspace change (src/lib/*) applied and saved like any edit. */
+  applyWorkspace: (change: (ws: Workspace) => Workspace) => void;
   /** A saved prod's beat set by hand: a path, null ("not in your prods"), or undefined (back to the name match). */
   setLeadBeat: (hash: string, path: string | null | undefined) => void;
   /** Also removes their credits and pitches. */
@@ -364,13 +383,22 @@ interface AppState {
 }
 
 /** Flush a pending debounced workspace save (set once the store exists).
- * Resolves false when the save failed (saveError says why). */
+ * Resolves false while edits aren't on disk (unsavedChanges says why), even
+ * after the banner was dismissed. */
 let flushPending: () => Promise<boolean> = () => Promise.resolve(true);
 export const flushWorkspace = () => flushPending();
 /** Edits were made while the stored workspace couldn't be read (they live
  * only in memory until "Start fresh"; a reload or restore drops them, and
  * says so). */
 let editedWhileUnreadable = false;
+
+/** The update was stopped before installing: the workspace didn't save. */
+class UnsavedBeforeUpdate extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UnsavedBeforeUpdate";
+  }
+}
 
 /** The workspace save currently being written, if any. */
 let savingNow: Promise<void> | null = null;
@@ -393,6 +421,10 @@ const STORE_ERRORS = dict(
     packaging: "Already packaging.",
     notLoaded: "Your workspace isn't loaded yet: try again in a moment.",
     nothingToPackage: "Nothing to package.",
+    repointReadOnly:
+      "Your workspace can't be saved right now, so its songs couldn't follow the folder. Nothing was changed: sort out the strip at the top first, then try again.",
+    newerReadOnly: "This workspace was saved by a newer Hivo: update Hivo to edit it. That change wasn't made.",
+    updateUnsaved: (why: string) => `The update was stopped because your changes couldn't be saved first. ${why}`,
   },
   {
     sampleExport: "Ce sont des données d'exemple : lie un vrai dossier de projets dans les Réglages avant d'exporter.",
@@ -401,6 +433,10 @@ const STORE_ERRORS = dict(
     needExport: "Choisis d'abord un dossier d'export dans les Réglages.",
     needExportForPackages: "Choisis d'abord un dossier d'export dans les Réglages : les paquets vont dans <dossier d'export>/Packages.",
     exportRunning: "Un export est déjà en cours.",
+    repointReadOnly:
+      "Ton espace de travail ne peut pas être enregistré pour l'instant, donc ses sons n'ont pas pu suivre le dossier. Rien n'a changé : règle d'abord le bandeau en haut, puis réessaie.",
+    newerReadOnly: "Cet espace de travail a été enregistré par un Hivo plus récent : mets Hivo à jour pour le modifier. Cette modification n'a pas été faite.",
+    updateUnsaved: (why: string) => `La mise à jour a été arrêtée parce que tes modifications n'ont pas pu être enregistrées avant. ${why}`,
     packaging: "Paquet déjà en cours.",
     notLoaded: "Ton espace de travail n'est pas encore chargé : réessaie dans un instant.",
     nothingToPackage: "Rien à empaqueter.",
@@ -439,7 +475,7 @@ const STORE_TEXT = dict(
 /** A workspace read from disk, ready to apply in one `set`. */
 export type LoadedWorkspace =
   | { ok: true; workspace: Workspace; changed: boolean; newer: number | null }
-  | { ok: false; detail: string; hasBackup: boolean };
+  | { ok: false; detail: string; hasBackup: boolean; canReset: boolean };
 
 /** Turns what `get_workspace` returned into the workspace to show. */
 export function fromStored(stored: Workspace | null): LoadedWorkspace {
@@ -456,7 +492,7 @@ async function readWorkspace(): Promise<LoadedWorkspace> {
     return fromStored(await api.getWorkspace());
   } catch (e) {
     const files = await api.workspaceFiles().catch(() => null);
-    return { ok: false, detail: String(e), hasBackup: !!files?.hasBackup };
+    return { ok: false, detail: String(e), hasBackup: !!files?.hasBackup, canReset: !!files?.canReset };
   }
 }
 
@@ -465,7 +501,13 @@ export const useAppStore = create<AppState>((set, get) => {
   /** Apply a change to the workspace and persist it (debounced, so typing
    * notes doesn't write the file on every keystroke). Sample-data edits
    * stay in memory so they never clobber the real workspace. */
-  function mutateWorkspace(fn: (ws: Workspace) => Workspace) {
+  function mutateWorkspace(fn: (ws: Workspace) => Workspace, { quiet = false }: { quiet?: boolean } = {}) {
+    // Saved by a newer Hivo: edits would never reach the disk, so none are
+    // made (and the user hears why, unless it's housekeeping).
+    if (get().workspaceIssue?.kind === "newer" && !get().demoMode) {
+      if (!quiet) set({ actionError: tr(STORE_ERRORS).newerReadOnly });
+      return;
+    }
     // Every stage change, from anywhere, lands in the song's stage log here.
     const prev = get().workspace;
     const next = logStageChanges(prev, fn(prev), Date.now());
@@ -490,11 +532,12 @@ export const useAppStore = create<AppState>((set, get) => {
     const write = api
       .saveWorkspace(workspace)
       .then(() => {
-        if (get().saveError) set({ saveError: null });
+        if (get().saveError || get().unsavedChanges) set({ saveError: null, unsavedChanges: null });
       })
       .catch((e) => {
         console.error("saving workspace failed", e);
-        set({ saveError: tr(STORE_TEXT).saveFailed(String(e)) });
+        const why = tr(STORE_TEXT).saveFailed(String(e));
+        set({ saveError: why, unsavedChanges: why });
       });
     savingNow = write;
     await write;
@@ -505,7 +548,7 @@ export const useAppStore = create<AppState>((set, get) => {
   flushPending = async () => {
     if (saveTimer) await persistWorkspace();
     else if (savingNow) await savingNow;
-    return get().saveError === null;
+    return get().unsavedChanges === null;
   };
 
   /** The real favorites to put back when leaving sample data (and forget them). */
@@ -534,7 +577,7 @@ export const useAppStore = create<AppState>((set, get) => {
         ...extra,
         workspace: keep ? s.workspace : EMPTY_WORKSPACE,
         workspaceWritable: false,
-        workspaceIssue: { kind: "unreadable", detail: loaded.detail, hasBackup: loaded.hasBackup },
+        workspaceIssue: { kind: "unreadable", detail: loaded.detail, hasBackup: loaded.hasBackup, canReset: loaded.canReset },
       });
       return;
     }
@@ -586,7 +629,8 @@ export const useAppStore = create<AppState>((set, get) => {
     const map = new Map(relinks.map((r) => [r.from, r.to]));
     // The session window follows too (sessionBridge.ts).
     set({ lastRelinks: relinks });
-    mutateWorkspace((ws) => applyRelinks(ws, relinks));
+    // The phone follows too: its pending note edits re-key (`renamed` in /v1/snapshot).
+    mutateWorkspace((ws) => ({ ...applyRelinks(ws, relinks), phoneRenames: addRenames(ws.phoneRenames, relinks.map((r) => ({ kind: "song", from: r.from, to: r.to })), Date.now()) }));
     const favs = get().settings.favorites;
     if (favs.some((f) => map.has(f))) void get().updateSettings({ favorites: favs.map((f) => map.get(f) ?? f) });
     const open = get().detailPath;
@@ -614,6 +658,13 @@ export const useAppStore = create<AppState>((set, get) => {
     }));
   }
 
+  /** Start fresh / Restore only touch a file that reads but doesn't parse:
+   * one that can't be read at all may be the only good copy. */
+  function resettable() {
+    const issue = get().workspaceIssue;
+    return issue?.kind === "unreadable" && issue.canReset;
+  }
+
   async function loadWorkspace() {
     // Sample data on screen: the real workspace is read when leaving it.
     if (get().demoMode) return;
@@ -628,6 +679,8 @@ export const useAppStore = create<AppState>((set, get) => {
     scanError: null,
     actionError: null,
     saveError: null,
+    unsavedChanges: null,
+    // Hides the messages only: unsavedChanges stays until a save works.
     dismissErrors: () => set({ startupError: null, scanError: null, actionError: null, saveError: null }),
     retrySave: async () => {
       // Unreadable (or from a newer Hivo): read it again rather than write
@@ -640,11 +693,11 @@ export const useAppStore = create<AppState>((set, get) => {
     },
     workspaceIssue: null,
     restoreWorkspaceBackup: async () => {
-      if (get().workspaceIssue?.kind !== "unreadable") return;
+      if (!resettable()) return;
       applyLoaded(fromStored(await api.restoreWorkspaceBackup()));
     },
     startFreshWorkspace: async () => {
-      if (get().workspaceIssue?.kind !== "unreadable" || get().demoMode) return;
+      if (!resettable() || get().demoMode) return;
       await api.setAsideWorkspace();
       // What's in memory (an empty workspace plus any edits made since) is
       // what gets saved from now on.
@@ -663,15 +716,16 @@ export const useAppStore = create<AppState>((set, get) => {
     rescanOrReport: () => scanOrReport(),
     repointFolder: async (folder) => {
       if (get().demoMode) throw new Error(tr(STORE_ERRORS).sample);
+      // The records under the folder must move in the same step as the
+      // folder, or they're orphaned: refused until the workspace saves.
+      if (!get().workspaceWritable) throw new Error(tr(STORE_ERRORS).repointReadOnly);
       const moved = await api.repointWatchedFolder(folder);
       if (!moved) return;
       keepPaths(moved.settings);
       // Every record under the old folder moves to the same place under the
       // new one (stage, notes, credits, crew share, release slots, favorites).
-      if (get().workspaceWritable) {
-        const relinks = rootRelinks(get().workspace, moved.from, moved.to);
-        if (relinks.length) followRelinks(relinks);
-      }
+      const relinks = rootRelinks(get().workspace, moved.from, moved.to);
+      if (relinks.length) followRelinks(relinks);
       const filter = get().folderFilter;
       if (filter && isUnder(`${filter}/x`, moved.from)) set({ folderFilter: null });
       await scanOrReport();
@@ -730,10 +784,14 @@ export const useAppStore = create<AppState>((set, get) => {
         await updater.installUpdate(
           ({ downloaded, total, finished }) =>
             set({ update: { status: finished ? "ready" : "downloading", version, progress: total ? downloaded / total : undefined } }),
-          async () => void (await flushWorkspace()),
+          // Never restart over edits that aren't on disk: stop the update instead.
+          async () => {
+            if (!(await flushWorkspace())) throw new UnsavedBeforeUpdate(tr(STORE_ERRORS).updateUnsaved(get().unsavedChanges ?? ""));
+          },
         );
       } catch (e) {
-        set({ update: { status: "error", version, error: e instanceof Error ? e.message : String(e) } });
+        const blockedBySave = e instanceof UnsavedBeforeUpdate ? { blockedBySave: true } : {};
+        set({ update: { status: "error", version, error: e instanceof Error ? e.message : String(e), ...blockedBySave } });
       }
     },
 
@@ -884,6 +942,7 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     pickFfmpeg: async () => keepPaths(await api.pickFfmpeg()),
+    useDetectedFfmpeg: async (shown) => keepPaths(await api.useDetectedFfmpeg(shown)),
 
     clearPathSetting: async (which) => {
       keepPaths(await api.clearPathSetting(which));
@@ -1184,7 +1243,7 @@ export const useAppStore = create<AppState>((set, get) => {
         // sends it with the version it was made on). Crew moves applied here
         // carry their own sync fields.
         const stamped: Partial<SongMeta> =
-          "status" in patch && patch.stagePending === undefined ? { ...patch, stageUpdatedAtMs: Date.now(), stagePending: true } : { ...patch };
+          "status" in patch && patch.stagePending === undefined ? { ...patch, stageUpdatedAtMs: Date.now(), stagePending: true, stageMovedBy: undefined } : { ...patch };
         // A new stage from anywhere but the board drops the column pin.
         if ("status" in patch && !("column" in patch) && patch.status !== ws.songs[path]?.status) stamped.column = undefined;
         return { ...ws, songs: { ...ws.songs, [path]: { ...ws.songs[path], ...stamped } } };
@@ -1208,7 +1267,7 @@ export const useAppStore = create<AppState>((set, get) => {
       mutateWorkspace((ws) => {
         const songs = { ...ws.songs };
         const now = Date.now();
-        for (const p of paths) songs[p] = { ...songs[p], status, column: songs[p]?.column && songs[p]?.status === status ? songs[p].column : undefined, stageUpdatedAtMs: now, stagePending: true };
+        for (const p of paths) songs[p] = { ...songs[p], status, column: songs[p]?.column && songs[p]?.status === status ? songs[p].column : undefined, stageUpdatedAtMs: now, stagePending: true, stageMovedBy: undefined };
         return { ...ws, songs };
       }),
 
@@ -1246,21 +1305,26 @@ export const useAppStore = create<AppState>((set, get) => {
 
     setLeadNote: (hash, text) => mutateWorkspace((ws) => ({ ...ws, leadNotes: setNote(ws.leadNotes, hash, text) })),
     setBeatNote: (path, text) => mutateWorkspace((ws) => ({ ...ws, beatNotes: setNote(ws.beatNotes, path, text) })),
-    syncBeatNotes: (beats) => {
+    syncBeatNotes: (beats, complete) => {
       const ws = get().workspace;
-      if (!ws.beatNotes || Object.keys(ws.beatNotes).length === 0) return;
-      const moved = relinkBeatNotes(ws.beatNotes, ws.beatNoteSizes, beats);
-      const notes = moved?.notes ?? ws.beatNotes;
-      const sizes: Record<string, number> = {};
-      const byPath = new Map(beats.map((b) => [b.path, b.sizeBytes]));
-      // Sizes of noted beats only; a noted beat missing from this scan keeps its last size.
-      for (const p of Object.keys(notes)) {
-        const s = byPath.get(p) ?? moved?.sizes[p] ?? ws.beatNoteSizes?.[p];
-        if (s !== undefined) sizes[p] = s;
-      }
-      const same = !moved && JSON.stringify(sizes) === JSON.stringify(ws.beatNoteSizes ?? {});
-      if (!same) mutateWorkspace((w) => ({ ...w, beatNotes: notes, beatNoteSizes: sizes }));
+      if (ws.sample) return;
+      const hasLinks = Object.keys(ws.beatNotes ?? {}).length > 0 || Object.keys(ws.beatNoteMoves ?? {}).length > 0 || Object.values(ws.leadBeats ?? {}).some((p) => typeof p === "string");
+      if (!hasLinks) return;
+      const next = relinkBeatNotes(ws, beats, complete);
+      if (!next) return;
+      // Notes that moved to another beat path: the phone re-keys its edits too.
+      const before = ws.beatNotes ?? {};
+      const after = next.beatNotes ?? before;
+      const moves = Object.keys(before)
+        .filter((from) => !(from in after))
+        .flatMap((from) => {
+          const to = Object.keys(after).find((p) => !(p in before) && after[p] === before[from]);
+          return to ? [{ kind: "beat" as const, from, to }] : [];
+        });
+      // Quiet: an automatic relink on a read-only workspace is skipped without a message.
+      mutateWorkspace((w) => ({ ...w, ...next, ...(moves.length ? { phoneRenames: addRenames(w.phoneRenames, moves, Date.now()) } : {}) }), { quiet: true });
     },
+    applyWorkspace: (change) => mutateWorkspace(change),
     setLeadBeat: (hash, path) =>
       mutateWorkspace((ws) => {
         const next = { ...(ws.leadBeats ?? {}) };
