@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CHECK_EVERY_MS, checkDue, compareSemver, MANIFEST_URL, manualCheck, parseSemver, pickUpdate, PLAY_URL, RELEASES_BASE } from "./update";
+import { CHECK_EVERY_MS, checkDue, compareSemver, desktopIsOlder, MANIFEST_URL, manualCheck, parseSemver, pickUpdate, PLAY_URL, RELEASES_BASE } from "./update";
 
 const apk = `${RELEASES_BASE}v0.6.1/Hivo-0.6.1-android-arm64.apk`;
 
@@ -51,6 +51,17 @@ describe("pickUpdate", () => {
   });
   it("reads the manifest from the bucket root", () => {
     expect(MANIFEST_URL).toBe(`${RELEASES_BASE}mobile-latest.json`);
+  });
+});
+
+describe("desktopIsOlder (the computer's Hivo vs this phone's)", () => {
+  it("compares major.minor only, and says nothing when a version is unknown", () => {
+    expect(desktopIsOlder("0.5.9", "0.6.0")).toBe(true);
+    expect(desktopIsOlder("0.6.0", "1.0.0")).toBe(true);
+    expect(desktopIsOlder("0.6.1", "0.6.4")).toBe(false);
+    expect(desktopIsOlder("0.7.0", "0.6.4")).toBe(false);
+    expect(desktopIsOlder(undefined, "0.6.4")).toBe(false);
+    expect(desktopIsOlder("0.6.0", "dev")).toBe(false);
   });
 });
 

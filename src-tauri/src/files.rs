@@ -50,6 +50,15 @@ pub fn kit_files(app: tauri::AppHandle, folder_name: String) -> Vec<KitFile> {
     list_kit(&kit_dir(&out, &folder_name))
 }
 
+/// What a song's `BandLab/` folder holds (audio attached from the phone
+/// inbox, stems in `Stems/`). The song must be in a linked folder.
+#[tauri::command]
+pub fn bandlab_files(app: tauri::AppHandle, song_path: String) -> Vec<KitFile> {
+    let Ok(scope) = crate::scope::Scope::load(&app) else { return Vec::new() };
+    let Ok(folder) = crate::phone_sync::song_folder(&scope, &song_path) else { return Vec::new() };
+    list_kit(&folder.join(crate::sketch::SKETCH_DIR))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

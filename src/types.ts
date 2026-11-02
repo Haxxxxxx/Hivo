@@ -785,6 +785,8 @@ export interface PhoneDevice {
   lastSeenMs: number | null;
   /** Paired on another port than the one open now: it needs a new QR (Re-pair). */
   needsNewQr: boolean;
+  /** Its Hivo is older (major.minor) than this computer's. Absent from older builds. */
+  phoneOutdated?: boolean;
 }
 
 export interface PhoneSyncStatus {

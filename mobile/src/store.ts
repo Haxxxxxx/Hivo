@@ -10,6 +10,7 @@ import { useSyncExternalStore } from "react";
 import { createClient, SyncError, type SyncErrorCode } from "./lib/client";
 import type { Pairing } from "./lib/pairing";
 import { clip } from "./lib/text";
+import { desktopIsOlder } from "./lib/update";
 import {
   cacheOf,
   dismissConflict,
@@ -81,6 +82,8 @@ export type AppState = {
   extrasError: ExtrasError | null;
   /** The outbox item being sent right now. */
   sending: string | null;
+  /** The computer's Hivo is older (major.minor) than this app: "Update Hivo on the computer". */
+  desktopOutdated: boolean;
 };
 
 let state: AppState = {
@@ -94,6 +97,7 @@ let state: AppState = {
   outbox: [],
   extrasError: null,
   sending: null,
+  desktopOutdated: false,
 };
 let boundDevice: string | null = null;
 const listeners = new Set<() => void>();
@@ -430,11 +434,15 @@ export async function sync(): Promise<boolean> {
     const call = createClient({ pairing, transport: (url, init) => fetch(url, init), random: getRandomBytes, now: Date.now });
     // Unpaired (or paired elsewhere) while this ran: its results belong to the old computer.
     const stillPaired = () => state.pairing?.deviceId === pairing.deviceId;
-    const res = await runSync(call, () => state.sync, (s) => stillPaired() && setSync(s), { phoneName: phoneName(), appVersion: appVersion() }, Date.now);
+    // Once per app run (and per computer): hello again, so a version change on either side shows.
+    const sayHello = helloedFor !== pairing.deviceId;
+    const res = await runSync(call, () => state.sync, (s) => stillPaired() && setSync(s), { phoneName: phoneName(), appVersion: appVersion() }, Date.now, { hello: sayHello });
     if (!stillPaired()) {
       setState({ syncing: false });
       return false;
     }
+    if (sayHello) helloedFor = pairing.deviceId;
+    if (res.desktopVersion !== undefined) setState({ desktopOutdated: desktopIsOlder(res.desktopVersion, appVersion()) });
     await runExtras(call, pairing.deviceId);
     if (res.desktopName && state.pairing && res.desktopName !== state.pairing.desktopName) {
       const updated = { ...state.pairing, desktopName: res.desktopName };
@@ -460,6 +468,8 @@ export async function sync(): Promise<boolean> {
 }
 
 let again = false;
+/** The computer (device id) this app run already said hello to. */
+let helloedFor: string | null = null;
 
 /** Sync now, or right after the one running (something new to send). */
 export function requestSync(): void {

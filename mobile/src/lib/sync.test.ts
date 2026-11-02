@@ -281,6 +281,16 @@ describe("runSync with a fake desktop", () => {
     expect(r.missing).toBe(0);
   });
 
+  it("says hello again when asked (once per app run) and returns the computer's version", async () => {
+    const desk = fakeDesktop(pairing, [], { hivoVersion: "0.5.2" });
+    const call = createClient({ pairing, transport: desk.transport, random: rnd, now: Date.now });
+    let s = { ...withItems(), helloDone: true };
+    const quiet = await runSync(call, () => s, (n) => (s = n), hello, Date.now);
+    expect(quiet.desktopVersion).toBeUndefined();
+    const r = await runSync(call, () => s, (n) => (s = n), hello, Date.now, { hello: true });
+    expect(r.desktopVersion).toBe("0.5.2");
+  });
+
   it("the desktop's read-only workspace has its own code (not 'busy' forever)", async () => {
     const ro = createClient({ pairing, transport: fakeDesktop(pairing, [], { error: "read only" }).transport, random: rnd, now: Date.now });
     await expect(ro("/v1/snapshot", {})).rejects.toMatchObject({ code: "read-only" });

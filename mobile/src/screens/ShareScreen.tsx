@@ -9,6 +9,7 @@ import { tr } from "../lib/i18n";
 import type { IdeaTarget } from "../lib/ideas";
 import { checkShared, isZip, sharedName, type OutFile } from "../lib/outbox";
 import { fileNameFor, shareText, titleFromShare } from "../lib/shareMeta";
+import type { Kind } from "../lib/sync";
 import { addIdea, addOutItem, newOutId, requestSync, useApp } from "../store";
 import { T } from "../strings";
 import { C, FONT, RADIUS } from "../theme";
@@ -26,6 +27,8 @@ export type IncomingShare = {
 };
 
 const mb = (n: number) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+
+const SONGS_ONLY: Kind[] = ["song"];
 
 /** What another app shared with Hivo (or files picked here): send it to the computer. */
 export function ShareScreen({ share, onDone, onIdea, backRef }: { share: IncomingShare; onDone: () => void; onIdea: (id: string) => void; backRef: MutableRefObject<(() => void) | null> }) {
@@ -138,7 +141,8 @@ export function ShareScreen({ share, onDone, onIdea, backRef }: { share: Incomin
           <TextInput value={title} onChangeText={setTitle} accessibilityLabel={s().shareName} maxLength={200} placeholder={s().shareNamePlaceholder} placeholderTextColor={C.engrave} style={styles.input} />
         </View>
       ) : null}
-      {hasFiles || hasText ? <TargetPicker value={target} onChange={setTarget} /> : null}
+      {/* An export can only become (or join) a song on the computer; an idea can go anywhere. */}
+      {hasFiles || hasText ? <TargetPicker value={target} onChange={setTarget} kinds={hasFiles ? SONGS_ONLY : undefined} /> : null}
 
       {error ? <Text style={styles.warn}>{error}</Text> : null}
       {hasFiles ? <Button label={s().shareSend} variant="primary" disabled={busy} onPress={() => void send()} /> : null}

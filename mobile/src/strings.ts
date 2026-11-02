@@ -219,6 +219,8 @@ const ERRORS = dict(
  * answers both the same way). */
 export const errorText = (code: SyncErrorCode, syncedBefore = false): string => (code === "forgotten" && syncedBefore ? tr(ERRORS).forgottenOrClock : tr(ERRORS)[code]);
 export const pairAgainText = (): string => tr(ERRORS).pairAgain;
+/** The computer's Hivo is older than this phone's (major.minor). */
+export const updateDesktopText = (): string => tr(ERRORS)["update-desktop"];
 
 const PAIR_ERRORS = dict(
   {

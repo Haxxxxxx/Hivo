@@ -75,6 +75,18 @@ export function startPhoneSyncBridge(): () => void {
     if (s.demoMode !== prev.demoMode) tellDemo(s.demoMode);
   });
   const stopInbox = startPhoneInbox();
+  // A phone with a newer Hivo said hello: this computer may have one waiting.
+  let unlistenNewer: UnlistenFn | null = null;
+  api
+    .onPhoneNewer(() => {
+      const s = useAppStore.getState();
+      if (s.update.status === "idle" || s.update.status === "error") void s.checkUpdate({ quiet: true });
+    })
+    .then((u) => {
+      if (stopped) u();
+      else unlistenNewer = u;
+    })
+    .catch(() => {});
   api
     .onPhoneSyncRequest((req) => {
       void answerPhoneRequest(req)
@@ -90,6 +102,7 @@ export function startPhoneSyncBridge(): () => void {
   return () => {
     stopped = true;
     unlisten?.();
+    unlistenNewer?.();
     unsubDemo();
     stopInbox();
   };

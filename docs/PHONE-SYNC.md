@@ -53,6 +53,15 @@ Health check without crypto: `GET /v1/ping` → `{"app":"hivo","v":1}` (no data)
 → `{"desktopName": "...", "hivoVersion": "0.5.x"}`. First successful hello
 marks the device as paired-and-seen (desktop shows phone name + last seen).
 
+Version check (2026-11-02, major.minor only: patches always talk to each
+other). The phone says hello once per app run (not only after pairing).
+Phone older than the desktop: Settings → Phone sync says "Update Hivo on
+this phone" on its row (`phoneOutdated` in the status). Desktop older: the
+phone says "Update Hivo on the computer" under its header
+(`desktopIsOlder`, `mobile/src/lib/update.ts`), and the desktop, seeing a
+newer phone's hello, runs its update check (`phone-sync-phone-newer`
+event, quiet: the usual update banner shows if there is one).
+
 ### `/v1/snapshot` — payload `{}`
 → `{"items": Item[], "generatedAt": <ms>}` where
 ```
@@ -192,7 +201,19 @@ Precisions the phone can rely on (nothing here changes the formats above):
 - `phoneName` is trimmed, control characters removed, ≤ 60 chars; an empty
   one becomes "Phone". It's the name used in conflict markers.
 - **Pairing:** "Pair a phone" drops paired devices that never said hello (an
-  abandoned QR) before adding the new one; at most 20 paired phones. `h` holds
+  abandoned QR) before adding the new one; at most 20 paired phones. Since
+  2026-11-02 a paired device that never said hello within 24 h is dropped
+  anyway (its key stops working), and turning phone sync on and pairing a
+  new phone each ask first in a native dialog (Rust side, EN/FR), so the
+  webview can't open the port or mint a key by itself.
+- **Listener limits (2026-11-02):** an unknown `X-Hivo-Device` gets its
+  401 before its body is read; a body must arrive within 20 s or the request
+  loses its slot (no answer); one address holds at most 4 connections at
+  once (bodies still arriving included), more get a bare 503. Bodies up to
+  1 KB are read by tiny_http before the request reaches Hivo.
+- **Windows firewall:** the phone's "Not on the same Wi-Fi" now adds "or the
+  computer's firewall blocks Hivo"; on Windows, Settings → Phone sync has a
+  button to "Allow an app through Windows Firewall". `h` holds
   up to 4 private IPv4 addresses: the default route's first, then physical
   interfaces, 192.168 before 10 before 172.16.
 - **Snapshot details:** song `title` is the project file name, song `bpm` is
@@ -268,7 +289,8 @@ removed, unfinished uploads by their declared size), `MAX_IDEAS_PER_PUSH`
 haven't moved for 7 days are dropped, at start and every hour while the app
 runs. The desktop lists them under "Still arriving" with their progress
 (`phone-inbox-changed` fires on upload start/chunk/finish, at most once a
-second, and always when an item is complete), and **Remove** frees their
+second per item with a trailing event so the last progress shows, and
+always when an item is complete), and **Remove** frees their
 space at once (a phone still sending one gets `unknown upload` and starts it
 again).
 
@@ -293,7 +315,7 @@ On the phone (2026-11 review, B20/W13): only `offline`, `off`, `busy`, `forgotte
 Bare statuses as v1 (401 `forgotten`, only when the key isn't known; 413, 429/503 `busy`: the uploader waits and goes on).
 
 On the phone, before anything is sent:
-- **Share**: not audio/zip/text → "Hivo takes audio, .zip stems or text"; more than 20 files → the first 20 + a warning; a file the phone can't read (revoked permission, cloud file not downloaded) → that file is skipped and named; a file over 500 MB → refused with its size; the phone's storage full while copying → "Not enough space on the phone"; not paired yet → kept in the outbox, "Pair with your computer to send it".
+- **Share**: files can be aimed at a song only (the desktop files an export as a new song or into a song's `BandLab/`; text can still go to a prod or a beat as an idea). An export aimed at a song that's on the desktop shows "Attach to <song>" as its first action there, and the song's drawer (Files) lists its `BandLab/` audio. Not audio/zip/text → "Hivo takes audio, .zip stems or text"; more than 20 files → the first 20 + a warning; a file the phone can't read (revoked permission, cloud file not downloaded) → that file is skipped and named; a file over 500 MB → refused with its size; the phone's storage full while copying → "Not enough space on the phone"; not paired yet → kept in the outbox, "Pair with your computer to send it".
 - **Recording**: microphone refused → "Allow the microphone in the phone's settings" with a button to them; under 1 s → discarded ("Too short"); 15 min → stops by itself and keeps it; a call or another app taking the mic → the recording stops and what was recorded is kept.
 - **Ideas**: empty title and text → not kept; text capped at 20 000 characters (as notes).
 - **Outbox**: every item shows its state: waiting (not on the same Wi-Fi), sending n %, on the computer, filed, failed (reason, Retry / Remove). Nothing is deleted from the phone until the desktop said `stored`.

@@ -86,6 +86,21 @@ export function FilesPanel({ project }: { project: ProjectInfo }) {
     };
   }, [settings.outputFolder, kitTitle, demoMode, project.modifiedAtMs]);
 
+  // Audio attached from the phone inbox (`<song folder>/BandLab/`), for any
+  // song; a sketch's own BandLab audio already shows as its mixdowns.
+  const [bandlab, setBandlab] = useState<api.KitFile[]>([]);
+  useEffect(() => {
+    let live = true;
+    if (demoMode || project.daw === "bandlab") return setBandlab([]);
+    api
+      .bandlabFiles(project.path)
+      .then((files) => live && setBandlab(files ?? []))
+      .catch(() => live && setBandlab([]));
+    return () => {
+      live = false;
+    };
+  }, [project.path, project.daw, project.modifiedAtMs, demoMode]);
+
   const reveal = (path: string) => void api.revealInFileManager(path).catch(() => {});
   const audioDir = join(project.folder, "Audio");
   const backupsSize = project.backups.reduce((t, b) => t + b.sizeBytes, 0);
@@ -135,6 +150,15 @@ export function FilesPanel({ project }: { project: ProjectInfo }) {
         ))
       )}
       {project.renders.length > 4 && <div className="pl-[118px] text-[11px] text-engrave">{t.olderMixdowns(project.renders.length - 4)}</div>}
+      {bandlab.map((f, i) => (
+        <FileRow
+          key={f.path}
+          icon={<FileAudio size={13} />}
+          label={i === 0 ? "BandLab" : ""}
+          detail={`${f.relative} · ${formatBytes(f.sizeBytes)}`}
+          onReveal={() => reveal(f.path)}
+        />
+      ))}
 
       <div className="mt-2 border-t border-rule pt-2">
         {!settings.outputFolder ? (
