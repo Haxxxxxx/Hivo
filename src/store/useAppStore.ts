@@ -90,6 +90,11 @@ interface RenderOptions {
 interface NewProjectDraft {
   albumId: string | null;
   status: SongStatus;
+  /** A name to start with ("Start a song from this beat"). */
+  name?: string;
+  /** The beat this song starts from: its note and phone memos move to the
+   * song once created (src/store/beatToSong.ts). */
+  fromBeat?: { path: string; name: string; producer: string | null };
 }
 
 /** In-app updates (src/lib/updater.ts): one check at startup, then Settings. */
@@ -334,6 +339,8 @@ interface AppState {
    * renamed beats (only after a `complete` scan: not capped, every folder
    * read), tracked beats' sizes are remembered (`relinkBeatNotes`). */
   syncBeatNotes: (beats: { path: string; name: string; sizeBytes: number }[], complete: boolean) => void;
+  /** A pure workspace change (src/lib/*) applied and saved like any edit. */
+  applyWorkspace: (change: (ws: Workspace) => Workspace) => void;
   /** A saved prod's beat set by hand: a path, null ("not in your prods"), or undefined (back to the name match). */
   setLeadBeat: (hash: string, path: string | null | undefined) => void;
   /** Also removes their credits and pitches. */
@@ -1256,6 +1263,7 @@ export const useAppStore = create<AppState>((set, get) => {
       const next = relinkBeatNotes(ws, beats, complete);
       if (next) mutateWorkspace((w) => ({ ...w, ...next }));
     },
+    applyWorkspace: (change) => mutateWorkspace(change),
     setLeadBeat: (hash, path) =>
       mutateWorkspace((ws) => {
         const next = { ...(ws.leadBeats ?? {}) };
