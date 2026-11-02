@@ -1,11 +1,12 @@
 // End to end against the real desktop server (src-tauri phone_sync.rs,
 // `e2e_server_for_the_phone_client`, an ignored Rust test). Skipped unless
 // HIVO_E2E_DIR is set; scripts/e2e-phone-sync.sh runs both sides.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { toB64url } from "./bytes";
 import { createClient, SyncError, type Transport } from "./client";
+import { waitForConfirmation } from "./confirm";
 import { completePairing } from "./handshake";
 import { parsePairingUrl } from "./pairing";
 import { createIdea, ideaPayload, parseIdeaResults } from "./ideas";
@@ -14,7 +15,7 @@ import { MAX_CHUNK_BYTES, parseInboxStatuses, uploadItem, type OutItem } from ".
 const dir = process.env.HIVO_E2E_DIR;
 
 describe.skipIf(!dir)("phone ↔ desktop, for real", () => {
-  it("pairs with the v1.2 QR, pushes an idea, uploads a sketch in chunks, reads the statuses", async () => {
+  it("pairs with the v1.2 QR, confirms the code on the desktop, pushes an idea, uploads a sketch in chunks, reads the statuses", async () => {
     const d = dir as string;
     for (let i = 0; i < 600 && !existsSync(join(d, "ready")); i++) await new Promise((r) => setTimeout(r, 100));
     const port = Number(readFileSync(join(d, "ready"), "utf8"));
@@ -31,7 +32,9 @@ describe.skipIf(!dir)("phone ↔ desktop, for real", () => {
         now: Date.now,
         onBound: () => (upgraded = true),
       });
-      expect(await old("/v1/hello", { phoneName: "Old phone", appVersion: "0.6.2" })).toMatchObject({ desktopName: "Test desk", protocol: "1.2" });
+      const oldHello = (await old("/v1/hello", { phoneName: "Old phone", appVersion: "0.6.2" })) as { computerId: string };
+      expect(oldHello).toMatchObject({ desktopName: "Test desk", protocol: "1.2" });
+      expect(oldHello.computerId).toMatch(/^[A-Za-z0-9_-]{22}$/);
       expect(upgraded).toBe(true);
 
       // The v1.2 QR: a one-time token and the computer's X25519 key.
@@ -40,11 +43,36 @@ describe.skipIf(!dir)("phone ↔ desktop, for real", () => {
       const paired = await completePairing(parsed.offer, { transport, random, now: Date.now, phoneName: "E2E phone", appVersion: "0.7.0" });
       expect(paired.pairing.scheme).toBe("1.2");
       expect(paired.desktopName).toBe("Test desk");
+      // The same computer as the old pairing: same id.
+      expect(paired.pairing.computerId).toBe(oldHello.computerId);
       pairedId = paired.pairing.deviceId;
       // The same QR again (a photo of it): refused.
       await expect(completePairing(parsed.offer, { transport, random, now: Date.now, phoneName: "Thief", appVersion: "0.7.0" })).rejects.toMatchObject({ code: "expired" });
 
+      // Paired, but waiting for "Confirm" on the desktop: everything gets pending.
+      expect(paired.pending).toBe(true);
+      expect(paired.code).toMatch(/^\d{6}$/);
       const call = createClient({ pairing: paired.pairing, transport, random, now: Date.now });
+      await expect(call("/v1/hello", {})).rejects.toMatchObject({ code: "pending" });
+      await expect(call("/v1/ideas", { ideas: [] })).rejects.toMatchObject({ code: "pending" });
+      // A wrong code typed back on the desktop confirms nothing.
+      const wrong = paired.code === "000000" ? "000001" : "000000";
+      writeFileSync(join(d, "confirm"), `${pairedId} ${wrong}`);
+      for (let i = 0; i < 100 && !existsSync(join(d, "confirmed")); i++) await new Promise((r) => setTimeout(r, 50));
+      expect(readFileSync(join(d, "confirmed"), "utf8")).toBe("mismatch");
+      rmSync(join(d, "confirmed"));
+      // The user checks the codes match and clicks Confirm (the server's test hook).
+      const waited = waitForConfirmation(call, { phoneName: "E2E phone", appVersion: "0.7.0" }, {
+        now: Date.now,
+        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+        startedAt: Date.now(),
+        cancelled: () => false,
+        pollMs: 200,
+      });
+      writeFileSync(join(d, "confirm"), `${pairedId} ${paired.code}`);
+      const confirmed = await waited;
+      expect(readFileSync(join(d, "confirmed"), "utf8")).toBe("confirmed");
+      expect(confirmed).toMatchObject({ ok: true, hello: { desktopName: "Test desk", protocol: "1.2", computerId: oldHello.computerId } });
       const hello = (await call("/v1/hello", { phoneName: "E2E phone", appVersion: "0.7.0" })) as { desktopName: string; protocol: string };
       expect(hello).toMatchObject({ desktopName: "Test desk", protocol: "1.2" });
 

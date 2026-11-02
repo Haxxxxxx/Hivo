@@ -8,7 +8,8 @@ import * as Device from "expo-device";
 import * as SecureStore from "expo-secure-store";
 import { useSyncExternalStore } from "react";
 import { createClient, SyncError, type SyncErrorCode, type Transport } from "./lib/client";
-import { completePairing } from "./lib/handshake";
+import { carryOver, confirmedPairing, extrasBinding, waitForConfirmation } from "./lib/confirm";
+import { completePairing, computerIdOf } from "./lib/handshake";
 import type { PairOffer, Pairing } from "./lib/pairing";
 import { clip } from "./lib/text";
 import { desktopIsOlder } from "./lib/update";
@@ -85,6 +86,8 @@ export type AppState = {
   sending: string | null;
   /** The computer's Hivo is older (major.minor) than this app: "Update Hivo on the computer". */
   desktopOutdated: boolean;
+  /** Paired, waiting for the user to confirm on the computer that it shows this code. */
+  confirming: { code: string; desktopName: string; startedAt: number } | null;
 };
 
 let state: AppState = {
@@ -99,6 +102,7 @@ let state: AppState = {
   extrasError: null,
   sending: null,
   desktopOutdated: false,
+  confirming: null,
 };
 let boundDevice: string | null = null;
 const listeners = new Set<() => void>();
@@ -318,21 +322,41 @@ export async function load(): Promise<void> {
   setState({ loaded: true, pairing, sync });
 }
 
+let confirmCancelled = false;
+
+/** "Cancel" while waiting for the computer's confirmation: nothing is saved. */
+export function cancelConfirmation(): void {
+  confirmCancelled = true;
+}
+
 /** Checks a scanned pairing before keeping it: a v1.2 QR (an offer) pairs
- * with /v1/pair (the token works once), an older computer's QR is checked
- * with /v1/hello. Returns the pairing to save, or why it didn't answer. */
-export async function verifyPairing(p: Pairing | PairOffer): Promise<{ ok: true; pairing: Pairing } | { ok: false; code: SyncErrorCode }> {
+ * with /v1/pair (the token works once), then waits while the user confirms
+ * on the computer that it shows the same code as this phone (`confirming`);
+ * an older computer's QR is checked with /v1/hello. Returns the pairing to
+ * save, or why not (`code: null`: cancelled on the phone). */
+export async function verifyPairing(p: Pairing | PairOffer): Promise<{ ok: true; pairing: Pairing } | { ok: false; code: SyncErrorCode | null }> {
   const transport: Transport = (url, init) => fetch(url, init);
   try {
     if ("token" in p) {
       const r = await completePairing(p, { transport, random: getRandomBytes, now: Date.now, phoneName: phoneName(), appVersion: appVersion() });
-      return { ok: true, pairing: r.pairing };
+      if (!r.pending) return { ok: true, pairing: r.pairing };
+      confirmCancelled = false;
+      setState({ confirming: { code: r.code, desktopName: r.desktopName, startedAt: Date.now() } });
+      try {
+        const call = createClient({ pairing: r.pairing, transport, random: getRandomBytes, now: Date.now });
+        const sleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
+        const done = await waitForConfirmation(call, { phoneName: phoneName(), appVersion: appVersion() }, { now: Date.now, sleep, startedAt: Date.now(), cancelled: () => confirmCancelled });
+        return done.ok ? { ok: true, pairing: confirmedPairing(r.pairing, done.hello) } : done;
+      } finally {
+        setState({ confirming: null });
+      }
     }
     let bound = false;
     const call = createClient({ pairing: p, transport, random: getRandomBytes, now: Date.now, onBound: () => (bound = true) });
-    const h = (await call("/v1/hello", { phoneName: phoneName(), appVersion: appVersion() })) as { desktopName?: unknown } | null;
+    const h = (await call("/v1/hello", { phoneName: phoneName(), appVersion: appVersion() })) as { desktopName?: unknown; computerId?: unknown } | null;
     const name = h && typeof h.desktopName === "string" && h.desktopName.trim() ? h.desktopName.trim().slice(0, 80) : p.desktopName;
-    return { ok: true, pairing: { ...p, desktopName: name, ...(bound ? { bound: true } : {}) } };
+    const computerId = computerIdOf(h?.computerId);
+    return { ok: true, pairing: { ...p, desktopName: name, ...(bound ? { bound: true } : {}), ...(computerId ? { computerId } : {}) } };
   } catch (e) {
     return { ok: false, code: e instanceof SyncError ? e.code : "server" };
   }
@@ -347,12 +371,15 @@ async function markBound(deviceId: string): Promise<void> {
   await SecureStore.setItemAsync(PAIRING_KEY, JSON.stringify(updated)).catch((e) => console.warn("Hivo: could not save the pairing", e));
 }
 
-/** Saves a pairing (already verified: hello done). Note edits made on the
- * phone stay and are re-based on this computer's first snapshot. */
+/** Saves a pairing (already verified: hello done). The same computer as
+ * the current pairing (same computer id): its library and the notes waiting
+ * to sync stay as they are. Another one: note edits made on the phone stay
+ * and are re-based on its first snapshot. Ideas and memos: `runExtras`. */
 export async function pair(p: Pairing): Promise<void> {
+  const kept = carryOver(state.pairing, p, state.sync);
   await SecureStore.setItemAsync(PAIRING_KEY, JSON.stringify(p));
-  await AsyncStorage.removeItem(CACHE_KEY);
-  setState({ pairing: p, sync: { ...keepEdits(editsOf(state.sync)), helloDone: true }, error: null, errorDetail: null });
+  if (!kept.keepCache) await AsyncStorage.removeItem(CACHE_KEY);
+  setState({ pairing: p, sync: kept.sync, error: null, errorDetail: null });
   await flush();
 }
 
@@ -395,12 +422,17 @@ export function appVersion(): string {
  * and a full inbox/disk stop only this part; offline & co. stop the sync.
  * One refused item fails on its own; the others still go.
  */
-async function runExtras(call: (path: string, payload: unknown) => Promise<unknown>, deviceId: string): Promise<void> {
-  // Another computer than last time: it has none of them yet.
-  if (boundDevice !== deviceId) {
-    boundDevice = deviceId;
+async function runExtras(call: (path: string, payload: unknown) => Promise<unknown>, pairing: Pairing): Promise<void> {
+  // Another computer than last time: it has none of them yet. The same one
+  // paired again (same computer id) has them: nothing goes twice.
+  const binding = extrasBinding(boundDevice, pairing);
+  if (binding.reset) {
     setIdeas(resetSent(state.ideas));
     setOutbox(resetOut(state.outbox));
+  }
+  if (binding.bound !== boundDevice) {
+    boundDevice = binding.bound;
+    void flushExtras();
   }
   try {
     let lastPush = "";
@@ -460,7 +492,13 @@ export async function sync(): Promise<boolean> {
     }
     if (sayHello) helloedFor = pairing.deviceId;
     if (res.desktopVersion !== undefined) setState({ desktopOutdated: desktopIsOlder(res.desktopVersion, appVersion()) });
-    await runExtras(call, pairing.deviceId);
+    // The computer's id, kept with the pairing (a computer updated since pairing says it now).
+    if (res.computerId && state.pairing && state.pairing.computerId !== res.computerId) {
+      const updated = { ...state.pairing, computerId: res.computerId };
+      setState({ pairing: updated });
+      await SecureStore.setItemAsync(PAIRING_KEY, JSON.stringify(updated)).catch((e) => console.warn("Hivo: could not save the pairing", e));
+    }
+    await runExtras(call, state.pairing ?? pairing);
     if (res.desktopName && state.pairing && res.desktopName !== state.pairing.desktopName) {
       const updated = { ...state.pairing, desktopName: res.desktopName };
       setState({ pairing: updated });

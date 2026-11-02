@@ -83,6 +83,7 @@ const COMMANDS: &[&str] = &[
     "phone_sync_forget",
     "phone_sync_open_firewall",
     "phone_sync_repair",
+    "phone_sync_confirm",
     "phone_inbox_link_memo",
     "phone_sync_reply",
     "phone_sync_set_demo",

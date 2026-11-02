@@ -11,6 +11,7 @@ import { parsePairingUrl, type PairOffer, type Pairing } from "./src/lib/pairing
 import { dequeue, enqueue } from "./src/lib/shareQueue";
 import { errorText, T } from "./src/strings";
 import type { Kind } from "./src/lib/sync";
+import { ConfirmPairing } from "./src/components/ConfirmPairing";
 import { UpdateBanner } from "./src/components/UpdateBanner";
 import { pickFiles } from "./src/files";
 import { IdeaScreen } from "./src/screens/IdeaScreen";
@@ -30,7 +31,8 @@ async function pairChecked(p: Pairing | PairOffer): Promise<void> {
   const t = tr(T);
   const v = await verifyPairing(p);
   if (!v.ok) {
-    Alert.alert(t.pairTitle, t.pairCheckFailed(errorText(v.code)));
+    // null: cancelled on the phone while it waited for the computer's confirmation.
+    if (v.code) Alert.alert(t.pairTitle, t.pairCheckFailed(errorText(v.code)));
     return;
   }
   await pair(v.pairing);
@@ -82,6 +84,7 @@ export default function App() {
   });
   const loaded = useApp((s) => s.loaded);
   const paired = useApp((s) => s.pairing !== null);
+  const confirming = useApp((s) => s.confirming !== null);
   const [route, setRoute] = useState<Route>({ name: "library" });
   const [tab, setTab] = useState<Tab>("prod");
   const routeRef = useRef(route);
@@ -210,6 +213,9 @@ export default function App() {
           <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
             <ActivityIndicator color={C.hot} />
           </View>
+        ) : confirming ? (
+          // Scanned: compare the code with the computer's until it's confirmed there.
+          <ConfirmPairing />
         ) : route.name === "share" ? (
           <ShareScreen key={route.at} share={route.share} onDone={goBack} onIdea={(id) => setRoute({ name: "idea", id })} backRef={backRef} />
         ) : route.name === "idea" && !paired ? (

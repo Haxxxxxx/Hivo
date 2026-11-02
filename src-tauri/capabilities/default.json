@@ -91,6 +91,7 @@
     "allow-phone-sync-forget",
     "allow-phone-sync-open-firewall",
     "allow-phone-sync-repair",
+    "allow-phone-sync-confirm",
     "allow-phone-inbox-link-memo",
     "allow-phone-sync-reply",
     "allow-phone-sync-set-demo",
