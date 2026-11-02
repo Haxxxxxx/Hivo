@@ -33,6 +33,7 @@ const T = dict(
     projectFolders: "Project folders",
     projectFoldersHint:
       "Hivo scans these folders (recursively) for projects from FL Studio, Ableton Live, REAPER, Studio One, Pro Tools, Cubase and Bitwig.",
+    removeFolder: (folder: string) => `Stop watching ${folder}`,
     addFolder: "Add project folder",
     detectTitle: "Auto-detect DAWs",
     detectHint:
@@ -115,6 +116,7 @@ const T = dict(
     projectFolders: "Dossiers de projets",
     projectFoldersHint:
       "Hivo fouille ces dossiers (et leurs sous-dossiers) pour trouver les projets FL Studio, Ableton Live, REAPER, Studio One, Pro Tools, Cubase et Bitwig.",
+    removeFolder: (folder: string) => `Ne plus suivre ${folder}`,
     addFolder: "Ajouter un dossier de projets",
     detectTitle: "Détecter les DAW",
     detectHint:
@@ -350,6 +352,7 @@ export function SettingsView() {
                 <FolderName folder={folder} unreachable={unreachable.has(folder)} />
                 <button
                   onClick={() => handleRemoveFolder(folder)}
+                  aria-label={t.removeFolder(folder)}
                   className="shrink-0 rounded p-1 text-engrave hover:bg-rule hover:text-red-300"
                 >
                   <Trash2 size={14} />

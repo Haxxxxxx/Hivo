@@ -439,7 +439,18 @@ function MyDashboard({ editing }: { editing: boolean }) {
                     onClick={() => (kit ? useAppStore.getState().openLaunchKit(p.path) : openDetail(p.path))}
                     className="group cursor-pointer rounded-lg border border-rule bg-raised p-3 hover:border-rule-strong"
                   >
-                    <div className="truncate text-sm font-medium text-cream">{p.name}</div>
+                    {/* The card is a mouse target; the title is its keyboard control. */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (kit) useAppStore.getState().openLaunchKit(p.path);
+                        else openDetail(p.path);
+                      }}
+                      className="block w-full truncate rounded text-left text-sm font-medium text-cream focus-visible:outline-2 focus-visible:outline-cream"
+                    >
+                      {p.name}
+                    </button>
                     <div className="mt-1 flex items-center gap-1.5 text-[11px] text-body">
                       <StatusDot color={s.color} size={6} /> {s.label}
                       {kit && <span className="text-engrave">· {t.kitToDo}</span>}
@@ -453,7 +464,7 @@ function MyDashboard({ editing }: { editing: boolean }) {
                             // A BandLab sketch has no project yet: show its folder.
                             (isSketch(p) ? revealInFileManager(p.path) : openInFlStudio(p.path)).catch((err) => console.error("couldn't open the project", err));
                           }}
-                          className="flex items-center gap-1 text-engrave opacity-0 hover:text-orange-300 group-hover:opacity-100"
+                          className="flex items-center gap-1 text-engrave opacity-0 hover:text-orange-300 focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
                         >
                           <PlayCircle size={13} /> {t.open}
                         </button>
@@ -813,9 +824,9 @@ function ActivityCurve() {
               style={{ left: `${xAt(hover) * 100}%`, top: `${(points[hover].y / CURVE_H) * 100}%` }}
             />
           )}
-          <span className="pointer-events-none absolute right-0 top-0 -translate-y-1/2 bg-panel pl-1 text-[9px] text-engrave">{t.perWeekMax(max)}</span>
+          <span className="pointer-events-none absolute right-0 top-0 -translate-y-1/2 bg-panel pl-1 text-[10.5px] text-engrave">{t.perWeekMax(max)}</span>
         </div>
-        <div className="relative mt-1 h-[13px] text-[9px] text-engrave">
+        <div className="relative mt-1 h-[13px] text-[10.5px] text-engrave">
           {months.map((m, w) =>
             m ? (
               <span key={w} className="absolute whitespace-nowrap" style={{ left: `${xAt(w) * 100}%` }}>
@@ -856,14 +867,14 @@ function ActivityHeatmap() {
     <div className="relative">
       <div className="flex gap-4">
         <div className="flex gap-[2px] overflow-x-auto pb-1">
-          <div className="mr-1 flex flex-col gap-[2px] pt-[15px] text-[9px] leading-[11px] text-engrave">
+          <div className="mr-1 flex flex-col gap-[2px] pt-[15px] text-[10.5px] leading-[11px] text-engrave">
             {t.weekdays.split(",").map((d, i) => (
               <span key={i} className="h-[11px]">{d}</span>
             ))}
           </div>
           {Array.from({ length: weeks }, (_, w) => (
             <div key={w} className="flex flex-col gap-[2px]">
-              <span className="h-[13px] w-[11px] overflow-visible whitespace-nowrap text-[9px] leading-[11px] text-engrave">
+              <span className="h-[13px] w-[11px] overflow-visible whitespace-nowrap text-[10.5px] leading-[11px] text-engrave">
                 {months[w]}
               </span>
               {days.slice(w * 7, w * 7 + 7).map((d, i) => (

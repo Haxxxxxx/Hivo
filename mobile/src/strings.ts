@@ -31,6 +31,8 @@ export const T = dict(
     emptyTab: "Nothing here yet. Sync to load your computer's library.",
     noMatch: "No match.",
     settings: "Settings",
+    hasNote: "Has a note",
+    noteWaiting: "Note waiting to sync",
     // Note
     back: "Back",
     openLink: "Open link",
@@ -120,6 +122,8 @@ export const T = dict(
     emptyTab: "Rien pour l'instant. Synchronise pour charger la bibliothèque de ton ordi.",
     noMatch: "Aucun résultat.",
     settings: "Réglages",
+    hasNote: "A une note",
+    noteWaiting: "Note en attente de synchro",
     back: "Retour",
     openLink: "Ouvrir le lien",
     notePlaceholder: "Textes, idées… Utilise [Couplet 1], [Refrain] comme titres.",

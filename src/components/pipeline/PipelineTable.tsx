@@ -5,7 +5,7 @@ import { sortBy, stageColor, stageLabel, type SortKey } from "../../lib/pipeline
 import { formatRelative } from "../../lib/format";
 import { formatBpm } from "../../lib/songs";
 import { StatusDot } from "../ui";
-import { CARD_FOCUS, ConflictDot, openOnKey, SourceError, T_PIPELINE, useSource, type PipelineItem } from "./shared";
+import { CardTitle, ConflictDot, SourceError, T_PIPELINE, useSource, type PipelineItem } from "./shared";
 import type { PipelineColumn } from "../../types";
 import { tr } from "../../i18n";
 
@@ -96,16 +96,12 @@ export function PipelineTable() {
             {rows.map(({ item, column }) => (
               <tr
                 key={item.key}
-                tabIndex={0}
-                role="button"
-                aria-label={item.title}
                 onClick={item.open}
-                onKeyDown={openOnKey(item.open)}
-                className={`border-b border-rule ${CARD_FOCUS} ${item.open ? "cursor-pointer" : ""} ${item.selected ? "bg-raised" : "hover:bg-panel"}`}
+                className={`border-b border-rule ${item.open ? "cursor-pointer" : ""} ${item.selected ? "bg-raised" : "hover:bg-panel"}`}
               >
                 <td className="px-2 py-1.5">
                   <span className="flex items-center gap-1.5">
-                    <span className="truncate font-medium text-cream">{item.title}</span>
+                    <CardTitle item={item} />
                     <ConflictDot on={item.conflict} />
                   </span>
                 </td>

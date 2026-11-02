@@ -38,7 +38,7 @@ import { useVisibleSongs } from "./LibraryView";
 import { SongPicker } from "./SongPicker";
 import { ShortsPanel } from "./ShortsPanel";
 import { CoverConcepts } from "./CoverConcepts";
-import { ConfirmButton, StatusSelect, btn, btnPrimary } from "./ui";
+import { ConfirmButton, Modal, StatusSelect, btn, btnPrimary } from "./ui";
 import { canRenderInApp } from "../lib/daws";
 import { Card, CheckLine, FieldRow, KitStatus, StatusDot } from "../ui";
 
@@ -1049,10 +1049,13 @@ function Snippets({
             <div
               key={key}
               onClick={() => setSelected(key)}
+              onFocus={() => setSelected(key)}
               className={`flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs ${key === active ? "border-rule-strong bg-raised" : "border-transparent bg-panel"}`}
             >
               <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: SNIPPET_COLORS[i % 3] }} />
-              <span className="w-24 text-cream">{s.label}</span>
+              <button type="button" onClick={() => setSelected(key)} aria-pressed={key === active} className="w-24 rounded text-left text-cream focus-visible:outline-2 focus-visible:outline-cream">
+                {s.label}
+              </button>
               <TimeInput value={s.startSec} onCommit={(v) => onMove(key, clampStart(v, s.lengthSec))} />
               <span className="text-engrave">→ {formatDuration(s.startSec + s.lengthSec)}</span>
               <select
@@ -1200,59 +1203,40 @@ function TimeInput({ value, onCommit }: { value: number; onCommit: (seconds: num
 /** After an export: what's in the kit and what to do with it (same text as README.md). */
 function KitExportedDialog({ guide, lang, dir, onClose }: { guide: KitGuide; lang: KitLang; dir: string; onClose: () => void }) {
   const fr = lang === "fr";
-  const close = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    close.current?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  // Modal traps the focus, answers Escape and hands the focus back on close.
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6" onClick={onClose}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="kit-exported-title"
-        onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-lg border border-rule bg-raised shadow-2xl"
-      >
-        <div className="border-b border-rule px-5 py-4">
-          <h2 id="kit-exported-title" className="font-display text-xl uppercase tracking-tight text-cream">
-            {fr ? "Kit exporté" : "Kit exported"}
-          </h2>
-          <p className="mt-1 text-sm text-body">{guide.intro}</p>
-        </div>
-        <div className="min-h-0 flex-1 overflow-auto px-5 py-4 text-sm">
-          <ul className="flex flex-col gap-2.5">
-            {guide.items.map((i) => (
-              <li key={i.file}>
-                <span className="font-mono text-xs text-cream">{i.file}</span>
-                <div className="text-body">
-                  {i.what} <span className="text-engrave">{i.todo}</span>
-                </div>
-              </li>
-            ))}
-          </ul>
-          <h3 className="mt-5 text-xs font-semibold uppercase tracking-wider text-engrave">{fr ? "Dans l'ordre" : "In order"}</h3>
-          <ol className="mt-2 list-decimal pl-5 text-body">
-            {guide.steps.map((s) => (
-              <li key={s} className="py-0.5">
-                {s}
-              </li>
-            ))}
-          </ol>
-          <p className="mt-4 text-xs text-engrave">{fr ? "Le même texte est dans README.md, dans le dossier du kit." : "The same text is in README.md, in the kit folder."}</p>
-        </div>
-        <div className="flex justify-end gap-2 border-t border-rule px-5 py-3">
-          <button onClick={() => void api.revealInFileManager(dir)} className={btn}>
-            <FolderOpen size={14} /> {fr ? "Ouvrir le dossier" : "Show folder"}
-          </button>
-          <button ref={close} onClick={onClose} className={btnPrimary}>
-            {fr ? "Compris" : "Got it"}
-          </button>
-        </div>
+    <Modal title={fr ? "Kit exporté" : "Kit exported"} onClose={onClose} width="max-w-2xl">
+      <p className="text-sm text-body">{guide.intro}</p>
+      <div className="mt-4 text-sm">
+        <ul className="flex flex-col gap-2.5">
+          {guide.items.map((i) => (
+            <li key={i.file}>
+              <span className="font-mono text-xs text-cream">{i.file}</span>
+              <div className="text-body">
+                {i.what} <span className="text-engrave">{i.todo}</span>
+              </div>
+            </li>
+          ))}
+        </ul>
+        <h3 className="mt-5 text-xs font-semibold uppercase tracking-wider text-engrave">{fr ? "Dans l'ordre" : "In order"}</h3>
+        <ol className="mt-2 list-decimal pl-5 text-body">
+          {guide.steps.map((s) => (
+            <li key={s} className="py-0.5">
+              {s}
+            </li>
+          ))}
+        </ol>
+        <p className="mt-4 text-xs text-engrave">{fr ? "Le même texte est dans README.md, dans le dossier du kit." : "The same text is in README.md, in the kit folder."}</p>
       </div>
-    </div>
+      <div className="mt-5 flex justify-end gap-2 border-t border-rule pt-3">
+        <button onClick={() => void api.revealInFileManager(dir)} className={btn}>
+          <FolderOpen size={14} /> {fr ? "Ouvrir le dossier" : "Show folder"}
+        </button>
+        <button onClick={onClose} className={btnPrimary}>
+          {fr ? "Compris" : "Got it"}
+        </button>
+      </div>
+    </Modal>
   );
 }
 

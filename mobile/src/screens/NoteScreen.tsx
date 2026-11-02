@@ -103,7 +103,7 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
         <View style={[styles.conflict, { borderColor: C.missing }]}>
           <Led color={C.missing} size={7} />
           <Text style={styles.conflictText}>{t.goneBanner}</Text>
-          <Button label={t.removeFromPhone} variant="danger" onPress={remove} style={{ paddingVertical: 4, paddingHorizontal: 8, marginLeft: 6 }} />
+          <Button label={t.removeFromPhone} variant="danger" onPress={remove} style={{ paddingVertical: 4, paddingHorizontal: 8, marginLeft: 6 }} hitSlop={SLOP_4} />
         </View>
       ) : null}
 
@@ -118,7 +118,7 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
         <View style={styles.conflict}>
           <Led color={C.warn} size={7} />
           <Text style={styles.conflictText}>{t.conflict}</Text>
-          <Button label={t.dismiss} variant="quiet" onPress={() => clearConflict(kind, id)} style={{ paddingVertical: 4, paddingHorizontal: 8 }} />
+          <Button label={t.dismiss} variant="quiet" onPress={() => clearConflict(kind, id)} style={{ paddingVertical: 4, paddingHorizontal: 8 }} hitSlop={SLOP_4} />
         </View>
       ) : null}
 
@@ -153,7 +153,7 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
         <Engrave style={{ flex: 1 }}>
           {[!counts && text ? t.lineCount(curLine + 1, curCount) : null, stats.bars !== null && bpm !== null ? t.barsAt(stats.bars, bpm) : stats.syllables > 0 ? t.syllables(stats.syllables) : null].filter(Boolean).join("  ·  ")}
         </Engrave>
-        {text.trim() ? <Button label={counts ? t.hideCounts : t.showCounts} variant="quiet" onPress={() => setCounts((c) => !c)} style={{ paddingVertical: 2, paddingHorizontal: 8 }} /> : null}
+        {text.trim() ? <Button label={counts ? t.hideCounts : t.showCounts} variant="quiet" onPress={() => setCounts((c) => !c)} style={{ paddingVertical: 2, paddingHorizontal: 8 }} hitSlop={SLOP_2} /> : null}
       </View>
       <View style={styles.footer}>
         <Led color={gone ? C.missing : pending || text !== written.current ? C.warn : C.ok} size={7} />
@@ -163,6 +163,11 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
     </KeyboardAvoidingView>
   );
 }
+
+// Compact buttons keep their look; the touch area grows to 48 dp
+// (about 30 dp tall with 4 dp padding, 26 dp with 2 dp).
+const SLOP_4 = { top: 9, bottom: 9, left: 4, right: 4 };
+const SLOP_2 = { top: 11, bottom: 11, left: 4, right: 4 };
 
 const styles = StyleSheet.create({
   header: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 12, borderBottomWidth: 3, borderBottomColor: C.rule },
