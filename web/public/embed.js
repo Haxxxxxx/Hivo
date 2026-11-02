@@ -2,10 +2,16 @@
 // from the `v` query parameter ever reaches the player URL (same rule as
 // `youtubeId()` in the app); anything else shows a short message instead.
 (function () {
-  var id = new URLSearchParams(location.search).get("v");
+  var params = new URLSearchParams(location.search);
+  // The page has no language path: an explicit ?hl=fr|en wins, else the
+  // viewer's (the app's webview) language. Sets <html lang> for screen readers.
+  var hl = params.get("hl");
+  var fr = hl === "fr" || (hl !== "en" && /^fr\b/i.test(navigator.language || ""));
+  document.documentElement.lang = fr ? "fr" : "en";
+  var id = params.get("v");
   if (!id || !/^[A-Za-z0-9_-]{11}$/.test(id)) {
     var p = document.createElement("p");
-    p.textContent = "No video.";
+    p.textContent = fr ? "Pas de vidéo." : "No video.";
     document.body.appendChild(p);
     return;
   }
