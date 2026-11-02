@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { Album, FileEntry, KitFieldId, ProjectInfo, SongMeta } from "../types";
-import { acceptFingerprint, exportFingerprint, exportStatus, isKitAccepted, lastLyricsLanguage, pickMaster } from "./kitState";
+import {
+  acceptFingerprint,
+  exportedFolderName,
+  exportFingerprint,
+  exportStatus,
+  hashString,
+  isKitAccepted,
+  kitFolderName,
+  lastLyricsLanguage,
+  pickMaster,
+  previousKitFolder,
+} from "./kitState";
 import { kitChecks, kitGuide } from "./launchKit";
 
 const file = (path: string, modifiedAtMs: number): FileEntry => ({ path, modifiedAtMs, sizeBytes: 1 });
@@ -40,6 +51,25 @@ describe("Accepted (W9)", () => {
     const m = meta(p, [album], { credits: [{ personId: "a", role: "Artist" }] });
     expect(isKitAccepted(project([wav, file("/p/Night Run v2.wav", 300)]), m, [album])).toBe(false);
     expect(isKitAccepted(p, { ...m, credits: [{ personId: "b", role: "Artist" }] }, [album])).toBe(false);
+    expect(isKitAccepted(p, m, [{ ...album, releaseDate: "2026-12-11" }])).toBe(false);
+  });
+  it("covers only what the kit exports: renaming the release or reordering it keeps Accepted", () => {
+    const p = project([wav]);
+    const two: Album = { ...album, trackPaths: ["/p/Other.flp", "/p/Night Run.flp"] };
+    const m = meta(p, [two]);
+    expect(isKitAccepted(p, m, [{ ...two, title: "EP renamed" }])).toBe(true);
+    expect(isKitAccepted(p, m, [{ ...two, kind: "album" }])).toBe(true);
+    expect(isKitAccepted(p, m, [{ ...two, trackPaths: ["/p/Night Run.flp", "/p/Other.flp"] }])).toBe(true);
+    expect(isKitAccepted(p, m, [{ ...two, id: "ep2" }])).toBe(true);
+    expect(acceptFingerprint(p, {}, [two])).toBe(acceptFingerprint(p, {}, [{ ...two, title: "Other name", kind: "album" }]));
+    expect(acceptFingerprint(p, {}, [two])).not.toBe(acceptFingerprint(p, {}, [{ ...two, releaseDate: "2027-01-01" }]));
+  });
+  it("kits accepted with the first fingerprint stay accepted while it matches", () => {
+    const p = project([wav]);
+    // The first fingerprint: master, credits, then the release's id, title, kind, date and index.
+    const legacy = hashString(JSON.stringify([`${wav.path}|${wav.modifiedAtMs}`, [], ["ep", "EP", "ep", "2026-12-04", 0]]));
+    const m: SongMeta = { launchKit: { acceptedAtMs: 1, acceptedFingerprint: legacy } };
+    expect(isKitAccepted(p, m, [album])).toBe(true);
     expect(isKitAccepted(p, m, [{ ...album, releaseDate: "2026-12-11" }])).toBe(false);
   });
   it("holds when the song's folder moved with its master (r2 #5)", () => {
@@ -100,5 +130,21 @@ describe("lyrics language hint (B12)", () => {
     };
     expect(lastLyricsLanguage(songs, "c")).toBe("French");
     expect(lastLyricsLanguage({}, "c")).toBeNull();
+  });
+});
+
+describe("kit folders (round 2)", () => {
+  it("records the folder Rust wrote to, which may be disambiguated", () => {
+    expect(exportedFolderName("/out/Launch Kits/Night Run (2)", "Night Run")).toBe("Night Run (2)");
+    expect(exportedFolderName("C:\\out\\Launch Kits\\Night Run", "Night Run")).toBe("Night Run");
+  });
+  it("names the recorded folder: the last export, else the saved cover's", () => {
+    expect(previousKitFolder(undefined)).toBeNull();
+    expect(previousKitFolder({ launchKit: { exported: { atMs: 1, fingerprint: "x", folder: "Night Run (2)" } } })).toBe("Night Run (2)");
+    expect(previousKitFolder({ launchKit: { cover: { seed: 1, prompt: "p", variant: 0, savedPath: "/out/Launch Kits/Night Run/cover-concept.jpg" } } })).toBe("Night Run");
+  });
+  it("finds the kit where it was exported, else under the title", () => {
+    expect(kitFolderName({ launchKit: { exported: { atMs: 1, fingerprint: "x", folder: "Old (2)" } } }, "New")).toBe("Old (2)");
+    expect(kitFolderName(undefined, "New")).toBe("New");
   });
 });

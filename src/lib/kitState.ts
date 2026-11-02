@@ -52,7 +52,27 @@ const masterKey = (m: FileEntry | undefined) => (m ? `${m.path}|${m.modifiedAtMs
  * folder) stays accepted. */
 const acceptedMasterKey = (m: FileEntry | undefined) => (m ? `${m.path.split(/[\\/]/).pop()}|${m.modifiedAtMs}` : "");
 
-function fingerprintOf(project: ProjectInfo, meta: SongMeta | undefined, albums: Album[], key: (m: FileEntry | undefined) => string): string {
+/** What "Accept all" vouches for that lives outside the kit's edits (edits
+ * clear the acceptance on their own), limited to what the kit exports: the
+ * master file (by name and time), the credits and the release date.
+ * Renaming the release, reordering its tracks or moving the song's folder
+ * doesn't undo "Accepted". */
+export function acceptFingerprint(project: ProjectInfo, meta: SongMeta | undefined, albums: Album[]): string {
+  const release = releaseOf(albums, project.path);
+  return hashString(
+    JSON.stringify([
+      "v2",
+      acceptedMasterKey(kitMaster(project, meta)),
+      (meta?.credits ?? []).map((c) => [c.personId, c.role, c.split ?? null]),
+      release?.releaseDate ?? null,
+    ]),
+  );
+}
+
+/** The first fingerprint (it also covered the release's id, title, type
+ * and track index), with the master keyed by full path or by name: kits
+ * accepted with either stay accepted while it matches. */
+function legacyAcceptFingerprint(project: ProjectInfo, meta: SongMeta | undefined, albums: Album[], key: (m: FileEntry | undefined) => string): string {
   const release = releaseOf(albums, project.path);
   return hashString(
     JSON.stringify([
@@ -63,21 +83,45 @@ function fingerprintOf(project: ProjectInfo, meta: SongMeta | undefined, albums:
   );
 }
 
-/** What "Accept all" vouches for that lives outside the kit's edits (edits
- * clear the acceptance on their own): the master file, the credits and the
- * release the song is on (with its date). */
-export function acceptFingerprint(project: ProjectInfo, meta: SongMeta | undefined, albums: Album[]): string {
-  return fingerprintOf(project, meta, albums, acceptedMasterKey);
-}
-
-/** "Accepted", unless the master, credits or release changed since. Kits
- * accepted before the fingerprint existed stay accepted, and so do kits
- * accepted with the older full-path fingerprint. */
+/** "Accepted", unless the master, credits or release date changed since.
+ * Kits accepted before the fingerprint existed stay accepted, and so do kits
+ * accepted with an older fingerprint while it still matches. */
 export function isKitAccepted(project: ProjectInfo, meta: SongMeta | undefined, albums: Album[]): boolean {
   const kit = meta?.launchKit;
   if (!kit?.acceptedAtMs) return false;
-  if (!kit.acceptedFingerprint || kit.acceptedFingerprint === acceptFingerprint(project, meta, albums)) return true;
-  return kit.acceptedFingerprint === fingerprintOf(project, meta, albums, masterKey);
+  const fp = kit.acceptedFingerprint;
+  return (
+    !fp ||
+    fp === acceptFingerprint(project, meta, albums) ||
+    fp === legacyAcceptFingerprint(project, meta, albums, masterKey) ||
+    fp === legacyAcceptFingerprint(project, meta, albums, acceptedMasterKey)
+  );
+}
+
+const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? null;
+
+/** The kit folder the app recorded for this song: where its last export
+ * went, else where its cover was saved. Rust uses it to recognise this
+ * song's folder (`kits::resolve_kit_dir`), never as a path. */
+export function previousKitFolder(meta: SongMeta | undefined): string | null {
+  const kit = meta?.launchKit;
+  if (kit?.exported?.folder) return kit.exported.folder;
+  const cover = kit?.cover?.savedPath;
+  if (!cover) return null;
+  const parts = cover.split(/[\\/]/).filter(Boolean);
+  return parts.length >= 2 ? parts[parts.length - 2] : null;
+}
+
+/** The folder name to record after an export: the folder Rust wrote to
+ * (it may be "Title (2)"), from the path it returned. */
+export function exportedFolderName(dir: string, title: string): string {
+  return baseName(dir) ?? title;
+}
+
+/** Where this song's kit is on disk now: its last export's folder, else
+ * the title (never exported). */
+export function kitFolderName(meta: SongMeta | undefined, title: string): string {
+  return meta?.launchKit?.exported?.folder ?? title;
 }
 
 /** What an export wrote: every value, the master file (path + time) and the
