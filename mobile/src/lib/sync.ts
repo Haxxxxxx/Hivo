@@ -413,13 +413,15 @@ export async function runSync(
   now: () => number,
   /** Say hello even after the first time (once per app run: versions change). */
   opts: { hello?: boolean } = {},
-): Promise<{ desktopName?: string; desktopVersion?: string; conflicts: number; missing: number }> {
+): Promise<{ desktopName?: string; desktopVersion?: string; computerId?: string; conflicts: number; missing: number }> {
   let desktopName: string | undefined;
   let desktopVersion: string | undefined;
+  let computerId: string | undefined;
   if (!get().helloDone || opts.hello) {
-    const h = (await call("/v1/hello", hello)) as { desktopName?: unknown; hivoVersion?: unknown } | null;
+    const h = (await call("/v1/hello", hello)) as { desktopName?: unknown; hivoVersion?: unknown; computerId?: unknown } | null;
     if (h && typeof h.desktopName === "string" && h.desktopName.trim()) desktopName = h.desktopName.trim().slice(0, 80);
     if (h && typeof h.hivoVersion === "string") desktopVersion = h.hivoVersion.slice(0, 20);
+    if (h && typeof h.computerId === "string" && /^[A-Za-z0-9_-]{16,64}$/.test(h.computerId)) computerId = h.computerId;
     set({ ...get(), helloDone: true });
   }
   // Edits kept from an earlier pairing: see what this computer has first.
@@ -458,7 +460,7 @@ export async function runSync(
     const again = parseSnapshot(await call("/v1/snapshot", {}));
     if (again) set(applySnapshot(get(), again, now()));
   }
-  return { desktopName, desktopVersion, conflicts, missing };
+  return { desktopName, desktopVersion, computerId, conflicts, missing };
 }
 
 /** Search + tab filter for the Library. */

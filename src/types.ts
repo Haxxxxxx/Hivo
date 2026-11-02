@@ -829,12 +829,27 @@ export interface PhoneDevice {
   legacyPairing?: boolean;
 }
 
+/** A phone that went through /v1/pair and waits for "Confirm" on this computer. */
+export interface PhoneConfirming {
+  id: string;
+  name: string | null;
+  appVersion: string | null;
+  /** 6 digits, the same the phone shows (never sent: both sides compute it). */
+  code: string;
+  /** A new key for a paired phone: "Not my phone" keeps its old one. */
+  repair: boolean;
+  /** Dropped then if nobody confirmed. */
+  expiresAtMs: number;
+}
+
 export interface PhoneSyncStatus {
   on: boolean;
   port: number | null;
   /** Private IPv4 addresses, best first. */
   addresses: string[];
   devices: PhoneDevice[];
+  /** Phones that paired and wait for "Confirm" / "Not my phone" (absent from older builds). */
+  confirming?: PhoneConfirming[];
   /** Why the listener couldn't start, if it couldn't. */
   error: string | null;
 }

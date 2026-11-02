@@ -14,6 +14,8 @@ export type SyncErrorCode =
   | "too-big" // 413, "too many changes", "note too long": the whole push was refused
   | "outdated" // 404 or "bad request": the two apps don't speak the same version
   | "expired" // bare 401 on /v1/pair: the QR was used already, replaced, or is more than 5 minutes old
+  | "pending" // sealed "pending": paired, but not confirmed on the computer yet (check the code there)
+  | "not-confirmed" // the computer dropped the pairing before it was confirmed ("Not my phone", 5 minutes, a restart)
   | "server"; // anything else (bad envelope, other error message)
 
 export class SyncError extends Error {
@@ -129,6 +131,7 @@ export function createClient(opts: ClientOptions) {
       if (reply.ok) return reply.body;
       if (reply.error === "demo") throw new SyncError("demo");
       if (reply.error === "clock") throw new SyncError("clock");
+      if (reply.error === "pending") throw new SyncError("pending");
       if (reply.error === "busy") throw new SyncError("busy");
       if (reply.error === "read only") throw new SyncError("read-only");
       if (reply.error === "bad request") throw new SyncError("outdated", reply.error);

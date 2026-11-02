@@ -126,6 +126,7 @@ pub fn run() {
             phone_sync::phone_sync_open_firewall,
             phone_sync::phone_sync_forget,
             phone_sync::phone_sync_repair,
+            phone_sync::phone_sync_confirm,
             phone_sync::phone_inbox_link_memo,
             phone_sync::phone_sync_reply,
             phone_sync::phone_sync_set_demo,

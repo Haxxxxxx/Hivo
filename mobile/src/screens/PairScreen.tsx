@@ -41,7 +41,8 @@ export function PairScreen() {
       // Only a computer that answers is kept (a wrong or old code saves nothing).
       const v = await verifyPairing("offer" in r ? r.offer : r.pairing);
       if (!v.ok) {
-        setError(t.pairCheckFailed(errorText(v.code)));
+        // null: cancelled while waiting for the computer's confirmation.
+        setError(v.code ? t.pairCheckFailed(errorText(v.code)) : null);
         setBusy(false);
         handled.current = false;
         return;

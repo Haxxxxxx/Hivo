@@ -407,6 +407,9 @@ export function onPhoneNewer(handler: () => void): Promise<UnlistenFn> {
   return listen("phone-sync-phone-newer", () => handler());
 }
 export const phoneSyncForget = (deviceId: string): Promise<PhoneSyncStatus> => invoke("phone_sync_forget", { deviceId });
+/** "Confirm" (true: Rust repeats the code in a native dialog first) or "Not my phone" (false) for a phone waiting after pairing. */
+export const phoneSyncConfirm = (deviceId: string, accept: boolean): Promise<PhoneSyncStatus> =>
+  invoke("phone_sync_confirm", { deviceId, accept, lang: currentLang() });
 /** Answers a forwarded request: a body, or a short error ("demo", "busy"). */
 export const phoneSyncReply = (id: string, reply: { body: unknown } | { error: string }): Promise<void> =>
   invoke("phone_sync_reply", { id, body: "body" in reply ? reply.body : null, error: "error" in reply ? reply.error : null });

@@ -13,6 +13,10 @@ export type Pairing = {
   /** Paired before 1.2, and the computer has answered bound since: unbound
    * answers (a 1.1 desktop, or an old one replayed) are refused from then on. */
   bound?: boolean;
+  /** The computer's own id (`computerId` in its hello, made once per
+   * install): pairing again with the same one keeps the phone's data and
+   * doesn't send everything again. Absent until a Hivo that has it answers. */
+  computerId?: string;
 };
 
 /** A v1.2 QR (`v=2`): what the phone needs to pair once (`handshake.ts`). */
