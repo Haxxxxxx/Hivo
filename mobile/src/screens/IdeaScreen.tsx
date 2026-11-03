@@ -110,7 +110,7 @@ export function IdeaScreen({ id, onBack }: { id: string; onBack: () => void }) {
 const styles = StyleSheet.create({
   header: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 10, borderBottomWidth: 3, borderBottomColor: C.rule },
   back: { color: C.body, fontSize: 15 },
-  title: { marginTop: 6, borderWidth: 1, borderColor: C.rule, borderRadius: RADIUS, backgroundColor: C.panel, color: C.cream, paddingHorizontal: 10, paddingVertical: 10, fontFamily: FONT.display, fontSize: 22, textTransform: "uppercase" },
+  title: { marginTop: 6, borderWidth: 1, borderColor: C.rule, borderRadius: RADIUS, backgroundColor: C.panel, color: C.cream, paddingHorizontal: 10, paddingVertical: 10, fontFamily: FONT.display, fontSize: 22 },
   text: { marginTop: 6, minHeight: 200, borderWidth: 1, borderColor: C.rule, borderRadius: RADIUS, backgroundColor: C.panel, color: C.cream, padding: 12, fontSize: 16, lineHeight: 23 },
   locked: { color: C.cream, borderWidth: 1, borderColor: C.ok, borderRadius: RADIUS, padding: 10, fontSize: 13, lineHeight: 18 },
   hint: { color: C.engrave, fontSize: 13 },

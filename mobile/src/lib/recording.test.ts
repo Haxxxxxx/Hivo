@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isCallMode, noticePermission, recordingAudioMode, recordsInBackground, shouldAskNotice, showBackgroundHint, stopOnBackground, stopReason } from "./recording";
+import { isCallMode, noticePermission, recordingAudioMode, recordsInBackground, shouldAskNotice, showBackgroundHint, stopOnBackground, stopReason, takeIsOpen } from "./recording";
 
 describe("noticePermission", () => {
   it("is not needed before Android 13", () => {
@@ -52,5 +52,17 @@ describe("what ends a take", () => {
     expect(stopReason(true, cap, cap)).toBe("call");
     expect(stopReason(false, cap - 500, cap)).toBe("max");
     expect(stopReason(false, 30_000, cap)).toBe("stopped");
+  });
+});
+
+describe("takeIsOpen", () => {
+  it("stops a take that records", () => {
+    expect(takeIsOpen({ isRecording: true, canRecord: true })).toBe(true);
+  });
+  it("stops a take expo-audio paused when Hivo left the screen (else the file never gets its index)", () => {
+    expect(takeIsOpen({ isRecording: false, canRecord: true })).toBe(true);
+  });
+  it("leaves a take that is already stopped (by the cap, the notification's Stop, a call)", () => {
+    expect(takeIsOpen({ isRecording: false, canRecord: false })).toBe(false);
   });
 });
