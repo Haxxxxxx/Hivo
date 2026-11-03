@@ -94,10 +94,13 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
         </View>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
           {item?.url && videoId ? (
-            <>
-              {playing !== videoId ? <Button label={t.playHere} onPress={() => setPlaying(videoId)} style={{ paddingVertical: 6 }} hitSlop={SLOP_6} /> : null}
-              <Button label={t.openInYoutube} onPress={() => void Linking.openURL(canonicalUrl(item.url as string)).catch(() => {})} style={{ paddingVertical: 6 }} hitSlop={SLOP_6} />
-            </>
+            // While it plays, the player has its own "Open in YouTube".
+            playing !== videoId ? (
+              <>
+                <Button label={t.playHere} onPress={() => setPlaying(videoId)} style={{ paddingVertical: 6 }} hitSlop={SLOP_6} />
+                <Button label={t.openInYoutube} onPress={() => void Linking.openURL(canonicalUrl(item.url as string)).catch(() => {})} style={{ paddingVertical: 6 }} hitSlop={SLOP_6} />
+              </>
+            ) : null
           ) : item?.url ? (
             <Button label={t.openLink} onPress={() => void Linking.openURL(item.url as string).catch(() => {})} style={{ paddingVertical: 6 }} hitSlop={SLOP_6} />
           ) : null}

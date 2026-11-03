@@ -58,6 +58,13 @@ that):
   notes, ideas and shared files stay on the phone and go only to the user's
   own computer over the local Wi-Fi, end-to-end encrypted, no Hivo server.
   Nothing goes to Hivo or anyone else, so none of it is declared.
+- **To recheck (mini player, 2026-11-03):** a tap on "Play here" loads
+  YouTube's embedded player (youtube-nocookie.com, inside hi-vo.fr/embed.html)
+  in a WebView: YouTube and Vercel see the request (video id, IP address,
+  user agent). It is user-initiated content from a third party, not data
+  Hivo collects, but the owner decides whether Data safety needs a line for
+  it; re-read Play's guidance on WebViews and embedded third-party content
+  before the next review.
 - Is data encrypted in transit? **Yes** (XChaCha20-Poly1305 with the pairing
   key; ML Kit's diagnostics over HTTPS).
 - Can users ask for deletion? Everything is on their devices: removing the

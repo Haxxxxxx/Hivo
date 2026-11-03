@@ -139,6 +139,7 @@
 **The phone app (Android)**
 - Settings → Phone sync on the desktop (off by default) shows a pairing QR code; the phone scans it once (or the phone's camera opens the pairing link).
 - The phone lists your saved prods, beats and songs, and you write notes and lyrics on any of them, offline. They sync with the desktop over the same Wi-Fi, encrypted with the pairing key; a note changed on both sides keeps both copies to merge by hand.
+- A saved prod's YouTube link plays in a small player docked above its note ("Play here"), so you can write while it plays; "Open in YouTube" hands it to the YouTube app. YouTube's own embed on its privacy-enhanced host, play only, nothing downloaded.
 - Nothing written on the phone goes through Hivo's server.
 - APK on the website with an update banner; Google Play listing in progress. No iOS release for now (tested in the Simulator).
 
