@@ -12,7 +12,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { Alert, AppState, Linking, PermissionsAndroid, Platform, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
-import { fileDurationMs, onCall, startRecordingWatch, stopRecordingWatch, takeCallStop } from "../../modules/hivo-share/recording";
+import { fileDurationMs, holdMainForBind, onCall, startRecordingWatch, stopRecordingWatch, takeCallStop } from "../../modules/hivo-share/recording";
 import { c } from "../captureStrings";
 import { ScreenHeader } from "../components/ScreenHeader";
 import { TargetPicker } from "../components/TargetPicker";
@@ -21,7 +21,7 @@ import { adopt, deleteFile, SpaceError } from "../files";
 import { s } from "../inboxStrings";
 import type { IdeaTarget } from "../lib/ideas";
 import { MAX_MEMO_MS, MIN_MEMO_MS } from "../lib/outbox";
-import { noticePermission, recordingAudioMode, recordsInBackground, shouldAskNotice, showBackgroundHint, stopOnBackground, stopReason, takeIsOpen, type NoticePermission } from "../lib/recording";
+import { BIND_HOLD_MS, noticePermission, recordingAudioMode, recordsInBackground, screenOnGuardMode, shouldAskNotice, showBackgroundHint, stopOnBackground, stopReason, takeIsOpen, type NoticePermission } from "../lib/recording";
 import { addOutItem, getState, keepDraftOut, newOutId, removeOut, requestSync, updateDraft } from "../store";
 import { C, FONT, RADIUS, S } from "../theme";
 
@@ -39,7 +39,7 @@ const NOTICE_ASKED_KEY = "hivo.rec.noticeAsked";
 const HINT_SEEN_KEY = "hivo.rec.backgroundHintSeen";
 const android = Platform.OS === "android";
 
-/** Whether the recording notification can show (Android 13+ asks for it). iOS: no background recording. */
+/** Whether the recording notification shows (Android 13+ asks for it; the take runs in the service either way). iOS: no background recording. */
 async function readNotice(): Promise<NoticePermission> {
   if (!android) return "denied";
   const api = Number(Platform.Version);
@@ -48,7 +48,7 @@ async function readNotice(): Promise<NoticePermission> {
   return noticePermission(api, granted, asked);
 }
 
-/** At the first recording: a short rationale, then Android's prompt, once. */
+/** At the first recording: a short rationale, then Android's prompt, once (optional: denied still records in the service). */
 async function ensureNotice(): Promise<NoticePermission> {
   const p = await readNotice();
   if (!shouldAskNotice(p)) return p;
@@ -61,7 +61,7 @@ async function ensureNotice(): Promise<NoticePermission> {
 }
 
 /** How a take ended: Stop, by itself (the cap, the notification's Stop, the
- * microphone taken), a call, or Hivo leaving the screen without the service. */
+ * microphone taken), a call, or Hivo leaving the screen when the service didn't start. */
 type End = "user" | "auto" | "call" | "background";
 
 /** The take a killed run left as a draft (`draftId`), back on the "done" step. */
@@ -85,6 +85,8 @@ export function RecordScreen({ target: initialTarget, onDone, backRef, draftId }
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<NoticePermission | null>(null);
   const [hint, setHint] = useState(false);
+  /** This take records screen-on: the service didn't start (the screen says so). */
+  const [screenOn, setScreenOn] = useState(false);
   const stoppingByUser = useRef(false);
   /** Start pressed and not settled yet: a second tap does nothing (F11). */
   const starting = useRef(false);
@@ -133,8 +135,8 @@ export function RecordScreen({ target: initialTarget, onDone, backRef, draftId }
     return () => sub.remove();
   }, [phase.kind]);
 
-  // The screen stays on while recording, as a fallback: without the
-  // notification (denied) a locked screen would cut the microphone.
+  // The screen stays on while recording: a take on a mic stand shouldn't lock
+  // the phone, and a screen-on take (the service didn't start) needs it.
   useEffect(() => {
     if (phase.kind !== "recording") return;
     void activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch(() => {});
@@ -143,9 +145,9 @@ export function RecordScreen({ target: initialTarget, onDone, backRef, draftId }
     };
   }, [phase.kind]);
 
-  // Hivo left the screen while recording without the foreground service
-  // (notifications denied): stop and keep what was recorded (Android cuts a
-  // background app's microphone anyway). With the service, it goes on.
+  // Hivo left the screen during a screen-on take (the foreground service
+  // didn't start): stop and keep what was recorded (Android cuts a background
+  // app's microphone anyway). In the service (every other take), it goes on.
   // Subscribed once: everything it reads is in refs.
   useEffect(() => {
     const sub = AppState.addEventListener("change", (st) => {
@@ -226,20 +228,27 @@ export function RecordScreen({ target: initialTarget, onDone, backRef, draftId }
     }
     const n = await ensureNotice();
     setNotice(n);
-    const bg = android && recordsInBackground(n);
+    // Notifications or not: the service (they only decide whether it shows in the shade).
+    const bg = recordsInBackground(android);
     stoppingByUser.current = false;
+    setScreenOn(false);
     try {
       await begin(bg);
     } catch (e) {
-      // The service didn't come up: record with the screen on, as before.
       if (!bg) {
         console.warn("Hivo: recording didn't start", e);
         setMessage(s().recFailed);
         return;
       }
+      // The service didn't come up: record with the screen on, stopped (and
+      // kept) if Hivo leaves the screen.
       console.warn("Hivo: background recording didn't start, screen on instead", e);
       try {
-        await begin(false);
+        await begin(recordsInBackground(android, true));
+        // Off expo-audio's pause/resume on every Activity pause, which a link
+        // or a share mid-take turned into a crash (see screenOnGuardMode).
+        await setAudioModeAsync(screenOnGuardMode()).catch(() => {});
+        setScreenOn(true);
       } catch (e2) {
         console.warn("Hivo: recording didn't start", e2);
         setMessage(s().recFailed);
@@ -259,7 +268,11 @@ export function RecordScreen({ target: initialTarget, onDone, backRef, draftId }
   async function begin(bg: boolean) {
     background.current = bg;
     await setAudioModeAsync(recordingAudioMode(bg));
-    if (!recorder.getStatus().canRecord) await recorder.prepareToRecordAsync();
+    if (!recorder.getStatus().canRecord) {
+      // expo-audio 58's bind race: without this most first takes waited 5 s and recorded screen-on.
+      if (bg) holdMainForBind(BIND_HOLD_MS);
+      await recorder.prepareToRecordAsync();
+    }
     recorder.record({ forDuration: MAX_MEMO_MS / 1000 });
     if (!recorder.isRecording) throw new Error("the recorder didn't start");
   }
@@ -267,6 +280,7 @@ export function RecordScreen({ target: initialTarget, onDone, backRef, draftId }
   async function finish(end: End) {
     void stopRecordingWatch();
     setHint(false);
+    setScreenOn(false);
     try {
       // Also a take paused by expo-audio when Hivo left the screen (see takeIsOpen).
       if (takeIsOpen({ isRecording: recorder.isRecording, canRecord: recorder.getStatus().canRecord })) await recorder.stop();
@@ -339,7 +353,12 @@ export function RecordScreen({ target: initialTarget, onDone, backRef, draftId }
         </View>
         <Engrave>{s().recMax(MAX_MEMO_MS / 60000)}</Engrave>
         {recording && hint ? <Text style={styles.msg}>{s().recInBackground}</Text> : null}
-        {android && notice === "denied" && phase.kind !== "done" ? (
+        {recording && screenOn ? (
+          <View style={styles.box}>
+            <Text style={styles.msg}>{s().recScreenOn}</Text>
+          </View>
+        ) : null}
+        {android && notice === "denied" && phase.kind !== "done" && !screenOn ? (
           <View style={styles.box}>
             <Text style={styles.msg}>{s().noticeDenied}</Text>
             {!recording ? <Button label={s().openSettings} onPress={() => void Linking.openSettings()} style={{ marginTop: S.sm, alignSelf: "flex-start" }} /> : null}

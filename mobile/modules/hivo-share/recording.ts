@@ -9,6 +9,7 @@ type Native = {
   startWatch(background: boolean, labels: NoticeLabels): Promise<void>;
   stopWatch(): Promise<void>;
   takeCallStop(): boolean;
+  holdMainForBind(ms: number): void;
   fileDurationMs(uri: string): Promise<number | null>;
   addListener(event: "onCall", listener: () => void): EventSubscription;
 };
@@ -23,6 +24,18 @@ export async function startRecordingWatch(background: boolean, labels: NoticeLab
 /** The take ended, whatever ended it. */
 export async function stopRecordingWatch(): Promise<void> {
   if (native) await native.stopWatch().catch(() => {});
+}
+
+/** Right before a prepare that binds expo-audio's recording service: holds
+ * Android's main thread `ms` (max 500) so the service connection can't beat
+ * expo-audio 58's bind (HivoRecordingModule.kt, expoAudioNames.test.ts). */
+export function holdMainForBind(ms: number): void {
+  if (!native) return;
+  try {
+    native.holdMainForBind(ms);
+  } catch {
+    // An older native build: the prepare just runs as before.
+  }
 }
 
 /** Whether the last take was stopped by a call (read once). */

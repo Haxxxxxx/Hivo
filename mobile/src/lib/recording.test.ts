@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isCallMode, noticePermission, recordingAudioMode, recordsInBackground, shouldAskNotice, showBackgroundHint, stopOnBackground, stopReason, takeIsOpen } from "./recording";
+import { BIND_HOLD_MS, isCallMode, noticePermission, recordingAudioMode, recordsInBackground, screenOnGuardMode, shouldAskNotice, showBackgroundHint, stopOnBackground, stopReason, takeIsOpen } from "./recording";
 
 describe("noticePermission", () => {
   it("is not needed before Android 13", () => {
@@ -19,19 +19,31 @@ describe("noticePermission", () => {
 });
 
 describe("background recording", () => {
-  it("runs in the foreground service only when its notification can show", () => {
-    expect(recordsInBackground("granted")).toBe(true);
-    expect(recordsInBackground("not-needed")).toBe(true);
-    expect(recordsInBackground("denied")).toBe(false);
-    expect(recordsInBackground("unasked")).toBe(false);
+  it("every Android take runs in the foreground service, whatever the notification permission", () => {
+    // The permission isn't an input any more: denied, unasked, granted or not needed, same service.
+    expect(recordsInBackground(true)).toBe(true);
+    expect(recordsInBackground(true, false)).toBe(true);
   });
-  it("asks expo-audio for the service only then", () => {
+  it("records screen-on only when the service didn't start, and never on iOS", () => {
+    expect(recordsInBackground(true, true)).toBe(false);
+    expect(recordsInBackground(false)).toBe(false);
+    expect(recordsInBackground(false, true)).toBe(false);
+  });
+  it("holds the main thread a short moment for the bind, under the native cap", () => {
+    expect(BIND_HOLD_MS).toBeGreaterThan(0);
+    expect(BIND_HOLD_MS).toBeLessThanOrEqual(500); // MAX_HOLD_MS in HivoRecordingModule.kt
+  });
+  it("asks expo-audio for the service on a service take only", () => {
     expect(recordingAudioMode(true)).toMatchObject({ allowsRecording: true, allowsBackgroundRecording: true, shouldPlayInBackground: false });
     expect(recordingAudioMode(false).allowsBackgroundRecording).toBe(false);
   });
-  it("stops on background only without the service", () => {
-    expect(stopOnBackground(true)).toBe(false);
-    expect(stopOnBackground(false)).toBe(true);
+  it("a screen-on take switches expo-audio's pause/resume off once it records", () => {
+    // allowsBackgroundRecording is what gates expo-audio's lifecycle pause (expoAudioNames.test.ts).
+    expect(screenOnGuardMode()).toMatchObject({ allowsRecording: true, allowsBackgroundRecording: true, shouldPlayInBackground: false });
+  });
+  it("stops on background only a screen-on take", () => {
+    expect(stopOnBackground(recordsInBackground(true))).toBe(false);
+    expect(stopOnBackground(recordsInBackground(true, true))).toBe(true);
   });
   it("shows the hint once, and only with the service", () => {
     expect(showBackgroundHint(true, false)).toBe(true);

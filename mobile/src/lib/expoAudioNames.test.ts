@@ -26,6 +26,32 @@ describe("expo-audio names HivoRecordingModule relies on", () => {
     expect(constant(ours, "EXPO_STOP_ACTION")).toBe(constant(theirs, "ACTION_STOP_RECORDING"));
   });
 
+  it("a screen-on take escapes the pause/resume on Activity pause with allowsBackgroundRecording (screenOnGuardMode)", () => {
+    const mod = readFileSync(root("node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioModule.kt"), "utf8");
+    const hook = (name: string) => {
+      const at = mod.indexOf(`${name} {`);
+      if (at < 0) throw new Error(`no ${name}`);
+      return mod.slice(at, mod.indexOf("\n    }\n", at));
+    };
+    expect(hook("OnActivityEntersBackground")).toMatch(/if \(!allowsBackgroundRecording\) \{\s*recorders\.values\.forEach \{ recorder ->\s*recorder\.pauseForSystem\(\)/);
+    expect(hook("OnActivityEntersForeground")).toMatch(/if \(!allowsBackgroundRecording\) \{\s*recorders\.values\.forEach \{ recorder ->\s*recorder\.resumeAfterSystemPause\(\)/);
+    // Switching it on after prepare binds no service: only prepareRecording binds.
+    const rec = readFileSync(root("node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioRecorder.kt"), "utf8");
+    expect(rec.match(/bindWithService\(\)/g)?.length).toBe(1);
+    expect(rec).toMatch(/suspend fun prepareRecording[\s\S]*?if \(useForegroundService\) \{\s*serviceConnection\.bindWithService\(\)/);
+  });
+
+  it("the bind race holdMainForBind works around is still there (fixed upstream: drop the hold)", () => {
+    const conn = readFileSync(root("node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioRecordingServiceConnection.kt"), "utf8");
+    const bind = conn.indexOf("startServiceAndBind(");
+    const store = conn.indexOf("bindingContinuation = continuation");
+    expect(bind).toBeGreaterThan(0);
+    // The continuation is stored only after bindService returned: a fast onServiceConnected finds none.
+    expect(store).toBeGreaterThan(bind);
+    // And the callback runs on the main thread (a ServiceConnection's default), which the hold delays.
+    expect(conn).toMatch(/override fun onServiceConnected[\s\S]*?takeBindingContinuation\(\)\?\.resume\(Unit\)/);
+  });
+
   it("the notification channel and id", () => {
     expect(constant(ours, "EXPO_CHANNEL_ID")).toBe(constant(theirs, "CHANNEL_ID"));
     expect(constant(ours, "EXPO_NOTIFICATION_ID")).toBe(constant(theirs, "NOTIFICATION_ID"));
