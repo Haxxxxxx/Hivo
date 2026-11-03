@@ -51,7 +51,7 @@ export function UpdateBanner() {
 }
 
 const styles = StyleSheet.create({
-  wrap: { margin: 12, marginBottom: 0, padding: 10, backgroundColor: C.panel, borderWidth: 1, borderColor: C.rule, borderRadius: 4 },
+  wrap: { marginHorizontal: 12, marginBottom: 8, padding: 10, backgroundColor: C.panel, borderWidth: 1, borderColor: C.rule, borderRadius: 4 },
   row: { flexDirection: "row", alignItems: "center" },
   text: { color: C.cream, marginLeft: 8, flex: 1, fontSize: 14 },
   actions: { flexDirection: "row", justifyContent: "flex-end", marginTop: 8, gap: 8 },

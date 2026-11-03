@@ -1,24 +1,35 @@
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as Clipboard from "expo-clipboard";
 import { useEffect, useRef, useState } from "react";
-import { KeyboardAvoidingView, Linking, Platform, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { Button, Engrave } from "../components/ui";
 import { UpdateCheck } from "../components/UpdateCheck";
 import { tr } from "../lib/i18n";
-import { parsePairingUrl } from "../lib/pairing";
 import { CAMERA_APP_INTENT, SCAN_TIMEOUT_MS, scannerFailure } from "../lib/scanner";
 import { waitingCount } from "../lib/shareQueue";
-import { pair, sync, useApp, verifyPairing } from "../store";
-import { errorText, pairErrorText, T } from "../strings";
+import { useApp } from "../store";
+import { T } from "../strings";
 import { C, FONT, RADIUS } from "../theme";
+import { PairSteps } from "./LibraryScreen";
 
-export function PairScreen() {
+export type PairSource = "scan" | "paste" | "link";
+/** Kept by App.tsx, so it survives this screen being covered by the code check. */
+export type PairError = { text: string; source: PairSource; newCode: boolean };
+
+type Props = {
+  busy: boolean;
+  error: PairError | null;
+  onSubmit: (input: string, source: PairSource) => void;
+  onClearError: () => void;
+  onBack: () => void;
+};
+
+export function PairScreen({ busy, error, onSubmit, onClearError, onBack }: Props) {
   const [permission, requestPermission] = useCameraPermissions();
   const [scanning, setScanning] = useState(false);
   const [text, setText] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [trouble, setTrouble] = useState(error?.source === "paste");
   const handled = useRef(false);
   const t = tr(T);
   const outbox = useApp((st) => st.outbox);
@@ -26,47 +37,29 @@ export function PairScreen() {
   const waiting = waitingCount(outbox, ideas);
   const deniedForever = !!permission && !permission.granted && !permission.canAskAgain;
 
-  async function submit(input: string) {
+  useEffect(() => {
+    if (busy) setScanning(false);
+    else handled.current = false;
+  }, [busy]);
+  useEffect(() => {
+    if (error?.source === "paste") setTrouble(true);
+  }, [error]);
+
+  function submit(input: string, source: PairSource) {
     if (busy) return;
-    const r = parsePairingUrl(input, { loopback: Platform.OS === "ios" });
-    if (!r.ok) {
-      setError(pairErrorText(r.error));
-      handled.current = false;
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    setScanning(false);
-    try {
-      // Only a computer that answers is kept (a wrong or old code saves nothing).
-      const v = await verifyPairing("offer" in r ? r.offer : r.pairing);
-      if (!v.ok) {
-        // null: cancelled while waiting for the computer's confirmation.
-        setError(v.code ? t.pairCheckFailed(errorText(v.code)) : null);
-        setBusy(false);
-        handled.current = false;
-        return;
-      }
-      await pair(v.pairing); // the app switches to the Library
-      void sync();
-    } catch (e) {
-      // Saving the key failed on the phone (secure storage): the raw text is for the log.
-      console.warn("pairing failed:", e instanceof Error ? e.message : String(e));
-      setError(t.pairSaveFailed);
-      setBusy(false);
-      handled.current = false;
-    }
+    setNotice(null);
+    onSubmit(input, source);
   }
 
   async function pasteLink() {
     const pasted = (await Clipboard.getStringAsync().catch(() => "")).trim();
     if (!pasted) return;
     setText(pasted);
-    void submit(pasted);
+    submit(pasted, "paste");
   }
 
   async function startScan() {
-    setError(null);
+    onClearError();
     setNotice(null);
     // Android: Google Play services' code scanner (the in-view analysis saw
     // nothing on a real phone while the system camera read the same code).
@@ -74,7 +67,7 @@ export function PairScreen() {
     if (Platform.OS === "android" && CameraView.isModernBarcodeScannerAvailable) {
       const sub = CameraView.onModernBarcodeScanned((res) => {
         sub.remove();
-        void submit(res.data);
+        submit(res.data, "scan");
       });
       try {
         await CameraView.launchScanner({ barcodeTypes: ["qr"] });
@@ -94,7 +87,8 @@ export function PairScreen() {
     if (!permission?.granted) {
       const p = await requestPermission();
       if (!p.granted) {
-        setError(t.cameraDenied);
+        setNotice(t.cameraDenied);
+        setTrouble(true);
         return;
       }
     }
@@ -106,7 +100,7 @@ export function PairScreen() {
   // which pairs (App.tsx). Android only: iOS has no intent for it.
   async function openCameraApp() {
     setScanning(false);
-    setError(null);
+    onClearError();
     try {
       await Linking.sendIntent(CAMERA_APP_INTENT);
       setNotice(t.cameraAppOpened);
@@ -116,22 +110,30 @@ export function PairScreen() {
     }
   }
 
-  // Nothing read after SCAN_TIMEOUT_MS: hand over to the camera app.
+  // Nothing read after SCAN_TIMEOUT_MS: show the other ways (never switch apps by itself).
   useEffect(() => {
-    if (!scanning || Platform.OS !== "android") return;
+    if (!scanning) return;
     const timer = setTimeout(() => {
-      if (!handled.current) void openCameraApp();
+      if (!handled.current) setTrouble(true);
     }, SCAN_TIMEOUT_MS);
     return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scanning]);
 
+  const errorBlock = (e: PairError) => (
+    <View style={styles.errorBox} accessibilityLiveRegion="polite">
+      <Text style={styles.error}>{e.text}</Text>
+      {e.newCode ? <Text style={styles.next}>{t.pairNewCode}</Text> : null}
+    </View>
+  );
+
   return (
-    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
       <ScrollView contentContainerStyle={styles.wrap} keyboardShouldPersistTaps="handled">
-        <Text style={styles.brand}>Hivo</Text>
+        <Pressable onPress={onBack} accessibilityRole="button" style={styles.back}>
+          <Text style={styles.backText}>‹ {t.back}</Text>
+        </Pressable>
         <Text style={styles.title}>{t.pairTitle}</Text>
-        <Text style={styles.body}>{t.pairIntro}</Text>
+        <PairSteps />
         {waiting > 0 ? <Text style={styles.waiting}>{t.waitingToSend(waiting)}</Text> : null}
 
         {scanning ? (
@@ -143,46 +145,61 @@ export function PairScreen() {
               onBarcodeScanned={(res) => {
                 if (handled.current) return;
                 handled.current = true;
-                void submit(res.data);
+                submit(res.data, "scan");
               }}
             />
           </View>
         ) : null}
         <Button
-          label={scanning ? t.stopScan : permission && !permission.granted && !permission.canAskAgain ? t.allowCamera : t.scan}
+          label={scanning ? t.stopScan : deniedForever ? t.allowCamera : t.scan}
           variant={scanning ? "secondary" : "primary"}
           onPress={() => (scanning ? setScanning(false) : void startScan())}
+          disabled={busy}
           style={{ marginTop: 20 }}
         />
-        {/* Right under the camera, so a refused code is never hidden below the fold. */}
-        {busy ? <Text style={styles.status}>{t.codeRead}</Text> : null}
+        {/* Right under Scan, so the result of a scan is never below the fold. */}
+        {busy ? (
+          <View style={styles.statusRow}>
+            <ActivityIndicator color={C.body} size="small" />
+            <Text style={[styles.status, { marginTop: 0 }]}>{t.codeRead}</Text>
+          </View>
+        ) : null}
         {notice && !busy ? <Text style={styles.status}>{notice}</Text> : null}
-        {error ? <Text style={styles.error}>{error}</Text> : null}
+        {error && error.source !== "paste" && !busy ? errorBlock(error) : null}
         {deniedForever && !scanning ? (
           <Button label={t.openCameraSettings} variant="secondary" onPress={() => void Linking.openSettings()} style={{ marginTop: 10 }} />
         ) : null}
-        {scanning && Platform.OS === "android" ? <Text style={styles.tip}>{t.scanTimeoutHint(SCAN_TIMEOUT_MS / 1000)}</Text> : null}
-        {Platform.OS === "android" ? (
-          <Button label={t.useCameraApp} variant="secondary" onPress={() => void openCameraApp()} style={{ marginTop: 10 }} />
-        ) : null}
-        <Text style={styles.tip}>{t.scanTip}</Text>
 
-        <Engrave style={{ marginTop: 28, marginBottom: 6 }}>{t.pasteLabel}</Engrave>
-        <TextInput
-          value={text}
-          onChangeText={setText}
-          placeholder={t.pastePlaceholder}
-          placeholderTextColor={C.engrave}
-          autoCapitalize="none"
-          autoCorrect={false}
-          multiline
-          accessibilityLabel={t.pairLinkLabel}
-          style={styles.input}
-        />
-        <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
-          <Button label={t.pasteLink} variant="secondary" onPress={() => void pasteLink()} disabled={busy} style={{ flex: 1 }} />
-          <Button label={busy ? t.pairing : t.pair} onPress={() => void submit(text)} disabled={busy || !text.trim()} style={{ flex: 1 }} />
-        </View>
+        <Button label={trouble ? t.hideTrouble : t.troubleScanning} variant="quiet" onPress={() => setTrouble((v) => !v)} style={{ marginTop: 16, alignSelf: "flex-start" }} />
+        {trouble ? (
+          <View>
+            {Platform.OS === "android" ? (
+              <Button label={t.useCameraApp} variant="secondary" onPress={() => void openCameraApp()} style={{ marginTop: 6 }} />
+            ) : null}
+            <Text style={styles.tip}>{t.scanTip}</Text>
+
+            <Engrave style={{ marginTop: 20, marginBottom: 6 }}>{t.pasteLabel}</Engrave>
+            <TextInput
+              value={text}
+              onChangeText={(v) => {
+                setText(v);
+                if (error?.source === "paste") onClearError();
+              }}
+              placeholder={t.pastePlaceholder}
+              placeholderTextColor={C.engrave}
+              autoCapitalize="none"
+              autoCorrect={false}
+              multiline
+              accessibilityLabel={t.pairLinkLabel}
+              style={[styles.input, error?.source === "paste" && { borderColor: C.missing }]}
+            />
+            {error?.source === "paste" && !busy ? errorBlock(error) : null}
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
+              <Button label={t.pasteLink} variant="secondary" onPress={() => void pasteLink()} disabled={busy} style={{ flex: 1 }} />
+              <Button label={busy ? t.pairing : t.pair} onPress={() => submit(text, "paste")} disabled={busy || !text.trim()} style={{ flex: 1 }} />
+            </View>
+          </View>
+        ) : null}
 
         {/* Here too: an app that can't pair must still be able to update. */}
         <UpdateCheck style={{ marginTop: 32 }} />
@@ -192,10 +209,10 @@ export function PairScreen() {
 }
 
 const styles = StyleSheet.create({
-  wrap: { padding: 20, paddingTop: 32 },
-  brand: { fontFamily: FONT.display, fontSize: 40, color: C.cream, letterSpacing: 1, textTransform: "uppercase" },
-  title: { fontFamily: FONT.display, fontSize: 24, color: C.cream, marginTop: 16, textTransform: "uppercase", letterSpacing: 0.5 },
-  body: { color: C.body, fontSize: 15, lineHeight: 21, marginTop: 8 },
+  wrap: { padding: 20, paddingTop: 8 },
+  back: { minHeight: 48, justifyContent: "center", alignSelf: "flex-start", paddingRight: 16 },
+  backText: { color: C.body, fontSize: 15 },
+  title: { fontFamily: FONT.display, fontSize: 28, color: C.cream, marginTop: 4, textTransform: "uppercase", letterSpacing: 0.5 },
   cameraBox: { marginTop: 20, aspectRatio: 1, borderRadius: RADIUS, overflow: "hidden", borderWidth: 1, borderColor: C.ruleStrong, backgroundColor: C.panel },
   input: {
     minHeight: 72,
@@ -209,8 +226,11 @@ const styles = StyleSheet.create({
     fontSize: 13,
     textAlignVertical: "top",
   },
-  waiting: { color: C.warn, fontSize: 14, lineHeight: 20, marginTop: 10 },
-  error: { color: C.missing, marginTop: 12, fontSize: 14 },
-  status: { color: C.cream, marginTop: 12, fontSize: 14 },
+  waiting: { color: C.warn, fontSize: 14, lineHeight: 20, marginTop: 14 },
+  errorBox: { marginTop: 10, padding: 10, borderWidth: 1, borderColor: C.missing, borderRadius: RADIUS, backgroundColor: C.panel, gap: 6 },
+  error: { color: C.cream, fontSize: 14, lineHeight: 20 },
+  next: { color: C.body, fontSize: 14, lineHeight: 20 },
+  statusRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 12 },
+  status: { color: C.cream, marginTop: 12, fontSize: 14, lineHeight: 20 },
   tip: { color: C.engrave, marginTop: 10, fontSize: 13, lineHeight: 18 },
 });

@@ -1,6 +1,7 @@
 import { dict, plural, tr } from "./lib/i18n";
 import type { SyncErrorCode } from "./lib/client";
 import type { PairingError } from "./lib/pairing";
+import { lowerFirst } from "./lib/captures";
 
 const NB = " "; // narrow no-break space before : ? ! in French
 
@@ -22,6 +23,34 @@ export const T = dict(
     confirmBody: (name: string) => `"${name}" shows a code too. If it's the same as this one, click Confirm there. Not the same? Click "Not my phone" there and pair again.`,
     confirmWaiting: "Waiting for the computer…",
     confirmCancel: "Cancel",
+    // Shell: tabs, header, pairing steps (phone-shell-nav)
+    tabCapture: "Capture",
+    tabLibrary: "Library",
+    pairStep1: "On your computer, open Hivo → Settings → Phone sync, and turn it on.",
+    pairStep2: "Click Pair a phone: a QR code shows.",
+    pairStep3: "With this phone on the same Wi-Fi, tap Scan and point it at the code.",
+    troubleScanning: "Trouble scanning?",
+    hideTrouble: "Hide the other ways",
+    confirmValid: (left: string) => `The code works for ${left} more.`,
+    pairedTitle: "Paired",
+    pairedBody: (name: string) => `This phone now syncs with "${name}".`,
+    pairNotSaved: (why: string) => `Nothing was saved: ${why}.`,
+    pairNewCode: "Next: on the computer, click Pair a phone again to show a new code, then scan it.",
+    loopbackLink: "This link points at the phone itself (127.0.0.1), not at your computer. Scan the QR code shown on the computer (Settings → Phone sync) instead.",
+    badLinkTitle: "This link can't pair",
+    notPairedStatus: "Not paired",
+    notPairedBanner: (n: number) => (n > 0 ? plural(n, "Not paired: 1 item waits on this phone.", `Not paired: ${n} items wait on this phone.`) : "Not paired: what you capture stays on this phone until you pair."),
+    pairAction: "Pair",
+    awayStatus: (n: number) => (n > 0 ? `Away from your computer · ${n} waiting` : "Away from your computer"),
+    waitingItems: (n: number) => `${n} waiting`,
+    loadingLibrary: "Loading your library…",
+    libEmpty: "Nothing here yet. Pull down to sync with your computer.",
+    libUnpaired: "Pair with your computer to see its saved prods, beats and songs here. Capturing works without it.",
+    clearSearch: "Clear the search",
+    conflictLed: "Edited on both sides: check the note",
+    retrySync: "Retry",
+    openDateSettings: "Date settings",
+    openAppSettings: "Settings",
     // Library
     tabProd: "Saved prods",
     tabBeat: "Beats",
@@ -131,6 +160,33 @@ export const T = dict(
     confirmBody: (name: string) => `«${NB}${name}${NB}» affiche aussi un code. S'il est identique à celui-ci, clique sur Confirmer là-bas. Pas le même${NB}? Clique sur «${NB}Pas mon téléphone${NB}» là-bas et associe à nouveau.`,
     confirmWaiting: "En attente de l'ordi…",
     confirmCancel: "Annuler",
+    tabCapture: "Capter",
+    tabLibrary: "Biblio",
+    pairStep1: "Sur ton ordi, ouvre Hivo → Réglages → Sync téléphone, et active-la.",
+    pairStep2: `Clique sur Associer un téléphone${NB}: un QR code s'affiche.`,
+    pairStep3: "Avec ce téléphone sur le même Wi-Fi, touche Scanner et vise le code.",
+    troubleScanning: `Le scan ne marche pas${NB}?`,
+    hideTrouble: "Masquer les autres moyens",
+    confirmValid: (left: string) => `Le code reste valable encore ${left}.`,
+    pairedTitle: "Associé",
+    pairedBody: (name: string) => `Ce téléphone se synchronise maintenant avec «${NB}${name}${NB}».`,
+    pairNotSaved: (why: string) => `Rien n'a été enregistré${NB}: ${why}.`,
+    pairNewCode: `Ensuite${NB}: sur l'ordi, clique à nouveau sur Associer un téléphone pour afficher un nouveau code, puis scanne-le.`,
+    loopbackLink: "Ce lien vise le téléphone lui-même (127.0.0.1), pas ton ordi. Scanne plutôt le QR code affiché sur l'ordi (Réglages → Sync téléphone).",
+    badLinkTitle: "Ce lien ne peut pas associer",
+    notPairedStatus: "Pas associé",
+    notPairedBanner: (n: number) => (n > 0 ? plural(n, `Pas associé${NB}: ${n} élément attend sur ce téléphone.`, `Pas associé${NB}: ${n} éléments attendent sur ce téléphone.`) : `Pas associé${NB}: ce que tu captes reste sur ce téléphone jusqu'à l'association.`),
+    pairAction: "Associer",
+    awayStatus: (n: number) => (n > 0 ? `Loin de ton ordi · ${n} en attente` : "Loin de ton ordi"),
+    waitingItems: (n: number) => `${n} en attente`,
+    loadingLibrary: "Chargement de ta bibliothèque…",
+    libEmpty: "Rien pour l'instant. Tire vers le bas pour synchroniser avec ton ordi.",
+    libUnpaired: "Associe ton ordi pour voir ici ses prods gardées, ses beats et ses sons. La capture marche sans.",
+    clearSearch: "Effacer la recherche",
+    conflictLed: `Modifiée des deux côtés${NB}: relis la note`,
+    retrySync: "Réessayer",
+    openDateSettings: "Réglages de date",
+    openAppSettings: "Réglages",
     tabProd: "Prods gardées",
     tabBeat: "Beats",
     tabSong: "Sons",
@@ -263,6 +319,14 @@ const ERRORS = dict(
  * answers both the same way). */
 export const errorText = (code: SyncErrorCode, syncedBefore = false): string => (code === "forgotten" && syncedBefore ? tr(ERRORS).forgottenOrClock : tr(ERRORS)[code]);
 export const pairAgainText = (): string => tr(ERRORS).pairAgain;
+/** Why a pairing didn't happen: "didn't answer" only when it didn't; the
+ * reason in lower case after the colon (French typography too). */
+export const pairFailText = (code: SyncErrorCode): string => {
+  const why = lowerFirst(tr(ERRORS)[code]);
+  return code === "offline" || code === "off" ? tr(T).pairCheckFailed(why) : tr(T).pairNotSaved(why);
+};
+/** A code that's used up or wasn't confirmed: the next step is a new code on the computer. */
+export const needsNewCode = (code: SyncErrorCode): boolean => code === "expired" || code === "not-confirmed";
 /** The computer's Hivo is older than this phone's (major.minor). */
 export const updateDesktopText = (): string => tr(ERRORS)["update-desktop"];
 

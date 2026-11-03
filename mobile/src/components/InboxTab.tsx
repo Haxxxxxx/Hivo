@@ -1,13 +1,14 @@
 import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
-import { useEffect, useMemo, useState } from "react";
-import { Alert, Pressable, SectionList, StyleSheet, Text, View } from "react-native";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { Alert, Pressable, RefreshControl, SectionList, StyleSheet, Text, View } from "react-native";
 import { s } from "../inboxStrings";
+import { captureRows, duration, when, type CaptureRow, type CaptureStatus, type Group } from "../lib/captures";
 import { filedTitle } from "../lib/filedTo";
-import { visibleIdeas, type Idea } from "../lib/ideas";
+import { lang } from "../lib/i18n";
 import { findItem, type Item, type Kind } from "../lib/sync";
 import { progress, type OutItem } from "../lib/outbox";
 import { removeOut, requestSync, retryOut, useApp } from "../store";
-import { C, RADIUS } from "../theme";
+import { C } from "../theme";
 import { Button, Engrave, Led } from "./ui";
 
 type Props = {
@@ -16,49 +17,71 @@ type Props = {
   onPick: () => void;
 };
 
-/** How many things still have to reach the computer (the tab's badge). */
-export function useInboxPending(): number {
-  const ideas = useApp((st) => st.ideas);
-  const outbox = useApp((st) => st.outbox);
-  return ideas.filter((i) => !i.deleted && (i.sentAt === null || i.updatedAt > i.sentAt) && (i.title.trim() || i.text.trim())).length + outbox.filter((o) => o.state !== "sent").length;
-}
+export type CaptureHandle = { scrollToTop: () => void; stopPlayback: () => void };
 
 type Find = (kind: Kind, id: string) => Item | undefined;
 
-/** "Filed to <where>", or the plain "Filed on the computer" when it can't say. */
-function filedText(filedTo: string | null, find: Find): string {
-  const where = filedTitle(filedTo, find);
-  return where ? s().filedTo(where) : s().filedOnComputer;
-}
+const GROUP_TITLE: Record<Group, () => string> = { needs: () => s().groupNeeds, waiting: () => s().groupWaiting, done: () => s().groupDone };
 
-function ideaState(i: Idea, find: Find): { text: string; color: string } {
-  if (i.status === "filed") return { text: filedText(i.filedTo, find), color: C.ok };
-  if (i.status === "dismissed") return { text: s().dismissedOnComputer, color: C.engrave };
-  if (i.sentAt !== null && i.updatedAt <= i.sentAt) return { text: s().onComputer, color: C.ok };
-  return { text: s().waiting, color: C.warn };
-}
-
-function outState(o: OutItem, sending: boolean, find: Find): { text: string; color: string } {
-  if (o.state === "failed") return { text: `${s().failed}: ${o.error ? s().outErrors[o.error] : ""}`, color: C.missing };
-  if (o.state === "sent") {
-    if (o.status === "filed") return { text: filedText(o.filedTo, find), color: C.ok };
-    if (o.status === "dismissed") return { text: s().dismissedOnComputer, color: C.engrave };
-    return { text: o.type === "sketch" ? s().inInboxSketch : s().onComputer, color: C.ok };
+/** The row's status in plain words, and its LED. Never orange (orange is for the main action). */
+function statusLine(st: CaptureStatus, row: CaptureRow, find: Find): { text: string; color: string } {
+  switch (st.kind) {
+    case "failed": {
+      const why = row.kind === "out" && row.out.error ? s().outErrors[row.out.error] : null;
+      return { text: why ? s().notSentWhy(why) : s().failed, color: C.missing };
+    }
+    case "sending":
+      return { text: s().sending(st.pct), color: C.body };
+    case "waiting": {
+      const text = { unpaired: s().waitUnpaired, away: s().waitAway, blocked: s().waitBlocked, held: s().waitHeld, "next-sync": s().waitNext }[st.reason];
+      return { text, color: st.reason === "held" || st.reason === "blocked" ? C.warn : C.engrave };
+    }
+    case "filed": {
+      const where = filedTitle(st.filedTo, find);
+      return { text: where ? s().addedTo(where) : s().addedOnComputer, color: C.ok };
+    }
+    case "dismissed":
+      return { text: s().skippedOnComputer, color: C.engrave };
+    case "received":
+      return st.old ? { text: s().receivedOld, color: C.engrave } : { text: row.kind === "idea" ? s().receivedIdea : s().receivedSketch, color: C.ok };
   }
-  if (sending) return { text: s().sending(Math.round(progress(o) * 100)), color: C.hot };
-  return { text: s().waiting, color: C.warn };
 }
 
-export function InboxTab({ onIdea, onRecord, onPick }: Props) {
-  // Select the stored array (stable) and derive here: a selector that builds
+/** The Capture home: New idea / Record / Add a file, then every capture grouped by what it needs. */
+export const InboxTab = forwardRef<CaptureHandle, Props>(function InboxTab({ onIdea, onRecord, onPick }, ref) {
+  // Select the stored arrays (stable) and derive here: a selector that builds
   // a new array on every read makes useSyncExternalStore loop forever.
-  const allIdeas = useApp((st) => st.ideas);
-  const ideas = useMemo(() => visibleIdeas(allIdeas), [allIdeas]);
+  const ideas = useApp((st) => st.ideas);
   const outbox = useApp((st) => st.outbox);
   const sending = useApp((st) => st.sending);
+  const paired = useApp((st) => st.pairing !== null);
+  const error = useApp((st) => st.error);
   const extrasError = useApp((st) => st.extrasError);
+  const syncing = useApp((st) => st.syncing);
   const library = useApp((st) => st.sync);
   const find: Find = (kind, id) => findItem(library, kind, id);
+  const sendingItem = sending ? outbox.find((o) => o.id === sending) : undefined;
+  const groups = useMemo(
+    () => captureRows(ideas, outbox, { paired, error, held: extrasError, sending: sendingItem ? { id: sendingItem.id, progress: progress(sendingItem) } : null }),
+    [ideas, outbox, paired, error, extrasError, sendingItem],
+  );
+  const list = useRef<SectionList<CaptureRow>>(null);
+  useImperativeHandle(ref, () => ({
+    stopPlayback: () => {
+      player.pause();
+      setPlayingId(null);
+    },
+    scrollToTop: () => {
+      try {
+        list.current?.scrollToLocation({ sectionIndex: 0, itemIndex: 0, viewPosition: 0, animated: true });
+      } catch {
+        // Empty list: nothing to scroll.
+      }
+    },
+  }));
+  const now = Date.now();
+  const lg = lang();
+
   // One player for the kept memos (only one plays at a time).
   const player = useAudioPlayer(null);
   const playerStatus = useAudioPlayerStatus(player);
@@ -77,13 +100,8 @@ export function InboxTab({ onIdea, onRecord, onPick }: Props) {
     setPlayingId(o.id);
   }
 
-  type Row = { kind: "idea"; idea: Idea } | { kind: "out"; out: OutItem };
-  const sections: { key: string; title: string; data: Row[] }[] = [
-    { key: "ideas", title: s().ideas, data: ideas.map((idea): Row => ({ kind: "idea", idea })) },
-    { key: "out", title: s().sent, data: outbox.map((out): Row => ({ kind: "out", out })) },
-  ].filter((sec) => sec.data.length > 0);
-
   function confirmRemove(o: OutItem) {
+    if (sending === o.id) return;
     Alert.alert(s().removeConfirmTitle, s().removeConfirmBody, [
       { text: s().cancel, style: "cancel" },
       {
@@ -100,99 +118,111 @@ export function InboxTab({ onIdea, onRecord, onPick }: Props) {
     ]);
   }
 
+  const sections = groups.map((g) => ({ key: g.group, title: GROUP_TITLE[g.group](), data: g.rows }));
+  const hasMemoDone = groups.some((g) => g.group === "done" && g.rows.some((r) => r.kind === "out" && r.out.type === "memo"));
+
   return (
     <View style={{ flex: 1 }}>
       <View style={styles.actions}>
-        <Button label={s().newIdea} variant="primary" onPress={() => onIdea(null)} style={styles.action} />
-        <Button label={s().record} onPress={onRecord} style={styles.action} />
-        <Button label={s().addFile} onPress={onPick} style={styles.action} />
-      </View>
-      {extrasError ? (
-        <View style={styles.banner}>
-          <Led color={C.warn} size={7} />
-          <Text style={styles.bannerText}>{s().extras[extrasError]}</Text>
+        <Button label={s().newIdea} variant="primary" onPress={() => onIdea(null)} />
+        <View style={styles.actionRow}>
+          <Button label={s().record} onPress={onRecord} style={styles.action} />
+          <Button label={s().addFile} onPress={onPick} style={styles.action} />
         </View>
-      ) : null}
+      </View>
       <SectionList
+        ref={list}
         sections={sections}
-        keyExtractor={(row) => (row.kind === "idea" ? `i:${row.idea.id}` : `o:${row.out.id}`)}
+        keyExtractor={(row) => `${row.kind}:${row.id}`}
         renderSectionHeader={({ section }) => <Engrave style={styles.section}>{section.title}</Engrave>}
+        renderSectionFooter={({ section }) => (section.key === "done" && hasMemoDone ? <Text style={styles.footnote}>{s().keptDays}</Text> : null)}
         ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: C.rule }} />}
-        ListEmptyComponent={<Text style={styles.empty}>{s().emptyInbox}</Text>}
+        ListEmptyComponent={<Text style={styles.empty}>{s().emptyCapture}</Text>}
         stickySectionHeadersEnabled={false}
+        contentContainerStyle={{ paddingBottom: 24 }}
+        refreshControl={paired ? <RefreshControl refreshing={syncing} onRefresh={requestSync} colors={[C.cream]} progressBackgroundColor={C.raised} tintColor={C.cream} /> : undefined}
         renderItem={({ item: row }) => {
+          const st = statusLine(row.status, row, find);
+          const status = (
+            <View style={styles.sub}>
+              <View style={{ marginTop: 6 }}>
+                <Led color={st.color} size={7} />
+              </View>
+              <Text style={[styles.rowStatus, row.status.kind === "failed" && { color: C.cream }]} numberOfLines={3}>{st.text}</Text>
+            </View>
+          );
           if (row.kind === "idea") {
-            const st = ideaState(row.idea, find);
             const label = row.idea.title.trim() || row.idea.text.trim().split("\n")[0] || "…";
             return (
               <Pressable onPress={() => onIdea(row.idea.id)} accessibilityRole="button" style={({ pressed }) => [styles.row, pressed && { backgroundColor: C.raised }]}>
+                {status}
                 <Text style={styles.rowTitle} numberOfLines={1}>{label}</Text>
-                <View style={styles.sub}>
-                  <Led color={st.color} size={7} />
-                  <Text style={styles.rowSub} numberOfLines={1}>
-                    {row.idea.target ? `${row.idea.target.title} · ` : ""}
-                    {st.text}
-                  </Text>
-                </View>
+                <Engrave style={styles.meta}>{[s().ideaLabel, row.idea.target?.title, when(row.idea.updatedAt, now, lg)].filter(Boolean).join(" · ")}</Engrave>
               </Pressable>
             );
           }
           const o = row.out;
-          const st = outState(o, sending === o.id, find);
           const playable = o.type === "memo" && !o.purged && o.files.length > 0;
-          const length = o.durationMs ? ` · ${Math.floor(o.durationMs / 60000)}:${String(Math.round(o.durationMs / 1000) % 60).padStart(2, "0")}` : "";
-          const label = o.title.trim() || (o.type === "memo" ? `${s().memoLabel}${length}` : o.files[0]?.name || s().sketchLabel);
+          const kindLabel = o.type === "memo" ? s().memoLabel : s().sketchLabel;
+          const meta = [kindLabel, o.target?.title, when(o.createdAt, now, lg), o.durationMs ? duration(o.durationMs) : null].filter(Boolean).join(" · ");
+          const title = o.title.trim() || (o.type === "memo" ? meta : o.files[0]?.name || kindLabel);
           return (
-            <View style={styles.row}>
-              <Engrave>{o.type === "memo" ? s().memoLabel : s().sketchLabel}</Engrave>
-              <Text style={styles.rowTitle} numberOfLines={1}>{label}</Text>
-              <View style={styles.sub}>
-                <Led color={st.color} size={7} />
-                <Text style={[styles.rowSub, o.state === "failed" && { color: C.cream }]}>{st.text}</Text>
-              </View>
-              {sending === o.id ? (
+            <Pressable
+              onLongPress={() => confirmRemove(o)}
+              delayLongPress={400}
+              accessibilityHint={sending !== o.id ? s().rowActionsHint : undefined}
+              accessibilityActions={sending !== o.id ? [{ name: "remove", label: s().remove }] : undefined}
+              onAccessibilityAction={(e) => e.nativeEvent.actionName === "remove" && confirmRemove(o)}
+              style={({ pressed }) => [styles.row, pressed && { backgroundColor: C.raised }]}
+            >
+              {status}
+              <Text style={styles.rowTitle} numberOfLines={1}>{title}</Text>
+              {o.title.trim() || o.type !== "memo" ? <Engrave style={styles.meta}>{meta}</Engrave> : null}
+              {row.status.kind === "sending" ? (
                 <View style={styles.bar}>
-                  <View style={[styles.fill, { width: `${Math.round(progress(o) * 100)}%` }]} />
+                  <View style={[styles.fill, { width: `${row.status.pct}%` }]} />
                 </View>
               ) : null}
-              <View style={{ flexDirection: "row", gap: 8, marginTop: 6 }}>
-                {playable ? <Button label={playingId === o.id ? s().stopMemo : s().playMemo} onPress={() => togglePlay(o)} style={styles.small} hitSlop={SMALL_SLOP} /> : null}
-                {o.state === "failed" ? (
-                  <Button
-                    label={s().retry}
-                    onPress={() => {
-                      retryOut(o.id);
-                      requestSync();
-                    }}
-                    style={styles.small}
-                    hitSlop={SMALL_SLOP}
-                  />
-                ) : null}
-                {sending !== o.id ? <Button label={s().remove} variant="quiet" onPress={() => confirmRemove(o)} style={styles.small} hitSlop={SMALL_SLOP} /> : null}
-              </View>
-            </View>
+              {playable || o.state === "failed" ? (
+                <View style={{ flexDirection: "row", gap: 8, marginTop: 8 }}>
+                  {playable ? <Button label={playingId === o.id ? s().stopMemo : s().playMemo} onPress={() => togglePlay(o)} style={styles.small} hitSlop={SMALL_SLOP} /> : null}
+                  {o.state === "failed" ? (
+                    <Button
+                      label={s().retry}
+                      onPress={() => {
+                        retryOut(o.id);
+                        requestSync();
+                      }}
+                      style={styles.small}
+                      hitSlop={SMALL_SLOP}
+                    />
+                  ) : null}
+                </View>
+              ) : null}
+            </Pressable>
           );
         }}
       />
     </View>
   );
-}
+});
 
-/** The small buttons are about 30 dp tall: this brings the touch area to 48 dp. */
-const SMALL_SLOP = { top: 9, bottom: 9, left: 4, right: 4 };
+/** Compact buttons: the touch area reaches 48 dp. */
+const SMALL_SLOP = { top: 6, bottom: 6, left: 4, right: 4 };
 
 const styles = StyleSheet.create({
-  actions: { flexDirection: "row", gap: 8, marginHorizontal: 16, marginTop: 12, marginBottom: 4 },
+  actions: { marginHorizontal: 16, marginTop: 12, marginBottom: 4, gap: 8 },
+  actionRow: { flexDirection: "row", gap: 8 },
   action: { flex: 1, paddingHorizontal: 6 },
-  banner: { flexDirection: "row", alignItems: "center", marginHorizontal: 16, marginTop: 8, padding: 10, borderWidth: 1, borderColor: C.warn, borderRadius: RADIUS, backgroundColor: C.panel },
-  bannerText: { color: C.cream, flex: 1, marginLeft: 8, fontSize: 13, lineHeight: 18 },
   section: { marginHorizontal: 16, marginTop: 16, marginBottom: 6 },
+  footnote: { color: C.engrave, fontSize: 13, lineHeight: 18, marginHorizontal: 16, marginTop: 8 },
   row: { paddingHorizontal: 16, paddingVertical: 12, backgroundColor: C.panel },
-  rowTitle: { color: C.cream, fontSize: 16, fontWeight: "600", marginTop: 2 },
-  sub: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 },
-  rowSub: { color: C.body, fontSize: 13, flexShrink: 1 },
+  rowTitle: { color: C.cream, fontSize: 16, fontWeight: "600", marginTop: 4 },
+  meta: { marginTop: 4 },
+  sub: { flexDirection: "row", gap: 6 },
+  rowStatus: { color: C.body, fontSize: 13, lineHeight: 18, flexShrink: 1 },
   bar: { height: 4, backgroundColor: C.rule, borderRadius: 2, marginTop: 8, overflow: "hidden" },
-  fill: { height: 4, backgroundColor: C.hot },
-  small: { paddingVertical: 4, paddingHorizontal: 10 },
+  fill: { height: 4, backgroundColor: C.body },
+  small: { paddingVertical: 4, paddingHorizontal: 12 },
   empty: { color: C.engrave, textAlign: "center", padding: 32, fontSize: 14, lineHeight: 20 },
 });
