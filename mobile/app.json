@@ -164,7 +164,8 @@
           "resizeMode": "contain",
           "backgroundColor": "#0d0d0c"
         }
-      ]
+      ],
+      "./plugins/withDarkDialogs"
     ]
   }
 }
