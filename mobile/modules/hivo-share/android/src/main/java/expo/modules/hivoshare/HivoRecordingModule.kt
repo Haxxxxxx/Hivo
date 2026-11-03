@@ -21,9 +21,11 @@ import java.io.File
 // `microphone`, started and stopped with the recorder when
 // `allowsBackgroundRecording` is on). This module only adds what it lacks:
 // - its notification in Hivo's words and language (same id and channel, so
-//   it replaces the library's text; the system keeps it tied to the service);
+//   it replaces the library's text; the system keeps it tied to the service),
+//   only when Hivo may post notifications: every take runs in the service,
+//   notifications or not, and without them nothing shows in the shade;
 // - a call watch: a phone or VoIP call stops the take (it's kept), even with
-//   the app in the background, where JS timers don't run;
+//   the app in the background, where JS timers don't run, notifications or not;
 // - the length of the finished file (the recorder's state is stale when a
 //   take ended in the background).
 // The names below are expo-audio 58's (expo.modules.audio.service.AudioRecordingService).
@@ -35,6 +37,7 @@ private const val EXPO_NOTIFICATION_ID = 2001
 private const val WATCH_MS = 1000L
 private const val LABEL_TRIES = 15
 private const val LABEL_RETRY_MS = 200L
+private const val MAX_HOLD_MS = 500
 
 /** AudioManager modes that mean a call has the microphone (src/lib/recording.ts `isCallMode`). */
 private val CALL_MODES = setOf(2, 3, 4, 5, 6)
@@ -89,7 +92,22 @@ class HivoRecordingModule : Module() {
         // A relabel that lost a race with the service stopping would leave an
         // ongoing notification behind: remove it (the system ignores this
         // while the service is still in the foreground).
-        if (background) notifications()?.cancel(EXPO_NOTIFICATION_ID)
+        if (background) try { notifications()?.cancel(EXPO_NOTIFICATION_ID) } catch (_: Exception) {}
+      }
+    }
+
+    // expo-audio 58 race (AudioRecordingServiceConnection.bindWithService): it
+    // calls bindService on its modules queue and only then stores the
+    // continuation; when the system connects fast, onServiceConnected runs on
+    // the main thread in between, finds no continuation, and the prepare fails
+    // 5 s later ("failed to connect with the recording service within
+    // 5000ms") although the service is bound. Seen on most first takes on the
+    // emulator. Called right before prepareToRecordAsync: the main thread is
+    // held a moment so the connection callback queues behind the continuation.
+    Function("holdMainForBind") { ms: Int ->
+      val d = ms.coerceIn(0, MAX_HOLD_MS).toLong()
+      main.post {
+        try { Thread.sleep(d) } catch (_: InterruptedException) {}
       }
     }
 
@@ -132,12 +150,19 @@ class HivoRecordingModule : Module() {
     return if (roots.any { file.path.startsWith(it) } && file.isFile) file else null
   }
 
-  /** Replaces the service's notification text once the service has posted it. */
+  /** Whether Hivo may post notifications (on Android 13+, POST_NOTIFICATIONS; or the user turned them off). */
+  private fun canNotify(nm: NotificationManager): Boolean =
+    try { nm.areNotificationsEnabled() } catch (_: Exception) { false }
+
+  /** Replaces the service's notification text once the service has posted it.
+   * A no-op when Hivo can't post notifications: the take still runs in the
+   * service (Android starts it without the permission), just not in the shade. */
   private fun relabel(attempt: Int) {
     if (!watching || !background) return
     val c = ctx ?: return
     val nm = notifications() ?: return
-    val posted = nm.activeNotifications.any { it.id == EXPO_NOTIFICATION_ID }
+    if (!canNotify(nm)) return
+    val posted = try { nm.activeNotifications.any { it.id == EXPO_NOTIFICATION_ID } } catch (_: Exception) { false }
     if (!posted) {
       if (attempt < LABEL_TRIES) main.postDelayed({ relabel(attempt + 1) }, LABEL_RETRY_MS)
       return

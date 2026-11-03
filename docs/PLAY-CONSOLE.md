@@ -92,7 +92,7 @@ permission:
 | Field | Answer |
 |---|---|
 | Foreground service type | **Microphone** |
-| Use case / task | **User-started voice memo recording.** The user taps Record on the Voice memo screen; the service runs only while that take records and stops on Stop, at the 15-minute cap, on a call, or from the notification's Stop button. An ongoing notification ("Hivo is recording · Tap to return", with Stop) shows the whole time. |
+| Use case / task | **User-started voice memo recording.** The user taps Record on the Voice memo screen; the service runs for every take, only while it records, and stops on Stop, at the 15-minute cap, on a call, or from the notification's Stop button when the notification shows. When the user allowed notifications, an ongoing notification ("Hivo is recording · Tap to return", with Stop) shows the whole time; when they didn't (Android 13+), the take still runs in the service and Android lists Hivo in its active-apps panel, and the Record screen shows the running clock and Stop. |
 | Impact if the task is deferred or interrupted | The user's take (a flow, a melody) would be cut when the screen turns off or they switch apps. It can't be resumed later: it's a live recording. |
 | Video | A link to a short screen recording (unlisted YouTube or Drive), filmed as below. |
 
@@ -106,9 +106,13 @@ permission:
    notification, tap it: back in Hivo, the clock has kept running.
 5. Tap Stop: the notification disappears; play the take back.
 
-If the user denies notifications, the app doesn't start the service: it
-records with the screen kept on and stops (keeping the take) when it leaves
-the screen, and the Record screen says so.
+Notifications are optional (asked once, at the first take, "to see Recording
+and a Stop button in your notifications"). If the user denies them, every take
+still runs in the service (Android 13+ starts a foreground service without
+`POST_NOTIFICATIONS`; the notification just isn't shown in the shade), so it
+goes on with the screen off or in another app, and the Record screen says so.
+Only if the service fails to start does a take record with the screen kept on
+and stop (keeping the take) when Hivo leaves the screen.
 
 ## 3. Store listing (once; Grow → Store presence → Main store listing)
 
