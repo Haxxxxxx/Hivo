@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { analyzeLyrics, lineAt } from "../lib/lyrics";
 import { Button, Engrave, Led } from "../components/ui";
+import { MiniPlayer } from "../components/MiniPlayer";
+import { canonicalUrl, youtubeId } from "../lib/youtube";
 import { tr } from "../lib/i18n";
 import { findItem, isGone, itemKey, MAX_NOTE_CHARS, noteFor, type Kind } from "../lib/sync";
 import { clearConflict, flush, removeGone, setNote, useApp } from "../store";
@@ -28,6 +30,10 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
   const stats = useMemo(() => analyzeLyrics(text, bpm), [text, bpm]);
   const curLine = lineAt(text, cursor);
   const curCount = stats.lines[curLine]?.syllables ?? 0;
+  const videoId = item?.url ? youtubeId(item.url) : null;
+  /** The video in the docked player; one at a time, gone with the screen. */
+  const [playing, setPlaying] = useState<string | null>(null);
+  const closePlayer = useCallback(() => setPlaying(null), []);
 
   // A sync replaced the note (merge, or edited on the computer): show it,
   // unless an autosave is about to land.
@@ -87,8 +93,13 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
           ) : null}
         </View>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
-          {item?.kind === "prod" && item.url ? (
-            <Button label={t.openLink} onPress={() => void Linking.openURL(item.url as string)} style={{ paddingVertical: 6 }} />
+          {item?.url && videoId ? (
+            <>
+              {playing !== videoId ? <Button label={t.playHere} onPress={() => setPlaying(videoId)} style={{ paddingVertical: 6 }} hitSlop={SLOP_6} /> : null}
+              <Button label={t.openInYoutube} onPress={() => void Linking.openURL(canonicalUrl(item.url as string)).catch(() => {})} style={{ paddingVertical: 6 }} hitSlop={SLOP_6} />
+            </>
+          ) : item?.url ? (
+            <Button label={t.openLink} onPress={() => void Linking.openURL(item.url as string).catch(() => {})} style={{ paddingVertical: 6 }} hitSlop={SLOP_6} />
           ) : null}
           {item && !gone ? (
             <>
@@ -98,6 +109,8 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
           ) : null}
         </View>
       </View>
+
+      {playing ? <MiniPlayer videoId={playing} onClose={closePlayer} /> : null}
 
       {gone ? (
         <View style={[styles.conflict, { borderColor: C.missing }]}>
@@ -166,6 +179,7 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
 
 // Compact buttons keep their look; the touch area grows to 48 dp
 // (about 30 dp tall with 4 dp padding, 26 dp with 2 dp).
+const SLOP_6 = { top: 7, bottom: 7, left: 4, right: 4 };
 const SLOP_4 = { top: 9, bottom: 9, left: 4, right: 4 };
 const SLOP_2 = { top: 11, bottom: 11, left: 4, right: 4 };
 

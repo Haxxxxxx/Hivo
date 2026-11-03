@@ -16,7 +16,7 @@ export interface PrivacyCopy {
 }
 
 /** Bump when the text changes. */
-export const PRIVACY_UPDATED = "2026-11-02";
+export const PRIVACY_UPDATED = "2026-11-03";
 
 /** The owner sets VITE_CONTACT_EMAIL in Vercel; never a hardcoded address. */
 const CONTACT = (import.meta.env.VITE_CONTACT_EMAIL ?? "").trim();
@@ -29,7 +29,7 @@ const operatorAt = OPERATOR_ADDRESS ? `, ${OPERATOR_ADDRESS}` : "";
 
 const en: PrivacyCopy = {
   title: "Privacy policy",
-  updated: "Last updated: 2 November 2026",
+  updated: "Last updated: 3 November 2026",
   lead: "Hivo is a free app for a music crew: a desktop app (Mac, Windows), a phone app (Android) and this website. This page says what each part sends, where, and why. The short version: your music and your notes stay on your own devices unless you turn on a feature that sends them, and each of those is listed below.",
   sections: [
     {
@@ -90,7 +90,8 @@ const en: PrivacyCopy = {
       title: "Phone sync and the phone app",
       body: [
         "When you turn on Phone sync in the desktop app's Settings (off by default), the desktop app opens a port on your local network so your paired phone can reach it. It answers only phones you paired; anything else is refused. It's phone ↔ computer only.",
-        "The phone app talks only to your own computer, over your local Wi-Fi, and everything it sends is encrypted with the key from the pairing QR code. There is no Hivo server in between, no account, and Hivo adds no analytics, ads or tracking.",
+        "The phone app talks only to your own computer, over your local Wi-Fi, and everything it sends is encrypted with the key from the pairing QR code. There is no Hivo server in between, no account, and Hivo adds no analytics, ads or tracking. The one exception is the video player below, and only when you tap Play.",
+        "When you tap \"Play here\" on a saved prod's YouTube link, the phone loads YouTube's own player from its privacy-enhanced host (youtube-nocookie.com) inside a small page of this website (hi-vo.fr/embed.html), so YouTube and this website's host see that request (the video id and your internet address). Nothing loads until you tap Play, the player keeps no cookies or storage after you close it, and Hivo never downloads the video. \"Open in YouTube\" hands the link to the YouTube app or your browser instead.",
         "To scan the pairing QR code, the Android app uses Google Play services' code scanner (ML Kit). Google says ML Kit sends Google device information (such as model and OS version), the app's name and version, performance metrics and error codes, for diagnostics and usage analytics, encrypted in transit and not shared with third parties.",
         "Your notes, ideas and voice memos are stored on the phone and on your computer. The camera is used only to scan the pairing QR code: no photo is taken or kept. The microphone is used only while you record a voice memo, and the recording goes nowhere but your computer.",
         "Files you share to Hivo from another app (a BandLab export, for example) are copied into Hivo on the phone, then sent to your computer the same way. An export is deleted from the phone once your computer has it.",
@@ -124,7 +125,7 @@ const en: PrivacyCopy = {
 
 const fr: PrivacyCopy = {
   title: "Politique de confidentialité",
-  updated: "Mise à jour : 2 novembre 2026",
+  updated: "Mise à jour : 3 novembre 2026",
   lead: "Hivo est une appli gratuite pour un crew de musique : une appli pour l'ordi (Mac, Windows), une appli pour le téléphone (Android) et ce site. Cette page dit ce que chaque partie envoie, où et pourquoi. En bref : ta musique et tes notes restent sur tes appareils, sauf si tu actives une fonction qui les envoie, et chacune est listée ci-dessous.",
   sections: [
     {
@@ -185,7 +186,8 @@ const fr: PrivacyCopy = {
       title: "Synchro téléphone et appli du téléphone",
       body: [
         "Quand tu actives la Synchro téléphone dans les Réglages de l'appli de l'ordi (désactivée par défaut), l'appli ouvre un port sur ton réseau local pour que ton téléphone associé puisse la joindre. Elle ne répond qu'aux téléphones associés ; tout le reste est refusé. Ça se passe seulement entre le téléphone et l'ordi.",
-        "L'appli du téléphone ne parle qu'à ton propre ordi, par ton Wi-Fi local, et tout ce qu'elle envoie est chiffré avec la clé du QR code d'association. Pas de serveur Hivo entre les deux, pas de compte, et Hivo n'ajoute ni statistiques, ni pub, ni pistage.",
+        "L'appli du téléphone ne parle qu'à ton propre ordi, par ton Wi-Fi local, et tout ce qu'elle envoie est chiffré avec la clé du QR code d'association. Pas de serveur Hivo entre les deux, pas de compte, et Hivo n'ajoute ni statistiques, ni pub, ni pistage. Seule exception : le lecteur vidéo ci-dessous, et seulement quand tu appuies sur Lire.",
+        "Quand tu appuies sur « Lire ici » sur le lien YouTube d'une prod gardée, le téléphone charge le lecteur de YouTube depuis son adresse à confidentialité renforcée (youtube-nocookie.com), dans une petite page de ce site (hi-vo.fr/embed.html) : YouTube et l'hébergeur de ce site voient donc cette requête (l'identifiant de la vidéo et ton adresse internet). Rien ne se charge avant que tu appuies sur Lire, le lecteur ne garde ni cookies ni stockage une fois fermé, et Hivo ne télécharge jamais la vidéo. « Ouvrir dans YouTube » passe le lien à l'appli YouTube ou à ton navigateur.",
         "Pour scanner le QR code d'association, l'appli Android utilise le scanner de codes des services Google Play (ML Kit). D'après Google, ML Kit envoie à Google des infos sur l'appareil (comme le modèle et la version du système), le nom et la version de l'appli, des mesures de performance et des codes d'erreur, pour le diagnostic et les statistiques d'usage, chiffrés pendant le transfert et sans les partager avec des tiers.",
         "Tes notes, idées et mémos vocaux sont gardés sur le téléphone et sur ton ordi. La caméra sert uniquement à scanner le QR code d'association : aucune photo n'est prise ni gardée. Le micro sert uniquement pendant que tu enregistres un mémo vocal, et l'enregistrement ne va nulle part ailleurs que sur ton ordi.",
         "Les fichiers que tu partages vers Hivo depuis une autre appli (un export BandLab, par exemple) sont copiés dans Hivo sur le téléphone, puis envoyés à ton ordi de la même façon. Un export est supprimé du téléphone une fois que ton ordi l'a reçu.",
