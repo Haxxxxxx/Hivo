@@ -48,18 +48,50 @@ class HivoShareModule : Module() {
     AsyncFunction("takeShared") {
       val activity = appContext.currentActivity ?: return@AsyncFunction null
       val captured = claim(activity.intent) ?: return@AsyncFunction null
-      read(captured)
+      // Claimed: from here on it's shown, even as a failure, never dropped.
+      try {
+        read(captured)
+      } catch (t: Throwable) {
+        failed()
+      }
     }
 
     // A share while Hivo is open (singleTask activity). Copying can take a
     // while (up to 20 big files): off the main thread, or Android shows
-    // "not responding".
+    // "not responding". Nothing thrown on that thread may escape: an uncaught
+    // exception there kills the app, and the claimed share with it.
     OnNewIntent { intent ->
       val captured = claim(intent) ?: return@OnNewIntent
       Thread {
-        val shared = read(captured) ?: return@Thread
-        sendEvent("onShare", shared)
+        val shared = try {
+          read(captured)
+        } catch (t: Throwable) {
+          failed()
+        }
+        try {
+          if (shared != null) sendEvent("onShare", shared)
+        } catch (t: Throwable) {
+          // The app is going away: nothing left to show it to.
+        }
       }.start()
+    }
+
+    // Whether a plain TCP connect to the computer is refused (the port is
+    // closed: phone sync off, Hivo closed), after a sync request failed. Only
+    // a private IPv4 literal (no DNS, nothing outside the LAN).
+    AsyncFunction("probeTcp") { host: String, port: Int, timeoutMs: Int ->
+      if (!isPrivateIPv4(host) || port !in 1..65535) return@AsyncFunction "other"
+      val socket = java.net.Socket()
+      try {
+        socket.connect(java.net.InetSocketAddress(host, port), timeoutMs.coerceIn(100, 5000))
+        "open"
+      } catch (e: java.net.ConnectException) {
+        if (e.message?.contains("ECONNREFUSED") == true || e.message?.contains("refused", ignoreCase = true) == true) "refused" else "other"
+      } catch (e: Exception) {
+        "other"
+      } finally {
+        try { socket.close() } catch (_: Exception) {}
+      }
     }
 
     // Removes one share's copies once JS has moved them into the outbox (or
@@ -81,6 +113,17 @@ class HivoShareModule : Module() {
       }
       removed
     }
+  }
+
+  /** What JS gets for a share that couldn't be read at all: one unreadable, unnamed item. */
+  private fun failed(): Map<String, Any?> =
+    mapOf("dir" to null, "files" to emptyList<Any>(), "skipped" to listOf(mapOf("name" to "", "reason" to "unreadable", "named" to false)), "text" to null, "subject" to null)
+
+  private fun isPrivateIPv4(s: String): Boolean {
+    val m = Regex("^(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})$").matchEntire(s) ?: return false
+    val p = m.groupValues.drop(1).map { it.toInt() }
+    if (p.any { it > 255 }) return false
+    return p[0] == 10 || (p[0] == 172 && p[1] in 16..31) || (p[0] == 192 && p[1] == 168)
   }
 
   /** A share folder JS named, checked to be directly inside the share cache. */
@@ -151,20 +194,20 @@ class HivoShareModule : Module() {
       for ((i, uri) in uris.withIndex()) {
         val (name, size, named) = describe(ctx, uri, i)
         if (i >= MAX_FILES) {
-          skipped.add(mapOf("name" to name, "reason" to "count"))
+          skipped.add(mapOf("name" to name, "named" to named, "reason" to "count"))
           continue
         }
         if (size != null && size > MAX_FILE_BYTES) {
-          skipped.add(mapOf("name" to name, "reason" to "too-big", "size" to size))
+          skipped.add(mapOf("name" to name, "named" to named, "reason" to "too-big", "size" to size))
           continue
         }
         if (size != null && total + size > MAX_SHARE_BYTES) {
-          skipped.add(mapOf("name" to name, "reason" to "total", "size" to size))
+          skipped.add(mapOf("name" to name, "named" to named, "reason" to "total", "size" to size))
           continue
         }
         // Checked before copying: a full phone is a sentence, not a half file.
         if (size != null && dir.usableSpace in 1 until size + SPACE_MARGIN_BYTES) {
-          skipped.add(mapOf("name" to name, "reason" to "space", "size" to size))
+          skipped.add(mapOf("name" to name, "named" to named, "reason" to "space", "size" to size))
           continue
         }
         try {
@@ -172,16 +215,20 @@ class HivoShareModule : Module() {
           val copied = copy(ctx, uri, target, minOf(MAX_FILE_BYTES, MAX_SHARE_BYTES - total))
           if (copied < 0) {
             target.delete()
-            skipped.add(mapOf("name" to name, "reason" to if (total + MAX_FILE_BYTES > MAX_SHARE_BYTES) "total" else "too-big"))
+            skipped.add(mapOf("name" to name, "named" to named, "reason" to if (total + MAX_FILE_BYTES > MAX_SHARE_BYTES) "total" else "too-big"))
           } else {
             total += copied
             files.add(mapOf("uri" to Uri.fromFile(target).toString(), "name" to target.name, "size" to copied, "mime" to ctx.contentResolver.getType(uri), "named" to named))
           }
         } catch (e: IOException) {
           val full = e.message?.contains("ENOSPC") == true || e.message?.contains("No space", ignoreCase = true) == true
-          skipped.add(mapOf("name" to name, "reason" to if (full) "space" else "unreadable"))
+          skipped.add(mapOf("name" to name, "named" to named, "reason" to if (full) "space" else "unreadable"))
         } catch (e: SecurityException) {
-          skipped.add(mapOf("name" to name, "reason" to "unreadable"))
+          skipped.add(mapOf("name" to name, "named" to named, "reason" to "unreadable"))
+        } catch (e: Exception) {
+          // A provider that throws something else (IllegalArgumentException,
+          // IllegalStateException…): this file is left out, the others go.
+          skipped.add(mapOf("name" to name, "named" to named, "reason" to "unreadable"))
         }
       }
     } finally {

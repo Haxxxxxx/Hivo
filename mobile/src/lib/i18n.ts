@@ -36,6 +36,17 @@ export function isOne(n: number, l: Lang): boolean {
 
 const NNBSP = "\u202f";
 
+/** A file size: "1.2 MB" / "345 KB", in French "1,2 Mo" / "345 Ko" (no Intl: Hermes). */
+export function sizeText(bytes: number, l: Lang = current): string {
+  const fr = l === "fr";
+  if (bytes >= 1024 * 1024) {
+    const v = (bytes / 1024 / 1024).toFixed(1);
+    return fr ? `${v.replace(".", ",")}\u00a0Mo` : `${v} MB`;
+  }
+  const k = Math.max(1, Math.round(bytes / 1024));
+  return fr ? `${k}\u00a0Ko` : `${k} KB`;
+}
+
 /** "just now", "3 min ago", "2 h ago", "4 days ago" (and the French). */
 export function ago(then: number, now: number): string {
   const s = Math.max(0, Math.round((now - then) / 1000));

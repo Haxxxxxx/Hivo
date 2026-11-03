@@ -3,6 +3,8 @@
 // cache being cleared and the app being killed mid-upload.
 import { Directory, File, Paths } from "expo-file-system";
 import type { OutFile } from "./lib/outbox";
+import type { FS } from "./lib/persist";
+import { safeFileName } from "./lib/text";
 
 function itemDir(id: string): Directory {
   const d = new Directory(Paths.document, "outbox", id);
@@ -10,11 +12,8 @@ function itemDir(id: string): Directory {
   return d;
 }
 
-/** Path separators and control characters out; never empty. */
-export function safeName(name: string): string {
-  const clean = name.replace(/[/\\:*?"<>|\u0000-\u001f]/g, "_").trim().replace(/^\.+/, "").slice(0, 120);
-  return clean || "file";
-}
+/** Path separators and control characters out, the extension kept within 120; never empty. */
+export const safeName = (name: string): string => safeFileName(name);
 
 /** Thrown when the phone has no room left for the copy. */
 export class SpaceError extends Error {
@@ -107,7 +106,67 @@ export function removeItemFiles(id: string): void {
   }
 }
 
-export type Picked = { uri: string; name: string; size: number | null; mime: string | null };
+/** The app's own data files (the library cache): `<documents>/hivo-data/<name>`. */
+function dataFile(name: string): File {
+  const d = new Directory(Paths.document, "hivo-data");
+  if (!d.exists) d.create({ intermediates: true, idempotent: true });
+  return new File(d, name);
+}
+
+/** persist.ts's file system, on expo-file-system. */
+export const dataFS: FS = {
+  async read(name) {
+    const f = dataFile(name);
+    return f.exists ? await f.text() : null;
+  },
+  async write(name, text) {
+    const f = dataFile(name);
+    if (!f.exists) f.create({ overwrite: true });
+    await f.write(text);
+  },
+  async move(from, to) {
+    await dataFile(from).move(dataFile(to), { overwrite: true });
+  },
+  async remove(name) {
+    const f = dataFile(name);
+    if (f.exists) f.delete();
+  },
+};
+
+/**
+ * expo-audio's takes not adopted into the outbox (`<cache>/Audio/recording-*`):
+ * a take recorded when the app was killed is never finished (no index, it
+ * doesn't play), and a stopped take is adopted at Stop. Run at launch only,
+ * never while recording. `keep`: uris still in use.
+ */
+export function sweepRecordings(keep: Set<string> = new Set()): number {
+  let removed = 0;
+  try {
+    const d = new Directory(Paths.cache, "Audio");
+    if (!d.exists) return 0;
+    for (const e of d.list()) {
+      if (e instanceof File && /^recording-.*\.(m4a|mp4|aac|3gp)$/i.test(e.name) && !keep.has(e.uri)) {
+        e.delete();
+        removed++;
+      }
+    }
+  } catch (e) {
+    console.warn("Hivo: could not sweep old recordings", e);
+  }
+  return removed;
+}
+
+/** Deletes one file (a take that wasn't adopted); quiet when it's gone. */
+export function deleteFile(uri: string): void {
+  try {
+    const f = new File(uri);
+    if (f.exists) f.delete();
+  } catch (e) {
+    console.warn("Hivo: could not delete a file", e);
+  }
+}
+
+export type Picked ={ uri: string; name: string; size: number | null; mime: string | null };
 
 /** The system file picker, several at once; [] when cancelled. Audio, zips, and MPEG-4 / untyped files (an M4A is often saved as either): Hivo checks each one after. */
 export async function pickFiles(): Promise<Picked[]> {

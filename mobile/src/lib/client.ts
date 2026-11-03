@@ -4,8 +4,8 @@ import { EnvelopeError, keyBytes, openResponse, sealCall, type RandomBytes, type
 import type { Pairing } from "./pairing";
 
 export type SyncErrorCode =
-  | "offline" // no host answered: not on the same Wi-Fi
-  | "off" // a host refused the connection: phone sync is off (or Hivo is closed)
+  | "offline" // no host answered: not on the same Wi-Fi (or a Wi-Fi without internet sent the phone to mobile data)
+  | "off" // a host really refused the connection (checked with `probe`): phone sync is off (or Hivo is closed)
   | "forgotten" // bare 401: the desktop no longer knows this phone's key (or, from an older desktop, the clock is off)
   | "clock" // sealed "clock": the request opened but its time is more than 2 minutes off the computer's
   | "demo" // the desktop is in demo mode
@@ -25,6 +25,20 @@ export class SyncError extends Error {
   }
 }
 
+/** The sync was cancelled on the phone (unpaired, paired again, or it hung
+ * for over a minute and a fresh one took its place). Not an error to show. */
+export class CancelledError extends Error {
+  constructor() {
+    super("cancelled");
+    this.name = "CancelledError";
+  }
+}
+
+/** What a plain TCP connect to the computer said, after a request failed:
+ * only "refused" (the port is closed: phone sync off, Hivo closed) turns the
+ * failure into "off"; anything else (no route, timeout, Wi-Fi off) is "offline". */
+export type Probe = (host: string, port: number) => Promise<"refused" | "other">;
+
 export type HttpResponse = { status: number; text: () => Promise<string> };
 export type Transport = (
   url: string,
@@ -37,8 +51,12 @@ export type ClientOptions = {
   random: RandomBytes;
   now: () => number;
   timeoutMs?: number;
-  /** A failure faster than this is a refused connection (port closed), not an unreachable network. */
-  refusedUnderMs?: number;
+  /** Asked after a request failed without an answer: was the connection
+   * really refused? Without it every failure is "offline" (a quick failure
+   * is just as often a phone off the Wi-Fi as a closed port). */
+  probe?: Probe;
+  /** Aborts the request in flight and every later one (CancelledError). */
+  signal?: AbortSignal;
   /** `/v1/pair` only: the phone's X25519 public key (b64url), sent next to the envelope. */
   pairWith?: string;
   /** A pairing from before 1.2 got its first bound answer: save `bound: true`
@@ -80,17 +98,19 @@ export function createClient(opts: ClientOptions) {
   let requireBound = opts.pairing.scheme === "1.2" || opts.pairing.bound === true;
   const { deviceId, port } = opts.pairing;
   const timeoutMs = opts.timeoutMs ?? 5000;
-  const refusedUnderMs = opts.refusedUnderMs ?? 1500;
   let hosts = [...opts.pairing.hosts];
 
   async function call(path: string, payload: unknown): Promise<unknown> {
     let refused = false;
+    const cancelled = () => opts.signal?.aborted === true;
     for (const host of hosts) {
+      if (cancelled()) throw new CancelledError();
       const sealed = sealCall(key, deviceId, path, payload, opts.random, opts.now());
       const body = JSON.stringify(path === PAIR_PATH && opts.pairWith ? { ...sealed.envelope, x: opts.pairWith } : sealed.envelope);
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), timeoutFor(path, timeoutMs));
-      const started = opts.now();
+      const onCancel = () => ctrl.abort();
+      opts.signal?.addEventListener("abort", onCancel);
       let res: HttpResponse;
       let text: string;
       try {
@@ -102,11 +122,14 @@ export function createClient(opts: ClientOptions) {
         });
         text = await res.text();
       } catch {
-        if (!ctrl.signal.aborted && opts.now() - started < refusedUnderMs) refused = true;
+        if (cancelled()) throw new CancelledError();
+        if (!ctrl.signal.aborted && opts.probe && !refused) refused = (await opts.probe(host, port).catch(() => "other")) === "refused";
         continue;
       } finally {
         clearTimeout(timer);
+        opts.signal?.removeEventListener("abort", onCancel);
       }
+      if (cancelled()) throw new CancelledError();
       // This host answered: try it first next time.
       hosts = [host, ...hosts.filter((h) => h !== host)];
       // Bare statuses aren't authenticated: they only ever stop or delay a
