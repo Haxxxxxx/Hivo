@@ -16,6 +16,8 @@ import { needsNewCode, pairErrorText, pairFailText, T } from "./src/strings";
 import type { Kind } from "./src/lib/sync";
 import { ConfirmPairing } from "./src/components/ConfirmPairing";
 import { InboxTab, type CaptureHandle } from "./src/components/InboxTab";
+import { PairingUnreadable } from "./src/components/PairingUnreadable";
+import { ScreenHeader } from "./src/components/ScreenHeader";
 import { CopyingStrip, SyncHeader, SyncStrip } from "./src/components/SyncHeader";
 import { TabBar } from "./src/components/TabBar";
 import { showToast, ToastHost } from "./src/components/Toast";
@@ -29,7 +31,7 @@ import { PairScreen, type PairError, type PairSource } from "./src/screens/PairS
 import { RecordScreen } from "./src/screens/RecordScreen";
 import { SettingsScreen } from "./src/screens/SettingsScreen";
 import { ShareScreen, type IncomingShare } from "./src/screens/ShareScreen";
-import { addIdea, cancelConfirmation, flush, flushExtras, getState, load, pair, requestSync, sync, useApp, verifyPairing } from "./src/store";
+import { addIdea, cancelConfirmation, flush, flushExtras, getState, load, pair, requestSync, sync, syncOnForeground, useApp, verifyPairing } from "./src/store";
 import { C, FONT } from "./src/theme";
 
 setLang(getLocales()[0]?.languageCode);
@@ -41,7 +43,7 @@ type Route =
   | { name: "settings" }
   | { name: "pair" }
   | { name: "idea"; id: string; since: number }
-  | { name: "record"; target: IdeaTarget | null; since: number }
+  | { name: "record"; target: IdeaTarget | null; since: number; draftId?: string }
   | { name: "share"; share: IncomingShare; at: number; since: number };
 
 const fromNative = (sh: Shared): IncomingShare => ({ files: sh.files, skipped: sh.skipped, text: sh.text, subject: sh.subject, picked: false, dir: sh.dir });
@@ -64,6 +66,17 @@ export default function App() {
   const paired = useApp((st) => st.pairing !== null);
   const confirmingNow = useApp((st) => st.confirming !== null);
   const outbox = useApp((st) => st.outbox);
+  const pairingUnreadable = useApp((st) => st.pairingUnreadable);
+  // Whether the computer answered last time (a sync starting clears `error`, so it's kept here for the toast).
+  const syncError = useApp((st) => st.error);
+  const lastSyncAt = useApp((st) => st.sync.lastSyncAt);
+  const unreachable = useRef(false);
+  useEffect(() => {
+    if (syncError) unreachable.current = true;
+  }, [syncError]);
+  useEffect(() => {
+    unreachable.current = false;
+  }, [lastSyncAt]);
   const [nav, setNav] = useState<Nav<Route>>({ tab: "capture", stack: [] });
   const navRef = useRef(nav);
   navRef.current = nav;
@@ -134,7 +147,7 @@ export default function App() {
         const what = savedSince(leaving, st.ideas, st.outbox, leaving.since);
         if (!what) return;
         const label = { memo: s().toastMemo, export: s().toastExport, idea: s().toastIdea }[what];
-        const how = !st.pairing ? s().toastUnpaired : st.error ? s().toastLater : s().toastNow;
+        const how = !st.pairing ? s().toastUnpaired : st.error || unreachable.current ? s().toastLater : s().toastNow;
         showToast(`${label} · ${how}`);
         if (rest.stack.length === 0 && rest.tab === "capture") capture.current?.scrollToTop();
       }, 60);
@@ -237,7 +250,8 @@ export default function App() {
     // Sync when the app comes back; save the cache when it leaves.
     const sub = AppState.addEventListener("change", (st) => {
       if (st === "active") {
-        if (getState().pairing) void sync();
+        // Skips a sync that finished moments ago, restarts one stuck with the screen off.
+        syncOnForeground();
         // Shared while Hivo was in the background (the intent is waiting).
         void takeShared()
           .then((shared) => {
@@ -322,12 +336,13 @@ export default function App() {
             onDone={popScreen}
             onIdea={(id) => setNav((n) => replaceTop(n, { name: "idea", id, since: r.since }))}
             backRef={backRef}
+            waiting={queue.length}
           />
         );
       case "idea":
         return <IdeaScreen key={r.id} id={r.id} onBack={popScreen} />;
       case "record":
-        return <RecordScreen target={r.target} onDone={popScreen} backRef={backRef} />;
+        return <RecordScreen key={r.draftId ?? "new"} target={r.target} onDone={popScreen} backRef={backRef} draftId={r.draftId} />;
       case "note":
         return (
           <NoteScreen
@@ -349,6 +364,13 @@ export default function App() {
           </View>
         );
       case "pair":
+        if (pairingUnreadable)
+          return (
+            <View style={{ flex: 1 }}>
+              <ScreenHeader title={t.pairTitle} onBack={popScreen} />
+              <PairingUnreadable />
+            </View>
+          );
         return <PairScreen busy={pairBusy} error={pairError} onSubmit={submitPairing} onClearError={() => setPairError(null)} onBack={popScreen} />;
     }
   }
@@ -368,7 +390,7 @@ export default function App() {
               <SyncHeader onSettings={() => go({ name: "settings" })} onPair={() => go({ name: "pair" })} />
               <View style={{ flex: 1 }}>
                 <View style={[StyleSheet.absoluteFill, nav.tab !== "capture" && styles.hidden]} pointerEvents={nav.tab === "capture" ? "auto" : "none"} importantForAccessibility={nav.tab === "capture" ? "auto" : "no-hide-descendants"}>
-                  <InboxTab ref={capture} onIdea={(id) => (id ? go({ name: "idea", id, since: Date.now() }) : newIdea(null))} onRecord={() => go({ name: "record", target: null, since: Date.now() })} onPick={() => void pick()} />
+                  <InboxTab ref={capture} onIdea={(id) => (id ? go({ name: "idea", id, since: Date.now() }) : newIdea(null))} onRecord={() => go({ name: "record", target: null, since: Date.now() })} onPick={() => void pick()} onDraft={(id) => go({ name: "record", target: null, since: Date.now(), draftId: id })} />
                 </View>
                 <View style={[StyleSheet.absoluteFill, nav.tab !== "library" && styles.hidden]} pointerEvents={nav.tab === "library" ? "auto" : "none"} importantForAccessibility={nav.tab === "library" ? "auto" : "no-hide-descendants"}>
                   <LibraryScreen kind={kind} onKind={setKind} onOpen={(i) => go({ name: "note", kind: i.kind, id: i.id })} onPair={() => go({ name: "pair" })} />

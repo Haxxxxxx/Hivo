@@ -13,6 +13,8 @@ export type WaitReason = "unpaired" | "away" | "blocked" | "held" | "next-sync";
 
 export type CaptureStatus =
   | { kind: "failed" }
+  /** A stopped take not kept yet (RecordScreen keeps or discards it). */
+  | { kind: "draft" }
   | { kind: "sending"; pct: number }
   | { kind: "waiting"; reason: WaitReason }
   | { kind: "filed"; filedTo: string | null }
@@ -52,6 +54,7 @@ export function ideaStatus(i: Idea, c: Conn): CaptureStatus {
 }
 
 export function outStatus(o: OutItem, c: Conn): CaptureStatus {
+  if (o.state === "draft") return { kind: "draft" };
   if (o.state === "failed") return { kind: "failed" };
   if (o.state === "sent") {
     if (o.status === "filed") return { kind: "filed", filedTo: o.filedTo };
@@ -62,7 +65,7 @@ export function outStatus(o: OutItem, c: Conn): CaptureStatus {
   return { kind: "waiting", reason: waitReason(c) };
 }
 
-const groupOf = (s: CaptureStatus): Group => (s.kind === "failed" ? "needs" : s.kind === "waiting" || s.kind === "sending" ? "waiting" : "done");
+const groupOf = (s: CaptureStatus): Group => (s.kind === "failed" || s.kind === "draft" ? "needs" : s.kind === "waiting" || s.kind === "sending" ? "waiting" : "done");
 
 /** Every capture worth showing (not deleted, not empty), grouped, newest first in each group. */
 export function captureRows(ideas: Idea[], outbox: OutItem[], c: Conn): { group: Group; rows: CaptureRow[] }[] {
@@ -81,8 +84,8 @@ export function captureRows(ideas: Idea[], outbox: OutItem[], c: Conn): { group:
   return GROUPS.map((group) => ({ group, rows: rows.filter((r) => r.group === group).sort((a, b) => b.at - a.at) })).filter((g) => g.rows.length > 0);
 }
 
-/** The Capture tab's badge: only what needs the user (a failed item), not what simply waits. */
-export const needsYou = (outbox: OutItem[]): number => outbox.filter((o) => o.state === "failed").length;
+/** The Capture tab's badge: only what needs the user (a failed item, a take not kept yet), not what simply waits. */
+export const needsYou = (outbox: OutItem[]): number => outbox.filter((o) => o.state === "failed" || o.state === "draft").length;
 
 /** What's still on the phone for the computer: unsent ideas, waiting memos and exports. */
 export function waitingOnPhone(ideas: Idea[], outbox: OutItem[]): number {
@@ -121,13 +124,16 @@ export function when(at: number, now: number, lang: "en" | "fr"): string {
 
 /** What a save on a pushed screen kept, for the toast: a memo, an export or an idea made or edited since `since`. */
 export function savedSince(
-  route: { name: string; id?: string },
+  route: { name: string; id?: string; draftId?: string },
   ideas: Idea[],
   outbox: OutItem[],
   since: number,
 ): "memo" | "export" | "idea" | null {
   if (route.name === "record" || route.name === "share") {
-    const fresh = outbox.find((o) => o.createdAt >= since);
+    // A take reopened from its draft row: kept if it's no longer a draft.
+    if (route.draftId) return outbox.some((o) => o.id === route.draftId && o.state !== "draft") ? "memo" : null;
+    // A take left as a draft (not kept) says nothing.
+    const fresh = outbox.find((o) => o.createdAt >= since && o.state !== "draft");
     if (fresh) return fresh.type === "memo" ? "memo" : "export";
     return null;
   }

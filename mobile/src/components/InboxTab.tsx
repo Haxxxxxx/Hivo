@@ -1,6 +1,7 @@
 import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { Alert, Pressable, RefreshControl, SectionList, StyleSheet, Text, View } from "react-native";
+import { c } from "../captureStrings";
 import { s } from "../inboxStrings";
 import { captureRows, duration, when, type CaptureRow, type CaptureStatus, type Group } from "../lib/captures";
 import { filedTitle } from "../lib/filedTo";
@@ -15,6 +16,8 @@ type Props = {
   onIdea: (id: string | null) => void;
   onRecord: () => void;
   onPick: () => void;
+  /** A take not kept yet: RecordScreen reopens it to keep or discard. */
+  onDraft: (id: string) => void;
 };
 
 export type CaptureHandle = { scrollToTop: () => void; stopPlayback: () => void };
@@ -30,6 +33,8 @@ function statusLine(st: CaptureStatus, row: CaptureRow, find: Find): { text: str
       const why = row.kind === "out" && row.out.error ? s().outErrors[row.out.error] : null;
       return { text: why ? s().notSentWhy(why) : s().failed, color: C.missing };
     }
+    case "draft":
+      return { text: c().draftState, color: C.hot };
     case "sending":
       return { text: s().sending(st.pct), color: C.body };
     case "waiting": {
@@ -48,7 +53,7 @@ function statusLine(st: CaptureStatus, row: CaptureRow, find: Find): { text: str
 }
 
 /** The Capture home: New idea / Record / Add a file, then every capture grouped by what it needs. */
-export const InboxTab = forwardRef<CaptureHandle, Props>(function InboxTab({ onIdea, onRecord, onPick }, ref) {
+export const InboxTab = forwardRef<CaptureHandle, Props>(function InboxTab({ onIdea, onRecord, onPick, onDraft }, ref) {
   // Select the stored arrays (stable) and derive here: a selector that builds
   // a new array on every read makes useSyncExternalStore loop forever.
   const ideas = useApp((st) => st.ideas);
@@ -58,6 +63,15 @@ export const InboxTab = forwardRef<CaptureHandle, Props>(function InboxTab({ onI
   const error = useApp((st) => st.error);
   const extrasError = useApp((st) => st.extrasError);
   const syncing = useApp((st) => st.syncing);
+  // The pull spinner only for a sync the user asked for (automatic ones show in the header).
+  const [pulled, setPulled] = useState(false);
+  useEffect(() => {
+    if (!syncing) setPulled(false);
+  }, [syncing]);
+  const pull = () => {
+    setPulled(true);
+    requestSync();
+  };
   const library = useApp((st) => st.sync);
   const find: Find = (kind, id) => findItem(library, kind, id);
   const sendingItem = sending ? outbox.find((o) => o.id === sending) : undefined;
@@ -140,7 +154,7 @@ export const InboxTab = forwardRef<CaptureHandle, Props>(function InboxTab({ onI
         ListEmptyComponent={<Text style={styles.empty}>{s().emptyCapture}</Text>}
         stickySectionHeadersEnabled={false}
         contentContainerStyle={{ paddingBottom: 24 }}
-        refreshControl={paired ? <RefreshControl refreshing={syncing} onRefresh={requestSync} colors={[C.cream]} progressBackgroundColor={C.raised} tintColor={C.cream} /> : undefined}
+        refreshControl={paired ? <RefreshControl refreshing={pulled && syncing} onRefresh={pull} colors={[C.cream]} progressBackgroundColor={C.raised} tintColor={C.cream} /> : undefined}
         renderItem={({ item: row }) => {
           const st = statusLine(row.status, row, find);
           const status = (
@@ -168,6 +182,7 @@ export const InboxTab = forwardRef<CaptureHandle, Props>(function InboxTab({ onI
           const title = o.title.trim() || (o.type === "memo" ? meta : o.files[0]?.name || kindLabel);
           return (
             <Pressable
+              onPress={o.state === "draft" ? () => onDraft(o.id) : undefined}
               onLongPress={() => confirmRemove(o)}
               delayLongPress={400}
               accessibilityHint={sending !== o.id ? s().rowActionsHint : undefined}

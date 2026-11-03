@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ComponentRef } from "react";
 import { FlatList, Keyboard, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from "react-native";
+import { PairingUnreadable } from "../components/PairingUnreadable";
 import { Button, Led } from "../components/ui";
 import { tr } from "../lib/i18n";
 import { allItems, filterItems, isGone, itemKey, KINDS, type Item, type Kind } from "../lib/sync";
@@ -18,8 +19,18 @@ type Props = {
  * note screen (App.tsx), so the search and the scroll survive a note. */
 export function LibraryScreen({ kind, onKind, onOpen, onPair }: Props) {
   const sync = useApp((st) => st.sync);
+  const unreadable = useApp((st) => st.pairingUnreadable);
   const paired = useApp((st) => st.pairing !== null);
   const syncing = useApp((st) => st.syncing);
+  // The pull spinner only for a sync the user asked for (automatic ones show in the header).
+  const [pulled, setPulled] = useState(false);
+  useEffect(() => {
+    if (!syncing) setPulled(false);
+  }, [syncing]);
+  const pull = () => {
+    setPulled(true);
+    requestSync();
+  };
   const [query, setQuery] = useState("");
   const search = useRef<ComponentRef<typeof TextInput>>(null);
   // The keyboard closed (Back): let go of the field too, or it keeps taking the hardware Back.
@@ -33,6 +44,7 @@ export function LibraryScreen({ kind, onKind, onOpen, onPair }: Props) {
   const items = useMemo(() => filterItems(all, kind, query, sync), [all, sync, kind, query]);
   const total = useMemo(() => all.filter((i) => i.kind === kind).length, [all, kind]);
 
+  if (!paired && unreadable) return <PairingUnreadable />;
   if (!paired) {
     return (
       <View style={styles.unpaired}>
@@ -82,7 +94,7 @@ export function LibraryScreen({ kind, onKind, onOpen, onPair }: Props) {
         keyboardDismissMode="on-drag"
         ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: C.rule }} />}
         ListEmptyComponent={<Text style={styles.empty}>{empty}</Text>}
-        refreshControl={<RefreshControl refreshing={syncing} onRefresh={requestSync} colors={[C.cream]} progressBackgroundColor={C.raised} tintColor={C.cream} />}
+        refreshControl={<RefreshControl refreshing={pulled && syncing} onRefresh={pull} colors={[C.cream]} progressBackgroundColor={C.raised} tintColor={C.cream} />}
         renderItem={({ item }) => {
           const key = itemKey(item.kind, item.id);
           return (

@@ -1,4 +1,5 @@
 import { CameraView, useCameraPermissions } from "expo-camera";
+import Constants from "expo-constants";
 import * as Clipboard from "expo-clipboard";
 import { useEffect, useRef, useState } from "react";
 import { KeyboardAvoidingView, Linking, Platform, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
@@ -6,6 +7,7 @@ import { ScreenHeader } from "../components/ScreenHeader";
 import { Button, Engrave, Spinner } from "../components/ui";
 import { UpdateCheck } from "../components/UpdateCheck";
 import { tr } from "../lib/i18n";
+import { hasUpdateRow } from "../lib/update";
 import { CAMERA_APP_INTENT, SCAN_TIMEOUT_MS, scannerFailure } from "../lib/scanner";
 import { waitingCount } from "../lib/shareQueue";
 import { useApp } from "../store";
@@ -32,6 +34,13 @@ export function PairScreen({ busy, error, onSubmit, onClearError, onBack }: Prop
   const [notice, setNotice] = useState<string | null>(null);
   const [trouble, setTrouble] = useState(error?.source === "paste");
   const handled = useRef(false);
+  /** Google's scanner listener: one at a time, gone when the scanner closes or this screen does. */
+  const scanSub = useRef<{ remove: () => void } | null>(null);
+  const dropScanSub = () => {
+    scanSub.current?.remove();
+    scanSub.current = null;
+  };
+  useEffect(() => dropScanSub, []);
   const t = tr(T);
   const outbox = useApp((st) => st.outbox);
   const ideas = useApp((st) => st.ideas);
@@ -66,15 +75,18 @@ export function PairScreen({ busy, error, onSubmit, onClearError, onBack }: Prop
     // nothing on a real phone while the system camera read the same code).
     // It brings its own full-screen UI and needs no camera permission here.
     if (Platform.OS === "android" && CameraView.isModernBarcodeScannerAvailable) {
-      const sub = CameraView.onModernBarcodeScanned((res) => {
-        sub.remove();
+      dropScanSub();
+      scanSub.current = CameraView.onModernBarcodeScanned((res) => {
+        dropScanSub();
         submit(res.data, "scan");
       });
       try {
         await CameraView.launchScanner({ barcodeTypes: ["qr"] });
+        // Resolved after a scan: its event may still be on its way, so the listener goes a moment later.
+        setTimeout(dropScanSub, 1000);
         return;
       } catch (e) {
-        sub.remove();
+        dropScanSub();
         if (scannerFailure(e) === "cancelled") return;
         // Google's scanner didn't start: use the camera here instead.
         console.warn("code scanner failed, using the in-app camera:", e instanceof Error ? e.message : String(e));
@@ -199,8 +211,8 @@ export function PairScreen({ busy, error, onSubmit, onClearError, onBack }: Prop
           </View>
         ) : null}
 
-        {/* Here too: an app that can't pair must still be able to update. */}
-        <UpdateCheck style={{ marginTop: 32 }} />
+        {/* Here too: an app that can't pair must still be able to update (builds that have an update row). */}
+        {hasUpdateRow(Constants.expoConfig?.extra?.distribution) ? <UpdateCheck style={{ marginTop: 32 }} /> : null}
       </ScrollView>
     </KeyboardAvoidingView>
   );

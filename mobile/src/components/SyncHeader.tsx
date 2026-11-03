@@ -5,6 +5,7 @@ import { isAway, syncTone, waitingOnPhone, type SyncTone } from "../lib/captures
 import { ago, tr } from "../lib/i18n";
 import { sync, useApp } from "../store";
 import { confirmUnpair } from "./confirmUnpair";
+import { PairingUnreadable } from "./PairingUnreadable";
 import { errorText, pairAgainText, T, updateDesktopText } from "../strings";
 import { C, FONT, RADIUS } from "../theme";
 import { Button, Engrave, Led } from "./ui";
@@ -23,6 +24,7 @@ export function useWaiting(): number {
  * error never pushes the screen down: its details sit in `SyncStrip`).
  * Unpaired: "Not paired: N items wait on this phone" and Pair. */
 export function SyncHeader({ onSettings, onPair }: { onSettings: () => void; onPair: () => void }) {
+  const unreadable = useApp((st) => st.pairingUnreadable);
   const paired = useApp((st) => st.pairing !== null);
   const desktopName = useApp((st) => st.pairing?.desktopName ?? "Hivo");
   const lastSyncAt = useApp((st) => st.sync.lastSyncAt);
@@ -61,7 +63,12 @@ export function SyncHeader({ onSettings, onPair }: { onSettings: () => void; onP
           <Text style={styles.gearIcon}>{"⚙︎"}</Text>
         </Pressable>
       </View>
-      {!paired ? (
+      {!paired && unreadable ? (
+        // Saved but not readable right now: not "not paired" (Retry reads it again).
+        <View style={styles.unreadable}>
+          <PairingUnreadable />
+        </View>
+      ) : !paired ? (
         <View style={styles.pairBanner}>
           <Text style={styles.pairText}>{t.notPairedBanner(waiting)}</Text>
           <Button label={t.pairAction} onPress={onPair} />
@@ -134,6 +141,7 @@ const styles = StyleSheet.create({
   gear: { width: 48, height: 48, alignItems: "center", justifyContent: "center", borderRadius: RADIUS },
   gearIcon: { color: C.body, fontSize: 24 },
   pairBanner: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: 10, marginTop: 10, padding: 10, backgroundColor: C.panel, borderWidth: 1, borderColor: C.ruleStrong, borderRadius: RADIUS },
+  unreadable: { marginTop: 10, borderWidth: 1, borderColor: C.warn, borderRadius: RADIUS, backgroundColor: C.panel },
   pairText: { color: C.cream, fontSize: 14, lineHeight: 20, flexGrow: 1, flexShrink: 1, flexBasis: 200 },
   strip: { marginHorizontal: 12, marginBottom: 8, padding: 10, backgroundColor: C.panel, borderWidth: 1, borderRadius: RADIUS },
   stripRow: { flexDirection: "row", gap: 8 },

@@ -37,6 +37,14 @@ describe("captureRows", () => {
     ]);
   });
 
+  it("puts a take not kept yet with what needs the user, never as waiting", () => {
+    const [needs] = captureRows([], [out("d", 5, { state: "draft" }), out("w", 9)], conn);
+    expect(needs.group).toBe("needs");
+    expect(needs.rows.map((r) => [r.id, r.status.kind])).toEqual([["d", "draft"]]);
+    expect(needsYou([out("d", 1, { state: "draft" })])).toBe(1);
+    expect(waitingOnPhone([], [out("d", 1, { state: "draft" })])).toBe(0);
+  });
+
   it("says why something waits", () => {
     const reason = (c: Conn) => {
       const st = captureRows([idea("i", 1)], [], c)[0].rows[0].status;
@@ -90,6 +98,9 @@ describe("savedSince", () => {
     expect(savedSince({ name: "record" }, [], [out("o", 100)], 50)).toBe("memo");
     expect(savedSince({ name: "share" }, [], [out("o", 100, { type: "sketch" })], 50)).toBe("export");
     expect(savedSince({ name: "record" }, [], [out("o", 10)], 50)).toBeNull();
+    expect(savedSince({ name: "record" }, [], [out("o", 100, { state: "draft" })], 50)).toBeNull();
+    expect(savedSince({ name: "record", draftId: "d" }, [], [out("d", 1)], 50)).toBe("memo");
+    expect(savedSince({ name: "record", draftId: "d" }, [], [out("d", 1, { state: "draft" })], 50)).toBeNull();
   });
   it("an idea counts only when written or edited during the visit", () => {
     expect(savedSince({ name: "idea", id: "i" }, [idea("i", 100)], [], 50)).toBe("idea");
