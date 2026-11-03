@@ -20,7 +20,7 @@ import { s } from "../inboxStrings";
 import { tr } from "../lib/i18n";
 import type { IdeaTarget } from "../lib/ideas";
 import { MAX_MEMO_MS, MIN_MEMO_MS } from "../lib/outbox";
-import { noticePermission, recordingAudioMode, recordsInBackground, shouldAskNotice, showBackgroundHint, stopOnBackground, stopReason, type NoticePermission } from "../lib/recording";
+import { noticePermission, recordingAudioMode, recordsInBackground, shouldAskNotice, showBackgroundHint, stopOnBackground, stopReason, takeIsOpen, type NoticePermission } from "../lib/recording";
 import { addOutItem, newOutId, requestSync } from "../store";
 import { T } from "../strings";
 import { C, FONT, RADIUS } from "../theme";
@@ -225,7 +225,8 @@ export function RecordScreen({ target: initialTarget, onDone, backRef }: { targe
     void stopRecordingWatch();
     setHint(false);
     try {
-      if (recorder.isRecording) await recorder.stop();
+      // Also a take paused by expo-audio when Hivo left the screen (see takeIsOpen).
+      if (takeIsOpen({ isRecording: recorder.isRecording, canRecord: recorder.getStatus().canRecord })) await recorder.stop();
     } catch (e) {
       console.warn("Hivo: stop failed", e);
     }
