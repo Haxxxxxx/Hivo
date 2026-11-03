@@ -17,7 +17,7 @@ function sources(dir: string): string[] {
 
 describe("app code that Hermes can run", () => {
   it("uses no Intl or locale-dependent string methods", () => {
-    const hits = [...sources("src"), ...sources("modules")].flatMap((file) =>
+    const hits = ["App.tsx", "index.ts", ...sources("src"), ...sources("modules")].flatMap((file) =>
       readFileSync(join(root, file), "utf8")
         .split("\n")
         .map((line, i) => ({ file, line: i + 1, text: line.trim() }))
