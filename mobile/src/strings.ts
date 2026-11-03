@@ -36,6 +36,8 @@ export const T = dict(
     pairedBody: (name: string) => `This phone now syncs with "${name}".`,
     pairNotSaved: (why: string) => `Nothing was saved: ${why}.`,
     pairNewCode: "Next: on the computer, click Pair a phone again to show a new code, then scan it.",
+    pairExpired: "This code was already used, or it's more than 5 minutes old. Nothing was saved.",
+    pairNotKept: "The computer didn't keep this pairing (Not my phone was clicked, or nobody confirmed within 5 minutes). Nothing was saved.",
     loopbackLink: "This link points at the phone itself (127.0.0.1), not at your computer. Scan the QR code shown on the computer (Settings → Phone sync) instead.",
     badLinkTitle: "This link can't pair",
     notPairedStatus: "Not paired",
@@ -172,6 +174,8 @@ export const T = dict(
     pairedBody: (name: string) => `Ce téléphone se synchronise maintenant avec «${NB}${name}${NB}».`,
     pairNotSaved: (why: string) => `Rien n'a été enregistré${NB}: ${why}.`,
     pairNewCode: `Ensuite${NB}: sur l'ordi, clique à nouveau sur Associer un téléphone pour afficher un nouveau code, puis scanne-le.`,
+    pairExpired: "Ce code a déjà servi, ou il date de plus de 5 minutes. Rien n'a été enregistré.",
+    pairNotKept: "L'ordi n'a pas gardé cette association (Pas mon téléphone, ou pas de confirmation dans les 5 minutes). Rien n'a été enregistré.",
     loopbackLink: "Ce lien vise le téléphone lui-même (127.0.0.1), pas ton ordi. Scanne plutôt le QR code affiché sur l'ordi (Réglages → Sync téléphone).",
     badLinkTitle: "Ce lien ne peut pas associer",
     notPairedStatus: "Pas associé",
@@ -322,6 +326,8 @@ export const pairAgainText = (): string => tr(ERRORS).pairAgain;
 /** Why a pairing didn't happen: "didn't answer" only when it didn't; the
  * reason in lower case after the colon (French typography too). */
 export const pairFailText = (code: SyncErrorCode): string => {
+  if (code === "expired") return tr(T).pairExpired;
+  if (code === "not-confirmed") return tr(T).pairNotKept;
   const why = lowerFirst(tr(ERRORS)[code]);
   return code === "offline" || code === "off" ? tr(T).pairCheckFailed(why) : tr(T).pairNotSaved(why);
 };

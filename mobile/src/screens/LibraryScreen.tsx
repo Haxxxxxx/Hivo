@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { FlatList, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from "react-native";
+import { useEffect, useMemo, useRef, useState, type ComponentRef } from "react";
+import { FlatList, Keyboard, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from "react-native";
 import { Button, Led } from "../components/ui";
 import { tr } from "../lib/i18n";
 import { allItems, filterItems, isGone, itemKey, KINDS, type Item, type Kind } from "../lib/sync";
@@ -21,6 +21,12 @@ export function LibraryScreen({ kind, onKind, onOpen, onPair }: Props) {
   const paired = useApp((st) => st.pairing !== null);
   const syncing = useApp((st) => st.syncing);
   const [query, setQuery] = useState("");
+  const search = useRef<ComponentRef<typeof TextInput>>(null);
+  // The keyboard closed (Back): let go of the field too, or it keeps taking the hardware Back.
+  useEffect(() => {
+    const sub = Keyboard.addListener("keyboardDidHide", () => search.current?.blur());
+    return () => sub.remove();
+  }, []);
   const t = tr(T);
   const label: Record<Kind, string> = { prod: t.tabProd, beat: t.tabBeat, song: t.tabSong };
   const all = useMemo(() => allItems(sync), [sync]);
@@ -52,6 +58,7 @@ export function LibraryScreen({ kind, onKind, onOpen, onPair }: Props) {
       </View>
       <View style={styles.searchBox}>
         <TextInput
+          ref={search}
           value={query}
           onChangeText={setQuery}
           placeholder={t.search}

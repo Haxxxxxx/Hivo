@@ -64,7 +64,7 @@ export function SyncHeader({ onSettings, onPair }: { onSettings: () => void; onP
       {!paired ? (
         <View style={styles.pairBanner}>
           <Text style={styles.pairText}>{t.notPairedBanner(waiting)}</Text>
-          <Button label={t.pairAction} onPress={onPair} style={{ alignSelf: "flex-end", marginTop: 8 }} />
+          <Button label={t.pairAction} onPress={onPair} />
         </View>
       ) : null}
     </View>
@@ -133,8 +133,8 @@ const styles = StyleSheet.create({
   sync: { minHeight: 48 },
   gear: { width: 48, height: 48, alignItems: "center", justifyContent: "center", borderRadius: RADIUS },
   gearIcon: { color: C.body, fontSize: 24 },
-  pairBanner: { marginTop: 10, padding: 10, backgroundColor: C.panel, borderWidth: 1, borderColor: C.ruleStrong, borderRadius: RADIUS },
-  pairText: { color: C.cream, fontSize: 14, lineHeight: 20 },
+  pairBanner: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: 10, marginTop: 10, padding: 10, backgroundColor: C.panel, borderWidth: 1, borderColor: C.ruleStrong, borderRadius: RADIUS },
+  pairText: { color: C.cream, fontSize: 14, lineHeight: 20, flexGrow: 1, flexShrink: 1, flexBasis: 200 },
   strip: { marginHorizontal: 12, marginBottom: 8, padding: 10, backgroundColor: C.panel, borderWidth: 1, borderRadius: RADIUS },
   stripRow: { flexDirection: "row", gap: 8 },
   stripText: { color: C.cream, flex: 1, fontSize: 14, lineHeight: 20 },

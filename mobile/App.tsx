@@ -2,7 +2,7 @@ import { useFonts } from "expo-font";
 import { getLocales } from "expo-localization";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useRef, useState } from "react";
-import { Alert, AppState, BackHandler, Keyboard, Linking, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { Alert, AppState, BackHandler, Keyboard, Linking, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { onShare, onShareStart, sweepShareCache, takeShared, type Shared } from "./modules/hivo-share";
 import { s } from "./src/inboxStrings";
@@ -45,6 +45,13 @@ type Route =
   | { name: "share"; share: IncomingShare; at: number; since: number };
 
 const fromNative = (sh: Shared): IncomingShare => ({ files: sh.files, skipped: sh.skipped, text: sh.text, subject: sh.subject, picked: false, dir: sh.dir });
+
+/** A search field left focused under a pushed screen (or a hidden tab) takes the
+ * hardware Back for itself, every time: blur it, not only the keyboard. */
+function releaseFocus(): void {
+  TextInput.State.currentlyFocusedInput()?.blur();
+  Keyboard.dismiss();
+}
 
 /** How long "Paired" stays on screen. */
 const PAIRED_MS = 1800;
@@ -104,7 +111,7 @@ export default function App() {
   }, [queue, nav, confirming]);
 
   function go(r: Route) {
-    Keyboard.dismiss();
+    releaseFocus();
     capture.current?.stopPlayback();
     setNav((n) => push(n, r));
   }
@@ -296,7 +303,7 @@ export default function App() {
 
   function onTab(tab: Tab) {
     if (tab === "capture" && nav.tab === "capture") capture.current?.scrollToTop();
-    Keyboard.dismiss();
+    releaseFocus();
     setNav((n) => toTab(n, tab));
   }
 
