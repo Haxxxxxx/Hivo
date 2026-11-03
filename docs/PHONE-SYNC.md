@@ -158,7 +158,10 @@ the result, and keep its own text when the status is `"missing"` or `"too long"`
 - Offline first: snapshot + notes cached locally (AsyncStorage); edits queue
   with their `baseHash`; sync = push queued changes (`/v1/notes`), then pull
   `/v1/snapshot`; conflicts show a small banner on that note.
-- Prods: an "Open link" button (the YouTube URL in the system browser).
+- Prods (any item with a link): "Open link" in the system browser; a YouTube
+  link gets "Play here" (the docked mini player, `MiniPlayer.tsx`: a locked-down
+  `react-native-webview` showing the website's `embed.html` with the
+  youtube-nocookie embed, play only) and "Open in YouTube".
 - Crypto: `@noble/ciphers` (xchacha20poly1305) + `@noble/hashes` if needed,
   random bytes from `expo-crypto`. Key + deviceId in `expo-secure-store`.
 - Android: cleartext HTTP to private IPs must be allowed (expo-build-properties

@@ -7,6 +7,8 @@
   player configuration error", error 153). Framing this page instead gives the
   inner player an https referrer. Its headers (CSP, Referrer-Policy) are set
   for this path in vercel.json. Play only: nothing is ever downloaded.
+  The Android phone app loads this page as its WebView's own page (its mini
+  player, mobile/src/components/MiniPlayer.tsx), for the same reason.
 -->
 <html lang="en">
   <head>
