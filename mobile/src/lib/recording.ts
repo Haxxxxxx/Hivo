@@ -29,6 +29,15 @@ export function recordingAudioMode(background: boolean) {
   return { allowsRecording: true, playsInSilentMode: true, allowsBackgroundRecording: background, shouldPlayInBackground: false };
 }
 
+/** Whether a take still has to be stopped (which writes the file's index:
+ * until then the .m4a doesn't play). Not only while it records: without the
+ * foreground service, expo-audio pauses the recorder as soon as Hivo leaves
+ * the screen (`isRecording` false, still prepared), and resumes it when Hivo
+ * comes back. Skipping the stop then left a file the player refused ("Source
+ * error") and the microphone recording again with nothing on screen.
+ * `canRecord` is expo-audio's "prepared": true until the take is stopped. */
+export const takeIsOpen = (status: { isRecording: boolean; canRecord: boolean }): boolean => status.isRecording || status.canRecord;
+
 /** Hivo left the screen during a take. */
 export const stopOnBackground = (background: boolean): boolean => !background;
 
