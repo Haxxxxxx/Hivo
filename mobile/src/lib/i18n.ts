@@ -23,7 +23,15 @@ export function tr<T>(d: { en: T; fr: T }): T {
 /** The singular or the plural for `n`: French takes the singular for 0 and 1,
  * English only for 1 (same as the desktop's src/i18n `plural`). */
 export function plural(n: number, one: string, other: string, l: Lang = current): string {
-  return new Intl.PluralRules(l === "fr" ? "fr-FR" : "en-US").select(n) === "one" ? one : other;
+  return isOne(n, l) ? one : other;
+}
+
+/** CLDR's "one" for the two languages, by hand: Hermes (the release app's
+ * engine on Android) has no Intl.PluralRules, and `new` on it threw, which
+ * crashed the note screen as soon as a line count or a bar count showed.
+ * French: 0 ≤ n < 2; English: exactly 1 (an integer, no decimals). */
+export function isOne(n: number, l: Lang): boolean {
+  return l === "fr" ? n >= 0 && n < 2 : n === 1;
 }
 
 const NNBSP = "\u202f";
