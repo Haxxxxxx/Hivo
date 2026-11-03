@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { MAX_EXCLUDE, MAX_FOUND_TITLES, MAX_LIKED, MAX_QUERY_CHARS, beatFactsLine, beatQuery, canonicalUrl, converterLink, converterNeedsPaste, deeperExclude, embedUrl, foundKey, matchBeat, nameQueries, relinkBeatNotes, restoreDig, sortBeats, titleFacts, titleKey, foundTitles, googleSearchUrl, leadFacts, leadHash, likedTitles, searchesDone, seedList, toggleLiked, withFallbackQueries, youtubeId, youtubeSearchUrl } from "./digger";
-import { EMBED_PAGE as PHONE_EMBED_PAGE, canonicalUrl as phoneCanonicalUrl, youtubeId as phoneYoutubeId } from "../../mobile/src/lib/youtube";
 
 describe("digger links", () => {
   it("builds a YouTube search page link", () => {
@@ -291,33 +290,5 @@ describe("digger leads", () => {
     expect(converterLink("javascript:{url}", video)).toBeNull();
     expect(converterLink(undefined, video)).toBeNull();
     expect(converterLink("", video)).toBeNull();
-  });
-});
-
-describe("the phone's port (mobile/src/lib/youtube.ts)", () => {
-  it("reads ids and normalises addresses exactly like the desktop", () => {
-    const urls = [
-      "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-      "https://youtube.com/watch?v=dQw4w9WgXcQ&t=42s&list=PL1",
-      "https://m.youtube.com/watch?feature=share&v=dQw4w9WgXcQ",
-      "https://youtu.be/dQw4w9WgXcQ?si=abc",
-      "https://www.youtube.com/shorts/dQw4w9WgXcQ?feature=share",
-      " https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42s ",
-      "https://www.youtube.com/results?search_query=beat",
-      "https://www.youtube.com/watch?v=too-short",
-      "https://www.youtube.com/watch?v=dQw4w9WgXcQ/../x",
-      "http://www.youtube.com/watch?v=dQw4w9WgXcQ",
-      "https://notyoutube.com/watch?v=dQw4w9WgXcQ",
-      "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
-      "https://www.youtube.com/embed/dQw4w9WgXcQ",
-      "https://www.beatstars.com/beat/night-123",
-      "javascript:alert(1)",
-      "",
-    ];
-    for (const u of urls) {
-      expect(phoneYoutubeId(u), u).toBe(youtubeId(u));
-      expect(phoneCanonicalUrl(u), u).toBe(canonicalUrl(u));
-    }
-    expect(PHONE_EMBED_PAGE).toBe(embedUrl("dQw4w9WgXcQ")!.split("?")[0]);
   });
 });

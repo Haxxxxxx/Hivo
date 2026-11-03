@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { canonicalUrl, externalUrl, fromPlayerPage, navDecision, parsePlayerMessage, playerUrl, problemFor, youtubeId } from "./youtube";
+import { EMBED_PAGE, canonicalUrl, externalUrl, fromPlayerPage, navDecision, parsePlayerMessage, playerUrl, problemFor, youtubeId } from "./youtube";
+// The desktop module (pure; only a type import): the phone must read ids and links exactly like it.
+import { canonicalUrl as desktopCanonicalUrl, embedUrl as desktopEmbedUrl, youtubeId as desktopYoutubeId } from "../../../src/lib/digger";
 
 const ID = "dQw4w9WgXcQ";
 const PAGE = `https://www.hi-vo.fr/embed.html?v=${ID}&hl=en`;
@@ -97,5 +99,33 @@ describe("the player page", () => {
     expect(problemFor(100)).toBe("unavailable");
     expect(problemFor(153)).toBe("refused");
     expect(problemFor(5)).toBe("failed");
+  });
+});
+
+describe("same answers as the desktop (src/lib/digger.ts)", () => {
+  it("reads ids and normalises addresses exactly like the desktop", () => {
+    const urls = [
+      "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "https://youtube.com/watch?v=dQw4w9WgXcQ&t=42s&list=PL1",
+      "https://m.youtube.com/watch?feature=share&v=dQw4w9WgXcQ",
+      "https://youtu.be/dQw4w9WgXcQ?si=abc",
+      "https://www.youtube.com/shorts/dQw4w9WgXcQ?feature=share",
+      " https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42s ",
+      "https://www.youtube.com/results?search_query=beat",
+      "https://www.youtube.com/watch?v=too-short",
+      "https://www.youtube.com/watch?v=dQw4w9WgXcQ/../x",
+      "http://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "https://notyoutube.com/watch?v=dQw4w9WgXcQ",
+      "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
+      "https://www.youtube.com/embed/dQw4w9WgXcQ",
+      "https://www.beatstars.com/beat/night-123",
+      "javascript:alert(1)",
+      "",
+    ];
+    for (const u of urls) {
+      expect(youtubeId(u), u).toBe(desktopYoutubeId(u));
+      expect(canonicalUrl(u), u).toBe(desktopCanonicalUrl(u));
+    }
+    expect(EMBED_PAGE).toBe(desktopEmbedUrl("dQw4w9WgXcQ")!.split("?")[0]);
   });
 });
