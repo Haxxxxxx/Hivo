@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EMBED_PAGE, canonicalUrl, externalUrl, fromPlayerPage, navDecision, parsePlayerMessage, playerUrl, problemFor, youtubeId } from "./youtube";
+import { EMBED_PAGE, PLAYER_LOAD_TIMEOUT_MS, canonicalUrl, externalUrl, fromPlayerPage, navDecision, parsePlayerMessage, playerUrl, problemFor, samePage, youtubeId } from "./youtube";
 // The desktop module (pure; only a type import): the phone must read ids and links exactly like it.
 import { canonicalUrl as desktopCanonicalUrl, embedUrl as desktopEmbedUrl, youtubeId as desktopYoutubeId } from "../../../src/lib/digger";
 
@@ -52,6 +52,19 @@ describe("the player page", () => {
     expect(navDecision("https://rr1---sn-abc.googlevideo.com/videoplayback", false, PAGE)).toBe("allow");
     // The player frame itself can't take over the top.
     expect(navDecision(`https://www.youtube-nocookie.com/embed/${ID}`, true, PAGE)).toBe("external");
+  });
+
+  it("knows its own page by origin, path and query, not the raw text (review #11)", () => {
+    expect(samePage(`${PAGE}#top`, PAGE)).toBe(true);
+    expect(samePage(PAGE.replace("https://www.hi-vo.fr", "https://WWW.HI-VO.FR:443"), PAGE)).toBe(true);
+    expect(navDecision(`${PAGE}#t`, true, PAGE)).toBe("allow");
+    // A redirect elsewhere on the site, another video, another host: not the page.
+    expect(samePage("https://www.hi-vo.fr/embed", PAGE)).toBe(false);
+    expect(samePage(PAGE.replace(ID, "aaaaaaaaaaa"), PAGE)).toBe(false);
+    expect(samePage(PAGE.replace("www.hi-vo.fr", "hi-vo.fr"), PAGE)).toBe(false);
+    expect(samePage(PAGE.replace("https:", "http:"), PAGE)).toBe(false);
+    expect(samePage("not a url", PAGE)).toBe(false);
+    expect(PLAYER_LOAD_TIMEOUT_MS).toBe(15_000);
   });
 
   it("lets YouTube links out to the app or browser, drops everything else", () => {

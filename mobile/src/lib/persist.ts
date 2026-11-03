@@ -250,6 +250,10 @@ export async function loadAll(kv: KV, fs: FS, now: number): Promise<Loaded> {
     // Unreadable (too big for the cursor window) and nothing in it the phone
     // doesn't have elsewhere: the next sync brings the library back.
     await kv.remove(KEYS.legacyCache).catch(() => {});
+  } else if (cache && file.ok && file.raw !== null && !(legacy?.ok && legacy.raw)) {
+    // The new cache file is there and good: an old row left behind (not read
+    // because the file exists, or unreadable) is only dead weight (review #15).
+    await kv.remove(KEYS.legacyCache).catch(() => {});
   }
 
   return { ideas: ideas.items, outbox: outbox.items, bound, edits, cache, blocked: [...new Set(blocked)], outboxClean: outRow.ok && outbox.clean, dropped: [...new Set(dropped)] };

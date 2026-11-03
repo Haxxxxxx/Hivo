@@ -2,6 +2,7 @@ import { dict, plural, tr } from "./lib/i18n";
 import type { SyncErrorCode } from "./lib/client";
 import type { PairingError } from "./lib/pairing";
 import { lowerFirst } from "./lib/captures";
+import { sentence } from "./lib/text";
 
 const NB = " "; // narrow no-break space before : ? ! in French
 
@@ -321,7 +322,7 @@ const ERRORS = dict(
 /** `syncedBefore`: a bare 401 on a phone that synced fine before is as likely
  * a clock more than 2 minutes off as a forgotten pairing (an older desktop
  * answers both the same way). */
-export const errorText = (code: SyncErrorCode, syncedBefore = false): string => (code === "forgotten" && syncedBefore ? tr(ERRORS).forgottenOrClock : tr(ERRORS)[code]);
+export const errorText = (code: SyncErrorCode, syncedBefore = false): string => sentence(code === "forgotten" && syncedBefore ? tr(ERRORS).forgottenOrClock : tr(ERRORS)[code]);
 export const pairAgainText = (): string => tr(ERRORS).pairAgain;
 /** Why a pairing didn't happen: "didn't answer" only when it didn't; the
  * reason in lower case after the colon (French typography too). */

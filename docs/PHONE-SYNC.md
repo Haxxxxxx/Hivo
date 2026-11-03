@@ -554,14 +554,19 @@ minutes paired in your place.
   timeout) is "offline". The offline message mentions a Wi-Fi without
   internet (Android then routes over mobile data; the app doesn't bind to
   the Wi-Fi network).
-- **Finding the computer again** (`src/lib/discover.ts`): when every saved
-  host fails, at most once per 10 minutes (or from Settings → "Look for my
-  computer again"), the phone sends the usual sealed `/v1/hello` to each
-  address of the saved hosts' /24 networks (2 networks max, 32 at a time,
-  1.5 s each). Only an answer that opens with the pairing's key (or a
-  sealed error: clock, demo, read only, pending) counts; the new address
-  goes first in the saved hosts. A desktop sees at most one hello from this
-  phone per address, the same request as at launch.
+- **Finding the computer again** (`src/lib/discover.ts`, 0.7.1: manual
+  only, never after a failed sync): Settings → "Look for my computer
+  again" sends the usual sealed `/v1/hello` to the saved hosts first (4 s
+  each; one answering = "It's at its usual address"), then to each address
+  of the /24 the phone is on now (`localIPv4s` in `modules/hivo-share`:
+  private IPv4 on a `wlan*`/`eth*` interface, never mobile data), or, when
+  the phone can't tell, of the saved hosts' /24s (2 networks max), 32 at a
+  time, 1.5 s each, with progress, Cancel, and the screen kept on. Only an
+  answer that opens with the pairing's key (or a sealed error: clock, demo,
+  read only, pending) counts; the new address goes first in the saved
+  hosts. A desktop sees at most one hello from this phone per address, the
+  same request as at launch (it carries the device id in `X-Hivo-Device`,
+  as every request does).
 - **Storage** (`src/lib/persist.ts`): rows read one by one, a row that can't
   be read is never written over, the library cache is a file
   (`<documents>/hivo-data/library-cache.json`, atomic write) moved once from
@@ -569,7 +574,8 @@ minutes paired in your place.
   as `state: "draft"` (never sent until Keep). Shares that reached the app
   are remembered (`hivo.share.pending.v1`) until sent or left.
 - **Sync control:** a sync is cancelled on unpair / pair (no upload goes on
-  to the old computer), restarted when it hangs over a minute and the app
+  to the old computer), restarted when it got no answer for over a minute (not since
+  it started: a long upload that keeps sending goes on) and the app
   comes back, skipped on return when one finished under 30 s ago; the
   screen stays on while an upload sends; a desktop that answers
   `offset:n` without moving forward 5 times holds the item

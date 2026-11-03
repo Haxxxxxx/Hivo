@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bandlabLinkIn, cleanTitle, fileNameFor, isBandlabShare, isOpaqueName, nameFromFile, shareText, skippedLabel, titleFromShare } from "./shareMeta";
+import { bandlabLinkIn, cleanTitle, fileNameFor, isBandlabShare, isOpaqueName, nameFromFile, pickedName, shareText, skippedLabel, titleFromShare } from "./shareMeta";
 
 describe("isOpaqueName", () => {
   it("spots provider ids, numbers and uuids", () => {
@@ -106,5 +106,25 @@ describe("shareText", () => {
     const text = `${"x".repeat(1999)}🔥 rest`;
     expect(JSON.stringify(shareText(text, null))).not.toMatch(/\\ud83d/);
     expect(JSON.stringify(cleanTitle(`${"a".repeat(119)}🔥`))).not.toMatch(/\\ud83d/);
+  });
+});
+
+describe("pickedName (smoke F3)", () => {
+  it("uses the picker's own name first", () => {
+    expect(pickedName("Night Drive.m4a", "msf%3A1000032969")).toEqual({ name: "Night Drive.m4a", named: true });
+    expect(pickedName("  Night Drive.m4a ", "x")).toEqual({ name: "Night Drive.m4a", named: true });
+  });
+  it("else the address's decoded last part, an id marked as no name", () => {
+    expect(pickedName(null, "primary%3AMusic%2FNight%20Drive.m4a")).toEqual({ name: "Night Drive.m4a", named: true });
+    expect(pickedName(null, "msf%3A1000032969")).toEqual({ name: "1000032969", named: false });
+    expect(pickedName("", "1000032969")).toEqual({ name: "1000032969", named: false });
+    expect(pickedName(null, "%E0%A4%A")).toEqual({ name: "%E0%A4%A", named: true });
+  });
+  it("an id-named pick takes the song's name, never \"Shared file\" when a title is typed", () => {
+    const p = pickedName(null, "msf%3A1000032969.m4a");
+    expect(fileNameFor(p.name, p.named, "Night Drive", 0, 1, "Shared file")).toBe("Night Drive.m4a");
+    const own = pickedName("Take 3.m4a", "msf%3A1000032969");
+    expect(fileNameFor(own.name, own.named, "", 0, 1, "Shared file")).toBe("Take 3.m4a");
+    expect(titleFromShare({ subject: null, text: null, fileNames: [own.name] })).toBe("Take 3");
   });
 });

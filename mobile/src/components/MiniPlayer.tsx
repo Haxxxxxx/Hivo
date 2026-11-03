@@ -3,7 +3,7 @@ import { AppState, Keyboard, Linking, StyleSheet, Text, View } from "react-nativ
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import type { ShouldStartLoadRequest, WebViewOpenWindowEvent } from "react-native-webview/lib/WebViewTypes";
 import { lang, tr } from "../lib/i18n";
-import { externalUrl, fromPlayerPage, navDecision, parsePlayerMessage, playerUrl, problemFor, type PlayerProblem } from "../lib/youtube";
+import { externalUrl, fromPlayerPage, navDecision, parsePlayerMessage, PLAYER_LOAD_TIMEOUT_MS, playerUrl, problemFor, type PlayerProblem } from "../lib/youtube";
 import { T } from "../strings";
 import { C, RADIUS } from "../theme";
 import { Button, Led, Spinner } from "./ui";
@@ -40,6 +40,13 @@ export function MiniPlayer({ videoId, onClose }: { videoId: string; onClose: () 
       app.remove();
     };
   }, [onClose]);
+
+  // Still loading after 15 s (a redirect, a stalled network): the "didn't load" card with Retry, never an endless spinner.
+  useEffect(() => {
+    if (!loading || problem) return;
+    const timer = setTimeout(() => setProblem({ kind: "offline", code: 0 }), PLAYER_LOAD_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [loading, problem, attempt]);
 
   const openOutside = (url: string) => void Linking.openURL(url).catch(() => {});
 

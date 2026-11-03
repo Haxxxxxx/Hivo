@@ -184,6 +184,23 @@ describe("loadAll", () => {
     expect(data.has(KEYS.legacyCache)).toBe(true);
   });
 
+  it("removes an unreadable old row once the new cache file is there and good (review #15)", async () => {
+    const file = cacheFileText(cache([item("s1")]));
+    // The file exists: the old row isn't even read, but it's still dead weight.
+    for (const edits of [JSON.stringify({ pending: {}, gone: {} }), null]) {
+      const { kv, data, badRead } = fakeKV({ [KEYS.legacyCache]: "x".repeat(10), ...(edits ? { [KEYS.edits]: edits } : {}) });
+      badRead.add(KEYS.legacyCache);
+      const r = await loadAll(kv, fakeFS({ [CACHE_FILE]: file }).fs, 1);
+      expect(r.cache?.items.map((i) => i.id)).toEqual(["s1"]);
+      expect(data.has(KEYS.legacyCache)).toBe(false);
+    }
+    // A cache file that doesn't parse isn't "good": the row stays.
+    const { kv, data, badRead } = fakeKV({ [KEYS.legacyCache]: "x" });
+    badRead.add(KEYS.legacyCache);
+    await loadAll(kv, fakeFS({ [CACHE_FILE]: "{broken" }).fs, 1);
+    expect(data.has(KEYS.legacyCache)).toBe(true);
+  });
+
   it("validates the cache file's items (a bad one is left out, the app opens)", async () => {
     const text = JSON.stringify({ v: 1, items: [item("ok"), { kind: "planet", id: 3 }, "x"], conflicts: { a: 1, b: "no" }, helloDone: true });
     const r = await loadAll(fakeKV().kv, fakeFS({ [CACHE_FILE]: text }).fs, 1);

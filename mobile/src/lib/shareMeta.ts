@@ -94,6 +94,25 @@ export const isBandlabShare = (text: string | null, subject: string | null): boo
 export const skippedLabel = (name: string, named: boolean | undefined, unnamed: string): string =>
   !name.trim() || named === false || isOpaqueName(name) || /^\d+$/.test(name.trim()) ? unnamed : name;
 
+/**
+ * A file picked with "Add a file": the provider's own name (`display`, from
+ * its DISPLAY_NAME) first; else the address's last part, decoded
+ * ("primary:Music/Night Drive.m4a" → "Night Drive.m4a"), which is often only
+ * an id ("msf:1000032969": not a name, `named: false`). Smoke F3.
+ */
+export function pickedName(display: string | null, uriName: string): { name: string; named: boolean } {
+  const own = display?.trim();
+  if (own) return { name: own, named: true };
+  let raw = uriName;
+  try {
+    raw = decodeURIComponent(uriName);
+  } catch {
+    // Not encoded: as it is.
+  }
+  const name = raw.split(/[/:]/).pop()?.trim() || raw.trim();
+  return { name, named: !!name && !isOpaqueName(name) && !/^\d+$/.test(name) };
+}
+
 /** The shared text kept with an upload (the link and BandLab's words), capped. */
 export const MAX_SHARE_TEXT = 2000;
 export function shareText(text: string | null, subject: string | null): string {

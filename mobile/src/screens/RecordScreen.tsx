@@ -153,6 +153,13 @@ export function RecordScreen({ target: initialTarget, onDone, backRef, draftId }
         stoppingByUser.current = true;
         void finish("background");
       }
+      // Back from the phone's settings: "Notifications are off" goes once they're allowed (smoke polish).
+      if (st === "active") {
+        void readNotice().then(setNotice);
+        void getRecordingPermissionsAsync()
+          .then((p) => setDenied(!p.granted && !p.canAskAgain))
+          .catch(() => {});
+      }
     });
     return () => sub.remove();
   }, []);

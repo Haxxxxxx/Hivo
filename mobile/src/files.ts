@@ -2,7 +2,9 @@
 // Shared files and recordings are moved here first, so they survive the
 // cache being cleared and the app being killed mid-upload.
 import { Directory, File, Paths } from "expo-file-system";
+import { displayName } from "../modules/hivo-share";
 import type { OutFile } from "./lib/outbox";
+import { pickedName } from "./lib/shareMeta";
 import type { FS } from "./lib/persist";
 import { safeFileName } from "./lib/text";
 
@@ -166,11 +168,17 @@ export function deleteFile(uri: string): void {
   }
 }
 
-export type Picked ={ uri: string; name: string; size: number | null; mime: string | null };
+export type Picked = { uri: string; name: string; size: number | null; mime: string | null; named: boolean };
 
-/** The system file picker, several at once; [] when cancelled. Audio, zips, and MPEG-4 / untyped files (an M4A is often saved as either): Hivo checks each one after. */
+/** The system file picker, several at once; [] when cancelled. Audio, zips, and MPEG-4 / untyped files (an M4A is often saved as either): Hivo checks each one after.
+ * Each file keeps its own name (the provider's display name; `File.name` is only the address's last part, often an id). */
 export async function pickFiles(): Promise<Picked[]> {
   const r = await File.pickFileAsync({ multipleFiles: true, mimeTypes: ["audio/*", "video/mp4", "application/zip", "application/x-zip-compressed", "application/octet-stream"] });
   if (r.canceled || !r.result) return [];
-  return r.result.map((f) => ({ uri: f.uri, name: f.name, size: f.size ?? null, mime: f.type || null }));
+  return Promise.all(
+    r.result.map(async (f) => {
+      const { name, named } = pickedName(await displayName(f.uri), f.name);
+      return { uri: f.uri, name, named, size: f.size ?? null, mime: f.type || null };
+    }),
+  );
 }

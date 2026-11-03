@@ -37,6 +37,21 @@ export function Engrave({ children, style, numberOfLines }: { children: ReactNod
   );
 }
 
+/** "120 BPM · F#m" in the engraved label style, the musical key in its own
+ * case: the caps style would turn F#m (minor) into F#M (smoke F2). */
+export function Facts({ bpm, musicalKey, style, numberOfLines }: { bpm: number | null | undefined; musicalKey: string | null | undefined; style?: StyleProp<TextStyle>; numberOfLines?: number }) {
+  const tempo = bpm != null && bpm > 0 ? `${Math.round(bpm)} BPM` : null;
+  const key = musicalKey?.trim() || null;
+  if (!tempo && !key) return null;
+  return (
+    <Text style={[engrave, style]} numberOfLines={numberOfLines}>
+      {tempo}
+      {tempo && key ? " · " : null}
+      {key ? <Text style={styles.ownCase}>{key}</Text> : null}
+    </Text>
+  );
+}
+
 /** Waiting, loading, sending: a neutral spinner. Orange is for the main action. */
 export function Spinner({ size = "small" }: { size?: "small" | "large" }) {
   return <ActivityIndicator color={C.busy} size={size} />;
@@ -79,12 +94,12 @@ export function Button({ label, onPress, variant = "secondary", size, disabled, 
       onPress={onPress}
       disabled={disabled}
       style={({ pressed }) => {
-        const c = buttonColors(variant, pressed);
-        return [compact ? styles.compact : styles.regular, { backgroundColor: c.background, borderColor: c.border }, disabled && styles.disabled, style];
+        const c = buttonColors(variant, pressed, !!disabled);
+        return [compact ? styles.compact : styles.regular, { backgroundColor: c.background, borderColor: c.border }, style];
       }}
     >
       {({ pressed }) => (
-        <Text style={[styles.text, compact && styles.textCompact, { color: buttonColors(variant, pressed).text }]}>{label}</Text>
+        <Text style={[styles.text, compact && styles.textCompact, { color: buttonColors(variant, pressed, !!disabled).text }]}>{label}</Text>
       )}
     </Pressable>
   );
@@ -108,7 +123,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  disabled: { opacity: 0.5 },
   text: { fontFamily: FONT.display, fontSize: SIZE.button, letterSpacing: 0.6, textTransform: "uppercase", textAlign: "center" },
   textCompact: { fontSize: SIZE.buttonCompact },
+  ownCase: { textTransform: "none", letterSpacing: 0.4 },
 });

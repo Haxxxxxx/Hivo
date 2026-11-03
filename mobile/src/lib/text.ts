@@ -8,6 +8,14 @@ export function clip(s: string, max: number): string {
   return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 }
 
+/** A message shown on its own, with its final period ("Try again in a few
+ * seconds."); one that already ends a sentence is left as it is. The bare
+ * text is also used after a colon, so the period is added here. */
+export function sentence(s: string): string {
+  const t = s.trimEnd();
+  return !t || /[.!?…]$/.test(t) ? t : `${t}.`;
+}
+
 /** A file name the phone and the computer both take: path separators and
  * control characters out, at most `max` characters with the extension kept
  * (a 130-character title used to lose its ".m4a"), never empty. */

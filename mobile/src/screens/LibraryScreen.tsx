@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ComponentRef } from "react";
 import { FlatList, Keyboard, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from "react-native";
 import { PairingUnreadable } from "../components/PairingUnreadable";
-import { Button, Led } from "../components/ui";
+import { Button, Facts, Led } from "../components/ui";
 import { tr } from "../lib/i18n";
 import { allItems, filterItems, isGone, itemKey, KINDS, type Item, type Kind } from "../lib/sync";
 import { requestSync, useApp } from "../store";
 import { T } from "../strings";
-import { C, engrave, FONT, RADIUS, STAGE_COLOR, UNSORTED_COLOR } from "../theme";
+import { C, FONT, RADIUS, STAGE_COLOR, UNSORTED_COLOR } from "../theme";
 
 type Props = {
   kind: Kind;
@@ -130,7 +130,7 @@ export function PairSteps() {
 
 function Row({ item, hasNote, pending, conflict, gone, onPress }: { item: Item; hasNote: boolean; pending: boolean; conflict: boolean; gone: boolean; onPress: () => void }) {
   const t = tr(T);
-  const facts = [item.bpm !== null ? `${Math.round(item.bpm)} BPM` : null, item.key].filter(Boolean).join(" · ");
+  const facts = (item.bpm !== null && item.bpm > 0) || !!item.key?.trim();
   const sub = gone ? t.gone : item.kind === "song" && item.stage ? t.stage[item.stage] ?? item.subtitle : item.subtitle;
   return (
     <Pressable onPress={onPress} accessibilityRole="button" style={({ pressed }) => [styles.row, pressed && { backgroundColor: C.raised }]}>
@@ -150,9 +150,8 @@ function Row({ item, hasNote, pending, conflict, gone, onPress }: { item: Item; 
         </View>
       </View>
       <View style={styles.right}>
-        {facts ? (
-          <Text style={[engrave, { textAlign: "right" }]} numberOfLines={1}>{facts}</Text>
-        ) : null}
+        {/* Wraps under itself at a large font size instead of being cut (smoke polish). */}
+        {facts ? <Facts bpm={item.bpm} musicalKey={item.key} style={{ textAlign: "right" }} numberOfLines={2} /> : null}
         {conflict || hasNote || pending ? (
           <View style={{ marginTop: 6 }}>
             <Led color={conflict ? C.hot : pending ? C.warn : C.ok} size={8} label={conflict ? t.conflictLed : pending ? t.noteWaiting : t.hasNote} />
@@ -176,8 +175,8 @@ const styles = StyleSheet.create({
   row: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 12, backgroundColor: C.panel },
   rowTitle: { color: C.cream, fontSize: 16, fontWeight: "600" },
   rowSub: { color: C.body, fontSize: 13, flexShrink: 1 },
-  // A long BPM · key never squeezes the title: it's capped and cut instead.
-  right: { alignItems: "flex-end", marginLeft: 12, maxWidth: "34%", flexShrink: 0 },
+  // BPM · key keeps its words: the title (one line, cut) gives way; a very long key wraps within half the row.
+  right: { alignItems: "flex-end", marginLeft: 12, maxWidth: "50%", flexShrink: 0 },
   empty: { color: C.engrave, textAlign: "center", padding: 32, fontSize: 14, lineHeight: 20 },
   unpaired: { padding: 20 },
   unpairedText: { color: C.body, fontSize: 15, lineHeight: 21 },

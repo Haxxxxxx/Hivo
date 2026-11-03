@@ -25,6 +25,18 @@ describe("buttonColors", () => {
     expect(buttonColors("quiet", false)).toMatchObject({ background: "transparent", border: "transparent" });
     expect(buttonColors("quiet", true).background).toBe(C.raised);
   });
+  it("greys a disabled button whatever its variant: no orange, no red (smoke polish)", () => {
+    const variants: ButtonVariant[] = ["primary", "secondary", "quiet", "danger"];
+    for (const v of variants) {
+      for (const pressed of [false, true]) {
+        const c = buttonColors(v, pressed, true);
+        expect([c.background, c.border, c.text].some((x) => x === C.hot || x === C.hotHover || x === C.missing), v).toBe(false);
+        expect(c.text).toBe(C.engrave);
+      }
+    }
+    expect(buttonColors("primary", false, true)).toEqual({ background: C.chassis, border: C.rule, text: C.engrave });
+    expect(buttonColors("quiet", false, true)).toMatchObject({ background: "transparent", border: "transparent" });
+  });
   it("outlines secondary on the panel", () => {
     expect(buttonColors("secondary", false)).toEqual({ background: C.panel, border: C.ruleStrong, text: C.cream });
   });

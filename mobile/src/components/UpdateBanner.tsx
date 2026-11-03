@@ -1,34 +1,24 @@
-import { useEffect, useState } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { Linking, StyleSheet, Text, View } from "react-native";
 import { tr } from "../lib/i18n";
-import type { Update } from "../lib/update";
 import { T } from "../strings";
 import { C } from "../theme";
-import { checkForUpdate, dismissUpdate } from "../update";
+import { checkForUpdate, dismissUpdate, updateOffer } from "../update";
 import { Button, Led } from "./ui";
 
-/** "Hivo 0.6.1 is available" with Download / Later. Never blocks the app. */
+/** "Hivo 0.6.1 is available" with Download / Later. Never blocks the app.
+ * The found update is kept for the whole run (`updateOffer`): this banner
+ * remounts after every pushed screen, and Settings has its own. */
 export function UpdateBanner() {
-  const [update, setUpdate] = useState<Update | null>(null);
+  const update = useSyncExternalStore(updateOffer.subscribe, updateOffer.get);
   const t = tr(T);
 
   useEffect(() => {
-    let live = true;
-    checkForUpdate()
-      .then((u) => {
-        if (live) setUpdate(u);
-      })
-      .catch((e: unknown) => console.warn("update check failed:", e instanceof Error ? e.message : String(e)));
-    return () => {
-      live = false;
-    };
+    updateOffer.ensureChecked(() => checkForUpdate()).catch((e: unknown) => console.warn("update check failed:", e instanceof Error ? e.message : String(e)));
   }, []);
 
   if (!update) return null;
-  const close = () => {
-    setUpdate(null);
-    void dismissUpdate(update.version);
-  };
+  const close = () => void updateOffer.dismiss(dismissUpdate).catch(() => {});
   return (
     <View style={styles.wrap} accessibilityRole="alert">
       <View style={styles.row}>

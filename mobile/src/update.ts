@@ -6,7 +6,11 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 import { checkDue, checksForDistribution, manualCheck, MANIFEST_URL, pickUpdate, type ManualCheck, type Update } from "./lib/update";
+import { createOfferStore } from "./lib/updateOffer";
 import { appVersion } from "./store";
+
+/** The update found this run, shared by every banner until dismissed. */
+export const updateOffer = createOfferStore();
 
 const LAST_CHECK_KEY = "hivo.update.lastCheck.v1";
 const DISMISSED_KEY = "hivo.update.dismissed.v1";

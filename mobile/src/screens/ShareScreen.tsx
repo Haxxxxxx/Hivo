@@ -12,7 +12,7 @@ import type { IdeaTarget } from "../lib/ideas";
 import { checkShared, isZip, sharedName, type OutFile } from "../lib/outbox";
 import { fileNameFor, isBandlabShare, shareText, skippedLabel, titleFromShare } from "../lib/shareMeta";
 import type { Kind } from "../lib/sync";
-import { addIdea, addOutItem, newOutId, requestSync, useApp } from "../store";
+import { addIdea, addOutItem, flushExtras, newOutId, requestSync, useApp } from "../store";
 import { C, FONT, RADIUS, S } from "../theme";
 
 export type IncomingShare = {
@@ -56,6 +56,7 @@ export function ShareScreen({ share, onDone, onIdea, backRef, waiting = 0 }: { s
   const hasFiles = check.ok.length > 0;
   const hasText = !!share.text?.trim();
   const songTarget = mode === "existing" ? target : null;
+  const needsSong = mode === "existing" && !target;
 
   async function send() {
     setBusy(true);
@@ -66,7 +67,10 @@ export function ShareScreen({ share, onDone, onIdea, backRef, waiting = 0 }: { s
       const files: OutFile[] = await adoptAll(id, check.ok.map((f, i) => ({ uri: f.uri, name: finalName(f, i) })), share.picked);
       // The shared words and BandLab link go with it (the computer keeps the link on the song).
       addOutItem(id, "sketch", files, { title: (mode === "existing" && songTarget ? songTarget.title : title).trim(), target: songTarget, text: shareText(share.text, share.subject) });
-      if (!share.picked) void clearShareCache(share.dir);
+      // The share is forgotten only once its outbox row is on disk: a kill in
+      // between must not lose both (review #8). Not saved (storage full):
+      // the share stays remembered and comes back at the next launch.
+      if ((await flushExtras()) && !share.picked) await clearShareCache(share.dir);
       requestSync();
       onDone();
     } catch (e) {
@@ -75,12 +79,15 @@ export function ShareScreen({ share, onDone, onIdea, backRef, waiting = 0 }: { s
     }
   }
 
-  function keepIdea() {
+  async function keepIdea() {
+    if (busy) return;
+    setBusy(true);
     // A first line becomes the title only when more follows (else it would show twice).
     const lines = (share.text ?? "").split("\n").filter((l) => l.trim());
     const ideaTitle = share.subject?.trim() || (lines.length > 1 && firstLine.length <= 80 ? firstLine : "");
     const id = addIdea({ title: ideaTitle, text: share.text ?? "", target });
-    if (!share.picked) void clearShareCache(share.dir);
+    // Same as Send: the share goes once the idea is on disk (review #8).
+    if ((await flushExtras()) && !share.picked) await clearShareCache(share.dir);
     requestSync();
     onIdea(id);
   }
@@ -166,8 +173,10 @@ export function ShareScreen({ share, onDone, onIdea, backRef, waiting = 0 }: { s
         {!hasFiles && hasText ? <TargetPicker value={target} onChange={setTarget} /> : null}
 
         {error ? <Text style={styles.warn}>{error}</Text> : null}
-        {hasFiles ? <Button label={sendLabel} variant="primary" disabled={busy || (mode === "existing" && !target)} onPress={() => void send()} /> : null}
-        {!hasFiles && hasText ? <Button label={s().shareSaveIdea} variant="primary" onPress={keepIdea} /> : null}
+        {/* "Add to an existing song" with none picked: say what's missing instead of a dead button. */}
+        {hasFiles && needsSong ? <Text style={styles.note}>{c().pickSongFirst}</Text> : null}
+        {hasFiles ? <Button label={sendLabel} variant="primary" disabled={busy || needsSong} onPress={() => void send()} /> : null}
+        {!hasFiles && hasText ? <Button label={s().shareSaveIdea} variant="primary" disabled={busy} onPress={() => void keepIdea()} /> : null}
       </ScrollView>
     </View>
   );
