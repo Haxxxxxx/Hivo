@@ -184,8 +184,8 @@ export const InboxTab = forwardRef<CaptureHandle, Props>(function InboxTab({ onI
                 </View>
               ) : null}
               {playable || o.state === "failed" ? (
-                <View style={{ flexDirection: "row", gap: 8, marginTop: 8 }}>
-                  {playable ? <Button label={playingId === o.id ? s().stopMemo : s().playMemo} onPress={() => togglePlay(o)} style={styles.small} hitSlop={SMALL_SLOP} /> : null}
+                <View style={styles.buttons}>
+                  {playable ? <Button label={playingId === o.id ? s().stopMemo : s().playMemo} onPress={() => togglePlay(o)} size="compact" /> : null}
                   {o.state === "failed" ? (
                     <Button
                       label={s().retry}
@@ -193,8 +193,7 @@ export const InboxTab = forwardRef<CaptureHandle, Props>(function InboxTab({ onI
                         retryOut(o.id);
                         requestSync();
                       }}
-                      style={styles.small}
-                      hitSlop={SMALL_SLOP}
+                      size="compact"
                     />
                   ) : null}
                 </View>
@@ -207,9 +206,6 @@ export const InboxTab = forwardRef<CaptureHandle, Props>(function InboxTab({ onI
   );
 });
 
-/** Compact buttons: the touch area reaches 48 dp. */
-const SMALL_SLOP = { top: 6, bottom: 6, left: 4, right: 4 };
-
 const styles = StyleSheet.create({
   actions: { marginHorizontal: 16, marginTop: 12, marginBottom: 4, gap: 8 },
   actionRow: { flexDirection: "row", gap: 8 },
@@ -221,8 +217,9 @@ const styles = StyleSheet.create({
   meta: { marginTop: 4 },
   sub: { flexDirection: "row", gap: 6 },
   rowStatus: { color: C.body, fontSize: 13, lineHeight: 18, flexShrink: 1 },
+  // Room above and below so the compact buttons' 48 dp touch area fits (Android clips hitSlop to the parent).
+  buttons: { flexDirection: "row", gap: 12, marginTop: 4, paddingVertical: 8 },
   bar: { height: 4, backgroundColor: C.rule, borderRadius: 2, marginTop: 8, overflow: "hidden" },
   fill: { height: 4, backgroundColor: C.body },
-  small: { paddingVertical: 4, paddingHorizontal: 12 },
   empty: { color: C.engrave, textAlign: "center", padding: 32, fontSize: 14, lineHeight: 20 },
 });

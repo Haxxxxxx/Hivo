@@ -1,8 +1,9 @@
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as Clipboard from "expo-clipboard";
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
-import { Button, Engrave } from "../components/ui";
+import { KeyboardAvoidingView, Linking, Platform, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ScreenHeader } from "../components/ScreenHeader";
+import { Button, Engrave, Spinner } from "../components/ui";
 import { UpdateCheck } from "../components/UpdateCheck";
 import { tr } from "../lib/i18n";
 import { CAMERA_APP_INTENT, SCAN_TIMEOUT_MS, scannerFailure } from "../lib/scanner";
@@ -128,11 +129,8 @@ export function PairScreen({ busy, error, onSubmit, onClearError, onBack }: Prop
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
+      <ScreenHeader title={t.pairTitle} onBack={onBack} />
       <ScrollView contentContainerStyle={styles.wrap} keyboardShouldPersistTaps="handled">
-        <Pressable onPress={onBack} accessibilityRole="button" style={styles.back}>
-          <Text style={styles.backText}>‹ {t.back}</Text>
-        </Pressable>
-        <Text style={styles.title}>{t.pairTitle}</Text>
         <PairSteps />
         {waiting > 0 ? <Text style={styles.waiting}>{t.waitingToSend(waiting)}</Text> : null}
 
@@ -160,7 +158,7 @@ export function PairScreen({ busy, error, onSubmit, onClearError, onBack }: Prop
         {/* Right under Scan, so the result of a scan is never below the fold. */}
         {busy ? (
           <View style={styles.statusRow}>
-            <ActivityIndicator color={C.body} size="small" />
+            <Spinner />
             <Text style={[styles.status, { marginTop: 0 }]}>{t.codeRead}</Text>
           </View>
         ) : null}
@@ -209,10 +207,7 @@ export function PairScreen({ busy, error, onSubmit, onClearError, onBack }: Prop
 }
 
 const styles = StyleSheet.create({
-  wrap: { padding: 20, paddingTop: 8 },
-  back: { minHeight: 48, justifyContent: "center", alignSelf: "flex-start", paddingRight: 16 },
-  backText: { color: C.body, fontSize: 15 },
-  title: { fontFamily: FONT.display, fontSize: 28, color: C.cream, marginTop: 4, textTransform: "uppercase", letterSpacing: 0.5 },
+  wrap: { padding: 20, paddingTop: 4 },
   cameraBox: { marginTop: 20, aspectRatio: 1, borderRadius: RADIUS, overflow: "hidden", borderWidth: 1, borderColor: C.ruleStrong, backgroundColor: C.panel },
   input: {
     minHeight: 72,

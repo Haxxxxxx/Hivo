@@ -129,7 +129,7 @@ const styles = StyleSheet.create({
   row: { flexDirection: "row", alignItems: "center", gap: 8 },
   name: { fontFamily: FONT.display, fontSize: 26, color: C.cream, textTransform: "uppercase", letterSpacing: 0.5 },
   statusRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2 },
-  status: { fontFamily: FONT.mono, fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: C.body, flexShrink: 1 },
+  status: { fontFamily: FONT.mono, fontSize: 12, letterSpacing: 1.2, textTransform: "uppercase", color: C.body, flexShrink: 1 },
   sync: { minHeight: 48 },
   gear: { width: 48, height: 48, alignItems: "center", justifyContent: "center", borderRadius: RADIUS },
   gearIcon: { color: C.body, fontSize: 24 },

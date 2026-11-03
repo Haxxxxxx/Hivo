@@ -2,7 +2,7 @@ import { useFonts } from "expo-font";
 import { getLocales } from "expo-localization";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Alert, AppState, BackHandler, Keyboard, Linking, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { Alert, AppState, BackHandler, Keyboard, Linking, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { onShare, onShareStart, sweepShareCache, takeShared, type Shared } from "./modules/hivo-share";
 import { s } from "./src/inboxStrings";
@@ -19,7 +19,7 @@ import { InboxTab, type CaptureHandle } from "./src/components/InboxTab";
 import { CopyingStrip, SyncHeader, SyncStrip } from "./src/components/SyncHeader";
 import { TabBar } from "./src/components/TabBar";
 import { showToast, ToastHost } from "./src/components/Toast";
-import { Led } from "./src/components/ui";
+import { Led, Spinner } from "./src/components/ui";
 import { UpdateBanner } from "./src/components/UpdateBanner";
 import { pickFiles } from "./src/files";
 import { IdeaScreen } from "./src/screens/IdeaScreen";
@@ -352,7 +352,7 @@ export default function App() {
         <StatusBar style="light" />
         {!ready ? (
           <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-            <ActivityIndicator color={C.body} />
+            <Spinner size="large" />
           </View>
         ) : (
           <View style={{ flex: 1 }}>
