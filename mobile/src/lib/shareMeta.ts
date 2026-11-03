@@ -78,12 +78,21 @@ export function titleFromShare(share: { subject: string | null; text: string | n
  * ("Night Drive.m4a", "Night Drive 2.m4a"), else `fallback` (the app
  * language's "BandLab export"). */
 export function fileNameFor(name: string, named: boolean, title: string, index: number, count: number, fallback = "BandLab export"): string {
-  if (named && !isOpaqueName(name)) return name;
+  // Without a display name the provider's last path segment stands in: a
+  // real name ("Beat été test.wav") stays; a bare number ("19") is an id.
+  if (!isOpaqueName(name) && (named || !/^\d+$/.test(name.replace(/\.[a-z0-9]{1,5}$/i, "").trim()))) return name;
   const ext = /\.([a-z0-9]{1,5})$/i.exec(name)?.[1]?.toLowerCase();
   const base = clip((title.replace(/[/\\:*?"<>|]/g, " ").replace(/\s+/g, " ").trim() || fallback), 100).trim();
   const stem = count > 1 ? `${base} ${index + 1}` : base;
   return ext ? `${stem}.${ext}` : stem;
 }
+
+/** A share that comes from BandLab (its link, or its name in the subject or the text). */
+export const isBandlabShare = (text: string | null, subject: string | null): boolean => !!bandlabLinkIn(text, subject) || /\bbandlab\b/i.test(`${subject ?? ""} ${text ?? ""}`);
+
+/** How a skipped item is named on screen: its own name, never a provider id ("19", "msf:42"). */
+export const skippedLabel = (name: string, named: boolean | undefined, unnamed: string): string =>
+  !name.trim() || named === false || isOpaqueName(name) || /^\d+$/.test(name.trim()) ? unnamed : name;
 
 /** The shared text kept with an upload (the link and BandLab's words), capped. */
 export const MAX_SHARE_TEXT = 2000;

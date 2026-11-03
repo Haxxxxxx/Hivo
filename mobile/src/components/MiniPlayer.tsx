@@ -1,15 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, AppState, Keyboard, Linking, StyleSheet, Text, View } from "react-native";
+import { AppState, Keyboard, Linking, StyleSheet, Text, View } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import type { ShouldStartLoadRequest, WebViewOpenWindowEvent } from "react-native-webview/lib/WebViewTypes";
 import { lang, tr } from "../lib/i18n";
 import { externalUrl, fromPlayerPage, navDecision, parsePlayerMessage, playerUrl, problemFor, type PlayerProblem } from "../lib/youtube";
 import { T } from "../strings";
 import { C, RADIUS } from "../theme";
-import { Button, Led } from "./ui";
+import { Button, Led, Spinner } from "./ui";
 
-// Compact buttons keep their look; the touch area grows to 48 dp.
-const SLOP = { top: 7, bottom: 7, left: 4, right: 4 };
 /** The strip's video, 16:9. */
 const SMALL_H = 108;
 
@@ -119,7 +117,7 @@ export function MiniPlayer({ videoId, onClose }: { videoId: string; onClose: () 
         ) : null}
         {loading && !problem ? (
           <View style={styles.overlay} pointerEvents="none">
-            <ActivityIndicator color={C.body} />
+            <Spinner />
           </View>
         ) : null}
         {problem ? (
@@ -140,14 +138,13 @@ export function MiniPlayer({ videoId, onClose }: { videoId: string; onClose: () 
               setLoading(true);
               setAttempt((a) => a + 1);
             }}
-            style={styles.btn}
-            hitSlop={SLOP}
+            size="compact"
           />
         ) : !problem ? (
-          <Button label={big ? t.playerSmaller : t.playerBigger} variant="quiet" onPress={() => setBig((b) => !b)} style={styles.btn} hitSlop={SLOP} />
+          <Button label={big ? t.playerSmaller : t.playerBigger} variant="quiet" onPress={() => setBig((b) => !b)} size="compact" />
         ) : null}
-        <Button label={t.openInYoutube} onPress={() => openOutside(watch)} style={styles.btn} hitSlop={SLOP} />
-        <Button label={t.playerClose} variant="quiet" onPress={onClose} style={styles.btn} hitSlop={SLOP} />
+        <Button label={t.openInYoutube} onPress={() => openOutside(watch)} size="compact" />
+        <Button label={t.playerClose} variant="quiet" onPress={onClose} size="compact" />
       </View>
     </View>
   );
@@ -162,5 +159,4 @@ const styles = StyleSheet.create({
   problemText: { color: C.cream, flex: 1, marginLeft: 8, fontSize: 13, lineHeight: 18 },
   controls: { flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: 6, padding: 6 },
   controlsSmall: { flex: 1, flexDirection: "column", alignItems: "stretch", justifyContent: "center", gap: 2, padding: 4 },
-  btn: { paddingVertical: 6, paddingHorizontal: 10 },
 });

@@ -17,7 +17,10 @@ export const MIN_MEMO_MS = 1000;
 export const AUDIO_EXTS = ["wav", "mp3", "m4a", "aac", "flac", "ogg", "aif", "aiff"];
 
 export type OutType = "memo" | "sketch";
-export type OutState = "waiting" | "sending" | "sent" | "failed";
+/** "draft": a take stopped but not kept yet (Keep or Discard on the Record
+ * screen). Already in the outbox folder, so a killed app doesn't lose it;
+ * never sent until it's kept. */
+export type OutState = "draft" | "waiting" | "sending" | "sent" | "failed";
 /** Why an item failed (it stays until the user retries or removes it).
  * "refused": the computer turned this one item down ("bad request" or
  * another error after the request opened); the others still go. */
@@ -127,7 +130,7 @@ export const progress = (i: OutItem): number => {
   return total === 0 ? 0 : Math.min(1, i.sentBytes / total);
 };
 
-/** Items to send now, oldest first (failed ones wait for Retry). */
+/** Items to send now, oldest first (failed ones wait for Retry, drafts for Keep). */
 export const toSend = (items: OutItem[]): OutItem[] =>
   items.filter((i) => i.state === "waiting" || i.state === "sending").sort((a, b) => a.createdAt - b.createdAt);
 
@@ -197,6 +200,10 @@ class Failed {
   constructor(public item: OutItem) {}
 }
 
+/** "offset:n" answers in a row that don't move the upload forward before
+ * the item is held. */
+export const MAX_STUCK_OFFSETS = 5;
+
 /** How many times an item is sent again from its first file (the computer
  * forgot it: removed there, or dropped after 7 days) before it fails. */
 const MAX_ITEM_RESETS = 2;
@@ -240,6 +247,8 @@ export async function uploadItem(io: UploadIO, start: OutItem, onUpdate: (i: Out
       if (file.done) continue;
       if (!(await io.exists(file.uri))) return new Failed(fail("missing-file"));
       let restarts = 0;
+      /** "offset:n" answers in a row that didn't move the upload forward. */
+      let stuck = 0;
       for (;;) {
         // Start (or resume): the desktop says how much it has.
         let offset: number;
@@ -275,7 +284,13 @@ export async function uploadItem(io: UploadIO, start: OutItem, onUpdate: (i: Out
           } catch (e) {
             const m = /^offset:(\d+)$/.exec(reason(e));
             if (m) {
-              offset = Math.min(Number(m[1]), file.size);
+              const next = Math.min(Number(m[1]), file.size);
+              // The computer keeps naming an offset that doesn't move the
+              // upload on: its side is wrong, not this item's. Held, tried
+              // again at the next sync (it used to loop for ever).
+              stuck = next > offset ? 0 : stuck + 1;
+              if (stuck >= MAX_STUCK_OFFSETS) throw new HoldError("desktop-error");
+              offset = next;
               continue;
             }
             if (isUnknown(e)) return UNKNOWN;
@@ -404,9 +419,66 @@ export function applyOutStatuses(items: OutItem[], statuses: Map<string, { statu
 /** Retry after a failure: from where the desktop is (it resumes). */
 export const retry = (i: OutItem): OutItem => ({ ...i, state: "waiting", error: null });
 
-/** A new pairing: everything still on the phone goes again to the new computer. */
+/** A new pairing: everything still on the phone goes again to the new computer (a draft stays a draft). */
 export const resetOut = (items: OutItem[]): OutItem[] =>
-  items.filter((i) => i.files.length > 0 && !i.purged).map((i) => ({ ...i, state: "waiting", error: null, sentBytes: 0, status: null, filedTo: null, sentAt: null, files: i.files.map((f) => ({ ...f, done: false })) }));
+  items
+    .filter((i) => i.files.length > 0 && !i.purged)
+    .map((i) => ({ ...i, state: i.state === "draft" ? "draft" : "waiting", error: null, sentBytes: 0, status: null, filedTo: null, sentAt: null, files: i.files.map((f) => ({ ...f, done: false })) }));
+
+export const isDraft = (i: OutItem): boolean => i.state === "draft";
+
+/** Keep on a draft take: named (the file's name follows: `fileName`), aimed, and queued. */
+export function keepDraft(item: OutItem, init: { title: string; target: IdeaTarget | null; fileName: string }): OutItem {
+  if (item.state !== "draft") return item;
+  return { ...item, title: init.title.slice(0, 200), target: init.target, state: "waiting", files: item.files.map((f, i) => (i === 0 ? { ...f, name: init.fileName } : f)) };
+}
+
+const OUT_STATES: OutState[] = ["draft", "waiting", "sending", "sent", "failed"];
+const OUT_ERRORS: OutError[] = ["too-big", "type", "missing-file", "size", "refused"];
+const num = (v: unknown, fallback: number): number => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
+const numOrNull = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
+/** A target read back from storage; null when malformed. */
+export function parseTarget(v: unknown): IdeaTarget | null {
+  const t = v as Partial<IdeaTarget> | null;
+  if (!t || typeof t !== "object") return null;
+  if ((t.kind !== "prod" && t.kind !== "beat" && t.kind !== "song") || typeof t.id !== "string" || !t.id) return null;
+  return { kind: t.kind, id: t.id, title: typeof t.title === "string" ? t.title : t.id };
+}
+
+/** One stored outbox item, checked field by field; null when it can't be
+ * used (no id, no type, a file without a path). Never throws. */
+export function parseOutItem(raw: unknown): OutItem | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(r.id)) return null;
+  if (r.type !== "memo" && r.type !== "sketch") return null;
+  if (!Array.isArray(r.files)) return null;
+  const files: OutFile[] = [];
+  for (const f of r.files as Record<string, unknown>[]) {
+    if (!f || typeof f !== "object" || typeof f.uri !== "string" || !f.uri || typeof f.name !== "string") return null;
+    files.push({ uri: f.uri, name: f.name, size: Math.max(0, num(f.size, 0)), done: f.done === true });
+  }
+  const state = OUT_STATES.includes(r.state as OutState) ? (r.state as OutState) : "waiting";
+  const status = r.status === "stored" || r.status === "filed" || r.status === "dismissed" ? r.status : null;
+  return {
+    id: r.id,
+    type: r.type,
+    title: typeof r.title === "string" ? r.title.slice(0, 200) : "",
+    ...(typeof r.text === "string" && r.text ? { text: r.text.slice(0, 2000) } : {}),
+    target: parseTarget(r.target),
+    createdAt: num(r.createdAt, 0),
+    durationMs: numOrNull(r.durationMs),
+    files,
+    state,
+    error: state === "failed" ? (OUT_ERRORS.includes(r.error as OutError) ? (r.error as OutError) : "refused") : null,
+    sentBytes: Math.max(0, num(r.sentBytes, 0)),
+    status,
+    filedTo: typeof r.filedTo === "string" ? r.filedTo : null,
+    sentAt: numOrNull(r.sentAt),
+    ...(r.purged === true ? { purged: true } : {}),
+  };
+}
 
 /** Sent memos and exports older than KEEP_SENT_MS leave the phone (they're on the computer). */
 export function pruneOut(items: OutItem[], now: number): { keep: OutItem[]; removed: string[] } {

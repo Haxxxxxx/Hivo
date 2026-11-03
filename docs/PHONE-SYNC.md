@@ -546,3 +546,31 @@ minutes paired in your place.
   same-computer carry-over, extras binding).
 - Shared vector (same inputs as the key vector): code `654180` (also
   checked with Node's HKDF).
+
+## Phone-side reliability (2026-11, 0.7.1; no protocol change)
+- **Refused vs offline:** a request that gets no answer is "off" (phone sync
+  off, Hivo closed) only when a plain TCP connect to that host is refused
+  (`probeTcp` in `modules/hivo-share`); anything else (no route, Wi-Fi off,
+  timeout) is "offline". The offline message mentions a Wi-Fi without
+  internet (Android then routes over mobile data; the app doesn't bind to
+  the Wi-Fi network).
+- **Finding the computer again** (`src/lib/discover.ts`): when every saved
+  host fails, at most once per 10 minutes (or from Settings → "Look for my
+  computer again"), the phone sends the usual sealed `/v1/hello` to each
+  address of the saved hosts' /24 networks (2 networks max, 32 at a time,
+  1.5 s each). Only an answer that opens with the pairing's key (or a
+  sealed error: clock, demo, read only, pending) counts; the new address
+  goes first in the saved hosts. A desktop sees at most one hello from this
+  phone per address, the same request as at launch.
+- **Storage** (`src/lib/persist.ts`): rows read one by one, a row that can't
+  be read is never written over, the library cache is a file
+  (`<documents>/hivo-data/library-cache.json`, atomic write) moved once from
+  the old `hivo.sync.v1` row. A stopped voice memo is in the outbox at once
+  as `state: "draft"` (never sent until Keep). Shares that reached the app
+  are remembered (`hivo.share.pending.v1`) until sent or left.
+- **Sync control:** a sync is cancelled on unpair / pair (no upload goes on
+  to the old computer), restarted when it hangs over a minute and the app
+  comes back, skipped on return when one finished under 30 s ago; the
+  screen stays on while an upload sends; a desktop that answers
+  `offset:n` without moving forward 5 times holds the item
+  ("desktop-error") instead of looping.

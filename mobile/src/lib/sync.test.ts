@@ -307,12 +307,13 @@ describe("runSync with a fake desktop", () => {
     const demo = createClient({ pairing, transport: fakeDesktop(pairing, [], { demo: true }).transport, random: rnd, now: Date.now });
     await expect(demo("/v1/snapshot", {})).rejects.toMatchObject({ code: "demo" });
 
-    const refused: Transport = async () => { throw new TypeError("Network request failed"); };
-    await expect(createClient({ pairing, transport: refused, random: rnd, now: Date.now })("/v1/hello", {})).rejects.toMatchObject({ code: "off" });
-
-    let t = 0;
-    const slow: Transport = async () => { t += 10_000; throw new TypeError("Network request failed"); };
-    await expect(createClient({ pairing, transport: slow, random: rnd, now: () => t })("/v1/hello", {})).rejects.toMatchObject({ code: "offline" });
+    // A quick failure is "off" only when the TCP probe says the port refused.
+    const failing: Transport = async () => { throw new TypeError("Network request failed"); };
+    await expect(createClient({ pairing, transport: failing, random: rnd, now: Date.now, probe: async () => "refused" })("/v1/hello", {})).rejects.toMatchObject({ code: "off" });
+    await expect(createClient({ pairing, transport: failing, random: rnd, now: Date.now, probe: async () => "other" })("/v1/hello", {})).rejects.toMatchObject({ code: "offline" });
+    // No probe (or one that fails): never "off", the phone may just be off the Wi-Fi.
+    await expect(createClient({ pairing, transport: failing, random: rnd, now: Date.now })("/v1/hello", {})).rejects.toMatchObject({ code: "offline" });
+    await expect(createClient({ pairing, transport: failing, random: rnd, now: Date.now, probe: async () => { throw new Error("x"); } })("/v1/hello", {})).rejects.toMatchObject({ code: "offline" });
 
     const status = (code: number): Transport => async () => ({ status: code, text: async () => "" });
     const codeFor = (code: number) => createClient({ pairing, transport: status(code), random: rnd, now: Date.now })("/v1/notes", {}).catch((e: SyncError) => e.code);
