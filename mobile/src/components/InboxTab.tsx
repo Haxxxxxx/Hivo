@@ -18,6 +18,8 @@ type Props = {
   onPick: () => void;
   /** A take not kept yet: RecordScreen reopens it to keep or discard. */
   onDraft: (id: string) => void;
+  /** The tab is on screen (not under Library or a pushed screen): a memo stops playing once it isn't. */
+  active: boolean;
 };
 
 export type CaptureHandle = { scrollToTop: () => void; stopPlayback: () => void };
@@ -34,7 +36,7 @@ function statusLine(st: CaptureStatus, row: CaptureRow, find: Find): { text: str
       return { text: why ? s().notSentWhy(why) : s().failed, color: C.missing };
     }
     case "draft":
-      return { text: c().draftState, color: C.hot };
+      return { text: c().draftState, color: C.warn };
     case "sending":
       return { text: s().sending(st.pct), color: C.body };
     case "waiting": {
@@ -53,7 +55,7 @@ function statusLine(st: CaptureStatus, row: CaptureRow, find: Find): { text: str
 }
 
 /** The Capture home: New idea / Record / Add a file, then every capture grouped by what it needs. */
-export const InboxTab = forwardRef<CaptureHandle, Props>(function InboxTab({ onIdea, onRecord, onPick, onDraft }, ref) {
+export const InboxTab = forwardRef<CaptureHandle, Props>(function InboxTab({ onIdea, onRecord, onPick, onDraft, active }, ref) {
   // Select the stored arrays (stable) and derive here: a selector that builds
   // a new array on every read makes useSyncExternalStore loop forever.
   const ideas = useApp((st) => st.ideas);
@@ -103,6 +105,12 @@ export const InboxTab = forwardRef<CaptureHandle, Props>(function InboxTab({ onI
   useEffect(() => {
     if (playingId && playerStatus.didJustFinish) setPlayingId(null);
   }, [playerStatus.didJustFinish, playingId]);
+  // Library, a pushed screen or Back over it: the memo stops (it kept playing under the Library: review #5).
+  useEffect(() => {
+    if (active || !playingId) return;
+    player.pause();
+    setPlayingId(null);
+  }, [active, playingId]);
   function togglePlay(o: OutItem) {
     if (playingId === o.id) {
       player.pause();

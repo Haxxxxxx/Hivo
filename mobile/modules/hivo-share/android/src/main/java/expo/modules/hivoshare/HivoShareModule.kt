@@ -94,6 +94,44 @@ class HivoShareModule : Module() {
       }
     }
 
+    // The phone's own private IPv4 addresses on Wi-Fi or Ethernet, for "Look
+    // for my computer again" (scan only the network the phone is on now).
+    // Mobile data, VPNs and hotspot-client tunnels are left out; no permission.
+    AsyncFunction("localIPv4s") {
+      val out = mutableListOf<String>()
+      try {
+        val nets = java.net.NetworkInterface.getNetworkInterfaces()?.toList() ?: emptyList()
+        for (ni in nets) {
+          if (!ni.isUp || ni.isLoopback || ni.isVirtual || ni.isPointToPoint) continue
+          val name = ni.name ?: continue
+          if (!name.startsWith("wlan") && !name.startsWith("eth")) continue
+          for (a in ni.inetAddresses.toList()) {
+            val host = (a as? java.net.Inet4Address)?.hostAddress ?: continue
+            if (isPrivateIPv4(host) && host !in out) out.add(host)
+          }
+        }
+      } catch (_: Exception) {
+        // Unknown: JS falls back to the saved hosts' networks.
+      }
+      out
+    }
+
+    // A picked file's own name (the picker hands JS a content:// address whose
+    // last part is only an id). Null when the provider doesn't say.
+    AsyncFunction("displayName") { uri: String ->
+      val ctx = appContext.reactContext ?: return@AsyncFunction null
+      val parsed = try { Uri.parse(uri) } catch (_: Exception) { return@AsyncFunction null }
+      if (parsed.scheme != "content") return@AsyncFunction null
+      try {
+        ctx.contentResolver.query(parsed, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+          val n = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+          if (c.moveToFirst() && n >= 0 && !c.isNull(n)) c.getString(n)?.takeIf { it.isNotBlank() }?.let { clean(it) } else null
+        }
+      } catch (_: Exception) {
+        null
+      }
+    }
+
     // Removes one share's copies once JS has moved them into the outbox (or
     // the share was left). Only a folder inside the share cache.
     AsyncFunction("clearCache") { dir: String ->
@@ -186,11 +224,18 @@ class HivoShareModule : Module() {
     val dir = File(ctx.cacheDir, "hivo-share/${System.currentTimeMillis()}-${java.util.UUID.randomUUID().toString().take(8)}").canonicalFile
     dir.mkdirs()
     synchronized(lock) { copying.add(dir.path) }
-    if (uris.isNotEmpty()) sendEvent("onShareStart", mapOf("count" to uris.size))
     val files = mutableListOf<Map<String, Any?>>()
     val skipped = mutableListOf<Map<String, Any?>>()
     var total = 0L
     try {
+      // Inside the try: if the event can't be sent, the folder still leaves `copying`.
+      if (uris.isNotEmpty()) {
+        try {
+          sendEvent("onShareStart", mapOf("count" to uris.size))
+        } catch (_: Throwable) {
+          // Only the "Copying…" strip is lost; the share is still read.
+        }
+      }
       for ((i, uri) in uris.withIndex()) {
         val (name, size, named) = describe(ctx, uri, i)
         if (i >= MAX_FILES) {

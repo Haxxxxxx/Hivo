@@ -51,6 +51,22 @@ export function playerUrl(id: string, lang: "en" | "fr"): string | null {
   return VIDEO_ID.test(id) ? `${EMBED_PAGE}?v=${id}&hl=${lang}` : null;
 }
 
+/** How long the player page gets to load before the "didn't load" card (with Retry) shows. */
+export const PLAYER_LOAD_TIMEOUT_MS = 15_000;
+
+/** The same page as `page`: origin, path and query compared, not the raw
+ * text (a fragment or the browser's own normalising doesn't make it another
+ * page; another path or video does). Review #11. */
+export function samePage(url: string, page: string): boolean {
+  try {
+    const a = new URL(url);
+    const b = new URL(page);
+    return a.origin === b.origin && a.pathname === b.pathname && a.search === b.search;
+  } catch {
+    return false;
+  }
+}
+
 /** The hosts the player's frames may navigate to inside the WebView. */
 const FRAME_HOSTS = ["www.youtube-nocookie.com"];
 const FRAME_HOST_SUFFIXES = [".ytimg.com", ".googlevideo.com"];
@@ -67,7 +83,7 @@ export type NavDecision = "allow" | "external" | "block";
  */
 export function navDecision(url: string, isTopFrame: boolean, page: string): NavDecision {
   if (url === "about:blank" || url === "about:srcdoc") return "allow";
-  if (isTopFrame && url === page) return "allow";
+  if (isTopFrame && samePage(url, page)) return "allow";
   let u: URL;
   try {
     u = new URL(url);

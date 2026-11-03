@@ -7,7 +7,7 @@ import { s } from "../inboxStrings";
 import { filedTitle } from "../lib/filedTo";
 import { findItem } from "../lib/sync";
 import { isEmptyIdea, isLocked, MAX_IDEA_CHARS, MAX_TITLE_CHARS } from "../lib/ideas";
-import { flushExtras, removeIdea, requestSync, updateIdea, useApp } from "../store";
+import { flushExtras, pendingSaves, removeIdea, requestSync, updateIdea, useApp } from "../store";
 import { C, RADIUS, S } from "../theme";
 
 /** Writing an idea: the text first (focused), a title, what it's for.
@@ -37,15 +37,19 @@ export function IdeaScreen({ id, onBack }: { id: string; onBack: () => void }) {
 
   // Leaving: save, drop it if it's empty, and send. (One left by a kill is
   // dropped at the next launch: store.ts `load`.)
-  useEffect(
-    () => () => {
+  // The app going to the background saves the last keystrokes too (review #7).
+  useEffect(() => {
+    const off = pendingSaves.register(() => {
+      if (timer.current) save();
+    });
+    return () => {
+      off();
       save();
       if (isEmptyIdea(latest.current)) removeIdea(id);
       void flushExtras();
       requestSync();
-    },
-    [],
-  );
+    };
+  }, []);
 
   function confirmDelete() {
     Alert.alert(s().deleteConfirmTitle, s().deleteConfirmBody, [

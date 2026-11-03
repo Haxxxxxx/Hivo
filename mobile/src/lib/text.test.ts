@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { clip, safeFileName } from "./text";
+import { clip, safeFileName, sentence } from "./text";
+
+describe("sentence (smoke polish)", () => {
+  it("adds the final period a message on its own needs", () => {
+    expect(sentence("The desktop is busy (scan running or still loading). Try again in a few seconds")).toBe("The desktop is busy (scan running or still loading). Try again in a few seconds.");
+    expect(sentence("Réessaie dans quelques secondes ")).toBe("Réessaie dans quelques secondes.");
+    expect(sentence("show a new one on the computer (Settings → Phone sync)")).toBe("show a new one on the computer (Settings → Phone sync).");
+  });
+  it("leaves one that already ends a sentence", () => {
+    for (const s of ["Done.", "Really?", "Go!", "Wait…", ""]) expect(sentence(s)).toBe(s);
+  });
+});
 
 describe("safeFileName", () => {
   it("keeps the extension when a long title is cut", () => {

@@ -10,7 +10,9 @@ export type ButtonSize = "regular" | "compact";
 
 export type ButtonColors = { background: string; border: string; text: string };
 
-export function buttonColors(variant: ButtonVariant, pressed: boolean): ButtonColors {
+/** `disabled`: greyed whatever the variant (a faded orange still read as "tap me"). */
+export function buttonColors(variant: ButtonVariant, pressed: boolean, disabled = false): ButtonColors {
+  if (disabled) return { background: variant === "quiet" ? "transparent" : C.chassis, border: variant === "quiet" ? "transparent" : C.rule, text: C.engrave };
   switch (variant) {
     case "primary":
       return { background: pressed ? C.hotHover : C.hot, border: C.hot, text: C.chassis };

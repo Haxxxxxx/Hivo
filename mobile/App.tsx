@@ -5,11 +5,12 @@ import { useEffect, useRef, useState } from "react";
 import { Alert, AppState, BackHandler, Keyboard, Linking, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { onShare, onShareStart, sweepShareCache, takeShared, type Shared } from "./modules/hivo-share";
+import { c } from "./src/captureStrings";
 import { s } from "./src/inboxStrings";
 import { isLoopbackLink, needsYou, savedSince } from "./src/lib/captures";
 import { setLang, tr } from "./src/lib/i18n";
 import type { IdeaTarget } from "./src/lib/ideas";
-import { backAction, canShowShare, filterStack, pop, push, replaceTop, showsUpdateBanner, toTab, top, type Nav, type Tab } from "./src/lib/nav";
+import { backAction, canShowShare, filterStack, pairLinkGate, popRoute, push, replaceRoute, showsUpdateBanner, toTab, top, type Nav, type Tab } from "./src/lib/nav";
 import { parsePairingUrl, type PairOffer, type Pairing } from "./src/lib/pairing";
 import { dequeue, enqueue } from "./src/lib/shareQueue";
 import { needsNewCode, pairErrorText, pairFailText, T } from "./src/strings";
@@ -31,7 +32,7 @@ import { PairScreen, type PairError, type PairSource } from "./src/screens/PairS
 import { RecordScreen } from "./src/screens/RecordScreen";
 import { SettingsScreen } from "./src/screens/SettingsScreen";
 import { ShareScreen, type IncomingShare } from "./src/screens/ShareScreen";
-import { addIdea, cancelConfirmation, flush, flushExtras, getState, load, pair, requestSync, sync, syncOnForeground, useApp, verifyPairing } from "./src/store";
+import { addIdea, cancelConfirmation, flush, flushExtras, getState, load, pair, pendingSaves, requestSync, sync, syncOnForeground, useApp, verifyPairing } from "./src/store";
 import { C, FONT } from "./src/theme";
 
 setLang(getLocales()[0]?.languageCode);
@@ -87,8 +88,16 @@ export default function App() {
 
   // Pairing state lives here, not in PairScreen: the code check covers that
   // screen, and a result (an error, "Paired") must still show after it.
-  const [pairBusy, setPairBusy] = useState(false);
+  const [pairBusy, setPairBusyState] = useState(false);
+  /** Read by the link and Back handlers, registered once (a state would be stale there). */
+  const pairBusyRef = useRef(false);
+  const setPairBusy = (v: boolean) => {
+    pairBusyRef.current = v;
+    setPairBusyState(v);
+  };
   const [pairError, setPairError] = useState<PairError | null>(null);
+  /** A pairing link that arrived during a take or a share: opened once that screen is left (review #2). */
+  const [pendingLink, setPendingLink] = useState<string | null>(null);
   const [justPaired, setJustPaired] = useState<string | null>(null);
   /** Cancelled on the phone: the code check hides at once (the wait ends at its next poll). */
   const [confirmHidden, setConfirmHidden] = useState(false);
@@ -123,18 +132,30 @@ export default function App() {
     if (next) go({ name: "share", share: fromNative(next), at: Date.now(), since: Date.now() });
   }, [queue, nav, confirming]);
 
+  // The take or share is done: the pairing link that waited for it asks now.
+  useEffect(() => {
+    if (!pendingLink || pairLinkGate(nav, { confirming, pairBusy, unreadable: pairingUnreadable }) === "wait") return;
+    const url = pendingLink;
+    setPendingLink(null);
+    pairFromLink(url);
+  }, [pendingLink, nav, confirming, pairBusy, pairingUnreadable]);
+
   function go(r: Route) {
     releaseFocus();
     capture.current?.stopPlayback();
     setNav((n) => push(n, r));
   }
 
-  /** Leaves the top screen for the one under it; says what was kept. */
-  function popScreen() {
-    const leaving = top(navRef.current);
-    const rest = pop(navRef.current);
-    setNav(rest);
-    if (!leaving) return;
+  /** Leaves a screen; says what was kept. `r`: the caller's own route, popped
+   * wherever it is (a link may have pushed something over it: review #2);
+   * none (hardware Back), the top one. Already gone: nothing happens. */
+  function popScreen(r?: Route) {
+    const cur = navRef.current;
+    const leaving = r ?? top(cur);
+    if (!leaving || !cur.stack.includes(leaving)) return;
+    const rest = popRoute(cur, leaving);
+    navRef.current = rest;
+    setNav((n) => popRoute(n, leaving));
     if (leaving.name === "note") {
       setTimeout(() => {
         if (Object.keys(getState().sync.pending).length > 0) requestSync();
@@ -159,16 +180,35 @@ export default function App() {
     setConfirmHidden(true);
   }
 
-  /** Checks the computer answers, then saves the pairing and syncs. */
-  async function verifyAndPair(link: Pairing | PairOffer, source: PairSource) {
+  /** Checks the computer answers, then saves the pairing and syncs.
+   * `replacing`: the computer this phone is paired with now (a link offered
+   * to replace it); `pushed`: the pair screen the link opened for it. A
+   * replacement that's cancelled or fails goes back where the user was,
+   * still paired with that computer (smoke F4). */
+  async function verifyAndPair(link: Pairing | PairOffer, source: PairSource, opts: { replacing?: string; pushed?: Route } = {}) {
     setPairBusy(true);
     setPairError(null);
+    const back = () => {
+      const pushed = opts.pushed;
+      if (pushed) setNav((n) => popRoute(n, pushed));
+    };
+    const fail = (err: PairError) => {
+      if (opts.replacing) {
+        back();
+        Alert.alert(c().replaceFailedTitle(opts.replacing), err.newCode ? `${err.text}\n\n${tr(T).pairNewCode}` : err.text);
+        return;
+      }
+      // Never on a screen that's gone (review #4): the pair screen shows it, else a toast.
+      if (top(navRef.current)?.name === "pair") setPairError(err);
+      else showToast(err.text);
+    };
     try {
       // Only a computer that answers is kept (a wrong or old code saves nothing).
       const v = await verifyPairing(link);
       if (!v.ok) {
         // null: cancelled on the phone while it waited for the computer's confirmation.
-        if (v.code) setPairError({ text: pairFailText(v.code), source, newCode: needsNewCode(v.code) });
+        if (v.code) fail({ text: pairFailText(v.code), source, newCode: needsNewCode(v.code) });
+        else if (opts.replacing) back();
         return;
       }
       await pair(v.pairing);
@@ -179,14 +219,14 @@ export default function App() {
     } catch (e) {
       // Saving the key failed on the phone (secure storage): the raw text is for the log.
       console.warn("pairing failed:", e instanceof Error ? e.message : String(e));
-      setPairError({ text: tr(T).pairSaveFailed, source, newCode: false });
+      fail({ text: tr(T).pairSaveFailed, source, newCode: false });
     } finally {
       setPairBusy(false);
     }
   }
 
   function submitPairing(input: string, source: PairSource) {
-    if (pairBusy) return;
+    if (pairBusyRef.current) return;
     const r = parsePairingUrl(input, { loopback: Platform.OS === "ios" });
     if (!r.ok) {
       setPairError({ text: r.error === "hosts" && isLoopbackLink(input) ? tr(T).loopbackLink : pairErrorText(r.error), source, newCode: false });
@@ -199,10 +239,27 @@ export default function App() {
    * only after the user says yes (any app or page can open a link; pairing
    * sends notes to that address). When already paired, it offers to replace
    * the pairing (the computer's address changed, or another computer);
-   * unsynced note edits are carried over. A link that can't pair says why. */
+   * unsynced note edits are carried over. A link that can't pair says why.
+   * Never over a take or a share (it waits for them), never while a pairing
+   * is checked or the saved one can't be read (review #2, #6, #14). */
   function pairFromLink(url: string | null | undefined): void {
     if (!url || !/^hivo:\/\/pair/i.test(url.trim())) return;
     const t = tr(T);
+    const gate = () => pairLinkGate(navRef.current, { confirming: confirmingRef.current, pairBusy: pairBusyRef.current, unreadable: getState().pairingUnreadable });
+    const g = gate();
+    if (g === "wait") {
+      setPendingLink(url);
+      showToast(c().linkWaits);
+      return;
+    }
+    if (g === "busy") {
+      showToast(c().linkBusy);
+      return;
+    }
+    if (g === "unreadable") {
+      Alert.alert(t.badLinkTitle, c().linkUnreadable);
+      return;
+    }
     const r = parsePairingUrl(url, { loopback: Platform.OS === "ios" });
     if (!r.ok) {
       Alert.alert(t.badLinkTitle, r.error === "hosts" && isLoopbackLink(url) ? t.loopbackLink : pairErrorText(r.error));
@@ -221,9 +278,17 @@ export default function App() {
         onPress: () => {
           // Still the pairing the question was about.
           if (getState().pairing?.deviceId !== current?.deviceId) return;
+          // A share came in while the question was up: after it.
+          const now = gate();
+          if (now === "wait") return setPendingLink(url);
+          if (now !== "ask") return showToast(c().linkBusy);
           // On the pair screen, so an error shows with its next step.
-          if (top(navRef.current)?.name !== "pair") go({ name: "pair" });
-          void verifyAndPair(link, "link");
+          let pushed: Route | undefined;
+          if (top(navRef.current)?.name !== "pair") {
+            pushed = { name: "pair" };
+            go(pushed);
+          }
+          void verifyAndPair(link, "link", { replacing: current?.desktopName, pushed });
         },
       },
     ]);
@@ -260,6 +325,8 @@ export default function App() {
           })
           .catch(() => setCopying(false));
       } else if (st === "background" || st === "inactive") {
+        // The editors' last keystrokes first (debounced there), then to disk (review #7).
+        pendingSaves.runAll();
         void flush();
         void flushExtras();
       }
@@ -281,7 +348,7 @@ export default function App() {
 
   useEffect(() => {
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
-      switch (backAction(navRef.current, { confirming: confirmingRef.current })) {
+      switch (backAction(navRef.current, { confirming: confirmingRef.current, pairBusy: pairBusyRef.current })) {
         case "cancel-pairing":
           cancelPairing();
           return true;
@@ -292,10 +359,14 @@ export default function App() {
         case "pop":
           popScreen();
           return true;
+        case "ignore":
+          // A code is being checked: its answer shows on this screen.
+          return true;
         case "to-capture":
           setNav((n) => toTab(n, "capture"));
           return true;
         case "exit":
+          capture.current?.stopPlayback();
           return false;
       }
     });
@@ -317,6 +388,8 @@ export default function App() {
 
   function onTab(tab: Tab) {
     if (tab === "capture" && nav.tab === "capture") capture.current?.scrollToTop();
+    // A memo playing in Capture stops when Capture goes (review #5).
+    if (tab !== "capture") capture.current?.stopPlayback();
     releaseFocus();
     setNav((n) => toTab(n, tab));
   }
@@ -333,23 +406,23 @@ export default function App() {
           <ShareScreen
             key={r.at}
             share={r.share}
-            onDone={popScreen}
-            onIdea={(id) => setNav((n) => replaceTop(n, { name: "idea", id, since: r.since }))}
+            onDone={() => popScreen(r)}
+            onIdea={(id) => setNav((n) => replaceRoute(n, r, { name: "idea", id, since: r.since }))}
             backRef={backRef}
             waiting={queue.length}
           />
         );
       case "idea":
-        return <IdeaScreen key={r.id} id={r.id} onBack={popScreen} />;
+        return <IdeaScreen key={r.id} id={r.id} onBack={() => popScreen(r)} />;
       case "record":
-        return <RecordScreen key={r.draftId ?? "new"} target={r.target} onDone={popScreen} backRef={backRef} draftId={r.draftId} />;
+        return <RecordScreen key={r.draftId ?? "new"} target={r.target} onDone={() => popScreen(r)} backRef={backRef} draftId={r.draftId} />;
       case "note":
         return (
           <NoteScreen
             key={`${r.kind}:${r.id}`}
             kind={r.kind}
             id={r.id}
-            onBack={popScreen}
+            onBack={() => popScreen(r)}
             onRecord={(target) => go({ name: "record", target, since: Date.now() })}
             onIdea={(target) => newIdea(target)}
           />
@@ -358,7 +431,7 @@ export default function App() {
         return (
           <View style={{ flex: 1 }}>
             <View style={{ flex: 1 }}>
-              <SettingsScreen onBack={popScreen} />
+              <SettingsScreen onBack={() => popScreen(r)} />
             </View>
             {showsUpdateBanner(nav, { confirming }) ? <UpdateBanner /> : null}
           </View>
@@ -367,11 +440,12 @@ export default function App() {
         if (pairingUnreadable)
           return (
             <View style={{ flex: 1 }}>
-              <ScreenHeader title={t.pairTitle} onBack={popScreen} />
+              <ScreenHeader title={t.pairTitle} onBack={() => popScreen(r)} />
               <PairingUnreadable />
             </View>
           );
-        return <PairScreen busy={pairBusy} error={pairError} onSubmit={submitPairing} onClearError={() => setPairError(null)} onBack={popScreen} />;
+        // Back waits while a code is checked: its answer shows here (review #4).
+        return <PairScreen busy={pairBusy} error={pairError} onSubmit={submitPairing} onClearError={() => setPairError(null)} onBack={() => !pairBusyRef.current && popScreen(r)} />;
     }
   }
 
@@ -390,7 +464,7 @@ export default function App() {
               <SyncHeader onSettings={() => go({ name: "settings" })} onPair={() => go({ name: "pair" })} />
               <View style={{ flex: 1 }}>
                 <View style={[StyleSheet.absoluteFill, nav.tab !== "capture" && styles.hidden]} pointerEvents={nav.tab === "capture" ? "auto" : "none"} importantForAccessibility={nav.tab === "capture" ? "auto" : "no-hide-descendants"}>
-                  <InboxTab ref={capture} onIdea={(id) => (id ? go({ name: "idea", id, since: Date.now() }) : newIdea(null))} onRecord={() => go({ name: "record", target: null, since: Date.now() })} onPick={() => void pick()} onDraft={(id) => go({ name: "record", target: null, since: Date.now(), draftId: id })} />
+                  <InboxTab ref={capture} onIdea={(id) => (id ? go({ name: "idea", id, since: Date.now() }) : newIdea(null))} onRecord={() => go({ name: "record", target: null, since: Date.now() })} onPick={() => void pick()} onDraft={(id) => go({ name: "record", target: null, since: Date.now(), draftId: id })} active={nav.tab === "capture" && !covered} />
                 </View>
                 <View style={[StyleSheet.absoluteFill, nav.tab !== "library" && styles.hidden]} pointerEvents={nav.tab === "library" ? "auto" : "none"} importantForAccessibility={nav.tab === "library" ? "auto" : "no-hide-descendants"}>
                   <LibraryScreen kind={kind} onKind={setKind} onOpen={(i) => go({ name: "note", kind: i.kind, id: i.id })} onPair={() => go({ name: "pair" })} />

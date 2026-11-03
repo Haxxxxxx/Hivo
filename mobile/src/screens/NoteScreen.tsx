@@ -4,11 +4,11 @@ import { c } from "../captureStrings";
 import { analyzeLyrics, lineAt } from "../lib/lyrics";
 import { MiniPlayer } from "../components/MiniPlayer";
 import { ScreenHeader } from "../components/ScreenHeader";
-import { Button, Engrave, Led } from "../components/ui";
+import { Button, Engrave, Facts, Led } from "../components/ui";
 import { canonicalUrl, youtubeId } from "../lib/youtube";
 import { tr } from "../lib/i18n";
 import { findItem, isGone, itemKey, MAX_NOTE_CHARS, noteFor, type Kind } from "../lib/sync";
-import { clearConflict, flush, removeGone, setNote, useApp } from "../store";
+import { clearConflict, flush, pendingSaves, removeGone, setNote, useApp } from "../store";
 import { T } from "../strings";
 import type { IdeaTarget } from "../lib/ideas";
 import { C, FONT, RADIUS, S } from "../theme";
@@ -97,17 +97,19 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
     }, 50);
   }
 
-  // Save when leaving the screen.
-  useEffect(
-    () => () => {
+  // Save when leaving the screen, and before the app goes to the background
+  // (the last keystrokes wait 400 ms, or for the blur: review #7).
+  useEffect(() => {
+    const off = pendingSaves.register(save);
+    return () => {
+      off();
       save();
       void flush();
-    },
-    [],
-  );
+    };
+  }, []);
 
   const title = item?.title ?? id;
-  const facts = [item?.bpm != null ? `${Math.round(item.bpm)} BPM` : null, item?.key].filter(Boolean).join(" · ");
+  const facts = (item?.bpm != null && item.bpm > 0) || !!item?.key?.trim();
   return (
     // Android 15+ draws edge to edge: the window no longer shrinks for the keyboard, so pad on both.
     <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
@@ -116,7 +118,7 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
           <>
             <View style={{ flexDirection: "row", alignItems: "center", marginTop: S.xs, flexWrap: "wrap" }}>
               {item?.subtitle ? <Text style={styles.sub} numberOfLines={1}>{item.kind === "song" && item.stage ? t.stage[item.stage] ?? item.subtitle : item.subtitle}</Text> : null}
-              {facts ? <Engrave style={{ marginLeft: item?.subtitle ? 10 : 0 }}>{facts}</Engrave> : null}
+              {facts ? <Facts bpm={item?.bpm} musicalKey={item?.key} style={{ marginLeft: item?.subtitle ? 10 : 0 }} /> : null}
             </View>
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: S.sm, marginTop: S.sm, paddingVertical: S.xs }}>
               {item?.url && videoId ? (

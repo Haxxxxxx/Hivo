@@ -28,6 +28,9 @@ type Native = {
   clearCache(dir: string): Promise<boolean>;
   sweepCache(keep: string[]): Promise<number>;
   probeTcp(host: string, port: number, timeoutMs: number): Promise<"open" | "refused" | "other">;
+  /** Optional: absent from builds before 0.7.1. */
+  localIPv4s?(): Promise<string[]>;
+  displayName?(uri: string): Promise<string | null>;
   addListener(event: "onShare", listener: (s: Shared) => void): EventSubscription;
   addListener(event: "onShareStart", listener: (e: { count: number }) => void): EventSubscription;
 };
@@ -124,4 +127,19 @@ export async function probeTcp(host: string, port: number, timeoutMs = 1500): Pr
   if (!native) return "other";
   const r = await native.probeTcp(host, port, timeoutMs).catch(() => "other" as const);
   return r === "refused" ? "refused" : "other";
+}
+
+/** The phone's own private IPv4 addresses on Wi-Fi or Ethernet (never mobile
+ * data), for "Look for my computer again"; [] when unknown (iOS, an older build). */
+export async function localIPv4s(): Promise<string[]> {
+  if (!native?.localIPv4s) return [];
+  const list = await native.localIPv4s().catch(() => [] as string[]);
+  return Array.isArray(list) ? list.filter((a): a is string => typeof a === "string") : [];
+}
+
+/** A picked file's own name, as its app gives it ("Night Drive.m4a"), or null. */
+export async function displayName(uri: string): Promise<string | null> {
+  if (!native?.displayName) return null;
+  const n = await native.displayName(uri).catch(() => null);
+  return typeof n === "string" && n.trim() ? n : null;
 }

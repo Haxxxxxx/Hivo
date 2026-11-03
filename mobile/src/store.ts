@@ -9,12 +9,13 @@ import * as Device from "expo-device";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import * as SecureStore from "expo-secure-store";
 import { useSyncExternalStore } from "react";
-import { probeTcp } from "../modules/hivo-share";
+import { localIPv4s, probeTcp } from "../modules/hivo-share";
 import { CancelledError, createClient, SyncError, type SyncErrorCode, type Transport } from "./lib/client";
 import { carryOver, confirmedPairing, extrasBinding, waitForConfirmation } from "./lib/confirm";
-import { AUTO_REDISCOVER_MS, PROBE_TIMEOUT_MS, rediscover, withFound } from "./lib/discover";
+import { lookAgain, PROBE_TIMEOUT_MS, SAVED_TIMEOUT_MS, withFound, type LookProgress, type LookResult } from "./lib/discover";
 import { completePairing, computerIdOf } from "./lib/handshake";
 import type { PairOffer, Pairing } from "./lib/pairing";
+import { createPendingSaves } from "./lib/pendingSave";
 import { clearCache, decodeEdits, decodeList, KEYS, loadAll, mergeById, mergeEdits, saveCache, saveRow, type KV, type LibraryCache, type Row } from "./lib/persist";
 import { onForeground } from "./lib/syncGate";
 import { clip, safeFileName } from "./lib/text";
@@ -93,8 +94,10 @@ export type AppState = {
   desktopOutdated: boolean;
   /** Paired, waiting for the user to confirm on the computer that it shows this code. */
   confirming: { code: string; desktopName: string; startedAt: number } | null;
-  /** Looking for the computer at another address on the Wi-Fi (its address changed). */
+  /** Looking for the computer again (Settings, only when tapped): its saved
+   * addresses, then this Wi-Fi. `lookProgress`: how far it got. */
   rediscovering: boolean;
+  lookProgress: LookProgress | null;
   /** Storage trouble: rows that can't be read (kept, never written over) and
    * whether the last save failed (storage full: everything stays in memory
    * and is saved at the next try). */
@@ -116,8 +119,12 @@ let state: AppState = {
   desktopOutdated: false,
   confirming: null,
   rediscovering: false,
+  lookProgress: null,
   storage: { blocked: [], saveFailed: false },
 };
+
+/** What the open editors still hold (debounced): saved before the app goes to the background. */
+export const pendingSaves = createPendingSaves((e) => console.warn("Hivo: an editor's save failed", e));
 let boundDevice: string | null = null;
 const listeners = new Set<() => void>();
 
@@ -217,11 +224,13 @@ function persistExtrasSoon(): void {
 
 /** Saves ideas, the outbox and the binding, each in its own row. A row that
  * couldn't be read is never written over (read again first, then merged).
- * Never throws. */
-export function flushExtras(): Promise<void> {
+ * Never throws; true when ideas and the outbox are on disk now (a share's
+ * copies may go only then: review #8). */
+export async function flushExtras(): Promise<boolean> {
   if (extrasTimer) clearTimeout(extrasTimer);
   extrasTimer = null;
-  return serial(async () => {
+  let saved = false;
+  await serial(async () => {
     const now = Date.now();
     const ideas = state.ideas;
     const ri = await saveRow<Idea[]>(kv, KEYS.ideas, ideas, { blocked: blocked.has("ideas"), decode: decodeList(parseIdea), merge: mergeById, encode: (v) => JSON.stringify(v), now });
@@ -235,7 +244,9 @@ export function flushExtras(): Promise<void> {
     noteStorage("bound", rb);
     if (rb.status === "ok") boundDevice = rb.value || null;
     for (const r of [ri, ro, rb]) if (r.status === "failed") console.warn("Hivo: could not save ideas and memos", r.error);
-  });
+    saved = ri.status === "ok" && ro.status === "ok";
+  }).catch((e) => console.warn("Hivo: could not save ideas and memos", e));
+  return saved;
 }
 
 /** `now`: a new or removed record is saved at once (a kill must not lose it); edits are debounced. */
@@ -419,17 +430,21 @@ export async function retryPairingRead(): Promise<boolean> {
  * the phone's note text, ideas, memos and the pairing stay. Works before
  * `load` (the app may not have got that far). */
 export async function resetLocalCache(): Promise<void> {
-  await clearCache(kv, dataFS).catch((e) => console.warn("Hivo: could not clear the cache", e));
-  lastCacheText = null;
-  lastCacheParts = [];
-  setState({ sync: keepEdits(editsOf(state.sync)) });
+  // In the save chain: a cache save queued before can't write it back after.
+  await serial(async () => {
+    await clearCache(kv, dataFS).catch((e) => console.warn("Hivo: could not clear the cache", e));
+    lastCacheText = null;
+    lastCacheParts = [];
+    setState({ sync: keepEdits(editsOf(state.sync)) });
+  });
 }
 
-let confirmCancelled = false;
+/** The code check waiting now; Cancel ends only this one (review #14). */
+let confirmAttempt: { cancelled: boolean } | null = null;
 
 /** "Cancel" while waiting for the computer's confirmation: nothing is saved. */
 export function cancelConfirmation(): void {
-  confirmCancelled = true;
+  if (confirmAttempt) confirmAttempt.cancelled = true;
 }
 
 const transport: Transport = (url, init) => fetch(url, init);
@@ -444,15 +459,21 @@ export async function verifyPairing(p: Pairing | PairOffer): Promise<{ ok: true;
     if ("token" in p) {
       const r = await completePairing(p, { transport, random: getRandomBytes, now: Date.now, phoneName: phoneName(), appVersion: appVersion() });
       if (!r.pending) return { ok: true, pairing: r.pairing };
-      confirmCancelled = false;
-      setState({ confirming: { code: r.code, desktopName: r.desktopName, startedAt: Date.now() } });
+      const attempt = { cancelled: false };
+      // An older wait still running (it shouldn't: App.tsx checks one at a time) ends here.
+      if (confirmAttempt) confirmAttempt.cancelled = true;
+      confirmAttempt = attempt;
+      const confirming = { code: r.code, desktopName: r.desktopName, startedAt: Date.now() };
+      setState({ confirming });
       try {
         const call = createClient({ pairing: r.pairing, transport, random: getRandomBytes, now: Date.now, probe: probeTcp });
         const sleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
-        const done = await waitForConfirmation(call, { phoneName: phoneName(), appVersion: appVersion() }, { now: Date.now, sleep, startedAt: Date.now(), cancelled: () => confirmCancelled });
+        const done = await waitForConfirmation(call, { phoneName: phoneName(), appVersion: appVersion() }, { now: Date.now, sleep, startedAt: Date.now(), cancelled: () => attempt.cancelled });
         return done.ok ? { ok: true, pairing: confirmedPairing(r.pairing, done.hello) } : done;
       } finally {
-        setState({ confirming: null });
+        if (confirmAttempt === attempt) confirmAttempt = null;
+        // Only this attempt's code leaves the screen.
+        if (state.confirming === confirming) setState({ confirming: null });
       }
     }
     let bound = false;
@@ -488,15 +509,19 @@ async function markBound(deviceId: string): Promise<void> {
  * Throws when the pairing can't be saved (nothing changed then). */
 export async function pair(p: Pairing): Promise<void> {
   await cancelSync();
-  const kept = carryOver(state.pairing, p, state.sync);
-  if (!kept.keepCache) {
-    await clearCache(kv, dataFS);
-    lastCacheText = null;
-    lastCacheParts = [];
-  }
-  await SecureStore.setItemAsync(PAIRING_KEY, JSON.stringify(p));
-  heldCache = null;
-  setState({ pairing: p, pairingUnreadable: false, sync: kept.sync, error: null, errorDetail: null });
+  // In the save chain (review #13): a cache save queued before runs first
+  // and can't write the old library back after it's cleared.
+  await serial(async () => {
+    const kept = carryOver(state.pairing, p, state.sync);
+    if (!kept.keepCache) {
+      await clearCache(kv, dataFS);
+      lastCacheText = null;
+      lastCacheParts = [];
+    }
+    await SecureStore.setItemAsync(PAIRING_KEY, JSON.stringify(p));
+    heldCache = null;
+    setState({ pairing: p, pairingUnreadable: false, sync: kept.sync, error: null, errorDetail: null });
+  });
   await flush();
 }
 
@@ -504,12 +529,15 @@ export async function pair(p: Pairing): Promise<void> {
 export async function unpair(): Promise<void> {
   if (persistTimer) clearTimeout(persistTimer);
   persistTimer = null;
+  cancelLook();
   await cancelSync();
-  await SecureStore.deleteItemAsync(PAIRING_KEY);
-  await clearCache(kv, dataFS).catch((e) => console.warn("Hivo: could not clear the cache", e));
-  lastCacheText = null;
-  lastCacheParts = [];
-  setState({ pairing: null, sync: keepEdits(editsOf(state.sync)), error: null, errorDetail: null, syncing: false });
+  await serial(async () => {
+    await SecureStore.deleteItemAsync(PAIRING_KEY);
+    await clearCache(kv, dataFS).catch((e) => console.warn("Hivo: could not clear the cache", e));
+    lastCacheText = null;
+    lastCacheParts = [];
+    setState({ pairing: null, sync: keepEdits(editsOf(state.sync)), error: null, errorDetail: null, syncing: false });
+  });
   await flush();
 }
 
@@ -614,10 +642,10 @@ async function runExtras(call: (path: string, payload: unknown) => Promise<unkno
   }
 }
 
-/** The sync running now: cancelled by unpair / pair / a restart. */
-let current: { ctrl: AbortController; done: Promise<boolean>; startedAt: number } | null = null;
+/** The sync running now: cancelled by unpair / pair / a restart.
+ * `progressAt`: when it started or last got an answer (a chunk, a note). */
+let current: { ctrl: AbortController; done: Promise<boolean>; progressAt: number } | null = null;
 let lastFinishedAt: number | null = null;
-let lastRediscoverAt = 0;
 
 /** Cancels the running sync (if any) and waits a little for it to wind down. */
 export async function cancelSync(): Promise<void> {
@@ -631,50 +659,70 @@ export async function cancelSync(): Promise<void> {
   await Promise.race([c.done.catch(() => false), new Promise((r) => setTimeout(r, 5000))]);
 }
 
-/** Sealed hellos to every address of the old network; the pairing's hosts
- * are updated when the computer answers at a new one. True when found. */
-async function findComputer(pairing: Pairing, signal: AbortSignal | null): Promise<boolean> {
-  setState({ rediscovering: true });
+/** The usual sealed hello to one address: true when the paired computer answered. */
+async function sealedHello(pairing: Pairing, host: string, stop: AbortSignal, signal: AbortSignal, timeoutMs: number): Promise<boolean> {
+  const ctrl = new AbortController();
+  const abort = () => ctrl.abort();
+  stop.addEventListener("abort", abort);
+  signal.addEventListener("abort", abort);
   try {
-    const found = await rediscover(
-      pairing.hosts,
-      async (host, stop) => {
-        const ctrl = new AbortController();
-        const abort = () => ctrl.abort();
-        stop.addEventListener("abort", abort);
-        signal?.addEventListener("abort", abort);
-        try {
-          const call = createClient({ pairing: { ...pairing, hosts: [host] }, transport, random: getRandomBytes, now: Date.now, timeoutMs: PROBE_TIMEOUT_MS, signal: ctrl.signal });
-          await call("/v1/hello", { phoneName: phoneName(), appVersion: appVersion() });
-          return true;
-        } catch (e) {
-          // A sealed refusal is from the paired computer too (only it has the key).
-          return e instanceof SyncError && ["clock", "demo", "read-only", "pending"].includes(e.code);
-        } finally {
-          stop.removeEventListener("abort", abort);
-          signal?.removeEventListener("abort", abort);
-        }
-      },
-      { cancelled: () => signal?.aborted === true || state.pairing?.deviceId !== pairing.deviceId },
-    );
-    if (!found || state.pairing?.deviceId !== pairing.deviceId) return false;
-    const updated = { ...state.pairing, hosts: withFound(state.pairing.hosts, found) };
-    setState({ pairing: updated });
-    await savePairing(updated);
+    const call = createClient({ pairing: { ...pairing, hosts: [host] }, transport, random: getRandomBytes, now: Date.now, timeoutMs, signal: ctrl.signal });
+    await call("/v1/hello", { phoneName: phoneName(), appVersion: appVersion() });
     return true;
+  } catch (e) {
+    // A sealed refusal is from the paired computer too (only it has the key).
+    return e instanceof SyncError && ["clock", "demo", "read-only", "pending"].includes(e.code);
   } finally {
-    setState({ rediscovering: false });
+    stop.removeEventListener("abort", abort);
+    signal.removeEventListener("abort", abort);
   }
 }
 
-/** Settings → "Look for my computer again". True when found (a sync follows). */
-export async function lookForComputer(): Promise<boolean> {
-  const p = state.pairing;
-  if (!p || state.rediscovering) return false;
-  lastRediscoverAt = Date.now();
-  const found = await findComputer(p, null);
-  if (found) requestSync();
-  return found;
+/** The search running now (Settings): Cancel aborts it. */
+let lookCtrl: AbortController | null = null;
+const LOOK_AWAKE_TAG = "hivo-looking";
+
+/**
+ * Settings → "Look for my computer again", only when tapped (never on its
+ * own: review #3). Its saved addresses first ("usual"), then every address
+ * of the Wi-Fi the phone is on now (else the saved hosts' networks), with
+ * the same sealed hello as a sync. The screen stays on meanwhile; Cancel:
+ * `cancelLook`. A sync follows when it answered. Null: not run (unpaired,
+ * already looking).
+ */
+export async function lookForComputer(): Promise<LookResult["kind"] | null> {
+  const pairing = state.pairing;
+  if (!pairing || lookCtrl) return null;
+  const ctrl = new AbortController();
+  lookCtrl = ctrl;
+  setState({ rediscovering: true, lookProgress: null });
+  void activateKeepAwakeAsync(LOOK_AWAKE_TAG).catch(() => {});
+  const cancelled = () => ctrl.signal.aborted || state.pairing?.deviceId !== pairing.deviceId;
+  try {
+    const r = await lookAgain(pairing.hosts, {
+      hello: (host, stop, phase) => sealedHello(pairing, host, stop, ctrl.signal, phase === "usual" ? SAVED_TIMEOUT_MS : PROBE_TIMEOUT_MS),
+      phoneAddresses: localIPv4s,
+      cancelled,
+      onProgress: (p) => setState({ lookProgress: p }),
+    });
+    if (cancelled()) return "cancelled";
+    if (r.kind === "found" && state.pairing) {
+      const updated = { ...state.pairing, hosts: withFound(state.pairing.hosts, r.host) };
+      setState({ pairing: updated });
+      await savePairing(updated);
+    }
+    if (r.kind === "found" || r.kind === "usual") requestSync();
+    return r.kind;
+  } finally {
+    if (lookCtrl === ctrl) lookCtrl = null;
+    setState({ rediscovering: false, lookProgress: null });
+    void deactivateKeepAwake(LOOK_AWAKE_TAG).catch(() => {});
+  }
+}
+
+/** Cancel on "Look for my computer again". */
+export function cancelLook(): void {
+  lookCtrl?.abort();
 }
 
 /** Push queued notes, then pull the snapshot. Never throws: errors land in state. */
@@ -688,7 +736,7 @@ function sync_(): Promise<boolean> {
   if (!pairing || current) return Promise.resolve(false);
   const ctrl = new AbortController();
   const done = runOnce(pairing, ctrl);
-  current = { ctrl, done, startedAt: Date.now() };
+  current = { ctrl, done, progressAt: Date.now() };
   return done;
 }
 
@@ -705,7 +753,13 @@ async function runOnce(pairing: Pairing, ctrl: AbortController): Promise<boolean
     }
   };
   try {
-    const call = createClient({ pairing, transport, random: getRandomBytes, now: Date.now, probe: probeTcp, signal: ctrl.signal, onBound: () => void markBound(pairing.deviceId) });
+    const client = createClient({ pairing, transport, random: getRandomBytes, now: Date.now, probe: probeTcp, signal: ctrl.signal, onBound: () => void markBound(pairing.deviceId) });
+    // Every answer is progress: a long upload that keeps sending isn't "stuck" (review #10).
+    const call = async (path: string, payload: unknown): Promise<unknown> => {
+      const res = await client(path, payload);
+      if (current?.ctrl === ctrl) current.progressAt = Date.now();
+      return res;
+    };
     // Once per app run (and per computer): hello again, so a version change on either side shows.
     const sayHello = helloedFor !== pairing.deviceId;
     const res = await runSync(call, () => state.sync, (s) => live() && setSync(s), { phoneName: phoneName(), appVersion: appVersion() }, Date.now, { hello: sayHello });
@@ -740,16 +794,7 @@ async function runOnce(pairing: Pairing, ctrl: AbortController): Promise<boolean
     }
     const code: SyncErrorCode = e instanceof SyncError ? e.code : "server";
     again = false;
-    // No saved address answered: the computer may have a new one on the same Wi-Fi.
-    if ((code === "offline" || code === "off") && Date.now() - lastRediscoverAt > AUTO_REDISCOVER_MS) {
-      lastRediscoverAt = Date.now();
-      const found = await findComputer(pairing, ctrl.signal).catch(() => false);
-      if (found && live()) {
-        finish();
-        void sync();
-        return false;
-      }
-    }
+    // No search of the network from here: only Settings → "Look for my computer again" does that (review #3).
     if (current?.ctrl === ctrl) setState({ error: code, errorDetail: e instanceof Error ? e.message : String(e) });
     finish();
     await flush();
@@ -770,12 +815,12 @@ export function requestSync(): void {
 
 /**
  * The app came back to the screen: sync, unless one finished less than 30 s
- * ago (F12); a sync stuck for over a minute (the screen went off mid-upload)
- * is cancelled and a fresh one starts (B3). App.tsx calls this instead of
- * `sync()` on "active".
+ * ago (F12); a sync with no answer for over a minute (the screen went off
+ * mid-upload) is cancelled and a fresh one starts (B3). App.tsx calls this
+ * instead of `sync()` on "active".
  */
 export function syncOnForeground(): void {
-  const action = onForeground({ paired: !!state.pairing, syncing: current !== null, startedAt: current?.startedAt ?? null, finishedAt: lastFinishedAt }, Date.now());
+  const action = onForeground({ paired: !!state.pairing, syncing: current !== null, progressAt: current?.progressAt ?? null, finishedAt: lastFinishedAt }, Date.now());
   if (action === "sync") void sync();
   else if (action === "restart") void cancelSync().then(() => void sync());
 }
