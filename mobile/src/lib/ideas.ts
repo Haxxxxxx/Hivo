@@ -132,5 +132,34 @@ export const resetSent = (ideas: Idea[]): Idea[] =>
 export const pruneIdeas = (ideas: Idea[], now: number, keepMs: number): Idea[] =>
   ideas.filter((i) => !(isLocked(i) && i.sentAt !== null && now - Math.max(i.updatedAt, i.sentAt) > keepMs));
 
+/** Empty ideas never sent (left by an app killed on the idea screen): nothing
+ * to keep. `except`: the one open on screen right now. */
+export const dropEmptyIdeas = (ideas: Idea[], except?: string): Idea[] => ideas.filter((i) => i.id === except || i.deleted || i.sentAt !== null || !isEmptyIdea(i));
+
+const finite = (v: unknown, fallback: number): number => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
+
+/** One stored idea, checked field by field; null when it can't be used. Never throws. */
+export function parseIdea(raw: unknown): Idea | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(r.id)) return null;
+  const t = r.target as Partial<IdeaTarget> | null;
+  const target = t && typeof t === "object" && (t.kind === "prod" || t.kind === "beat" || t.kind === "song") && typeof t.id === "string" && t.id ? { kind: t.kind, id: t.id, title: typeof t.title === "string" ? t.title : t.id } : null;
+  const createdAt = finite(r.createdAt, 0);
+  const status = r.status === "stored" || r.status === "filed" || r.status === "dismissed" ? r.status : null;
+  return {
+    id: r.id,
+    title: typeof r.title === "string" ? clip(r.title, MAX_TITLE_CHARS) : "",
+    text: typeof r.text === "string" ? clip(r.text, MAX_IDEA_CHARS) : "",
+    target,
+    createdAt,
+    updatedAt: finite(r.updatedAt, createdAt),
+    sentAt: typeof r.sentAt === "number" && Number.isFinite(r.sentAt) ? r.sentAt : null,
+    deleted: r.deleted === true,
+    status,
+    filedTo: typeof r.filedTo === "string" ? r.filedTo : null,
+  };
+}
+
 /** Newest first, deleted hidden. */
 export const visibleIdeas = (ideas: Idea[]): Idea[] => ideas.filter((i) => !i.deleted).sort((a, b) => b.updatedAt - a.updatedAt);

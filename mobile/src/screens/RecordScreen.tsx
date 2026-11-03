@@ -11,21 +11,23 @@ import {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
-import { Alert, AppState, Linking, PermissionsAndroid, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, AppState, Linking, PermissionsAndroid, Platform, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { fileDurationMs, onCall, startRecordingWatch, stopRecordingWatch, takeCallStop } from "../../modules/hivo-share/recording";
+import { c } from "../captureStrings";
+import { ScreenHeader } from "../components/ScreenHeader";
 import { TargetPicker } from "../components/TargetPicker";
 import { Button, Engrave, Led } from "../components/ui";
-import { adopt, SpaceError } from "../files";
+import { adopt, deleteFile, SpaceError } from "../files";
 import { s } from "../inboxStrings";
-import { tr } from "../lib/i18n";
 import type { IdeaTarget } from "../lib/ideas";
 import { MAX_MEMO_MS, MIN_MEMO_MS } from "../lib/outbox";
 import { noticePermission, recordingAudioMode, recordsInBackground, shouldAskNotice, showBackgroundHint, stopOnBackground, stopReason, takeIsOpen, type NoticePermission } from "../lib/recording";
-import { addOutItem, newOutId, requestSync } from "../store";
-import { T } from "../strings";
-import { C, FONT, RADIUS } from "../theme";
+import { addOutItem, getState, keepDraftOut, newOutId, removeOut, requestSync, updateDraft } from "../store";
+import { C, FONT, RADIUS, S } from "../theme";
 
-type Phase = { kind: "idle" } | { kind: "recording" } | { kind: "done"; uri: string; durationMs: number };
+/** `id`: the take's draft in the outbox (adopted at Stop, so a killed app
+ * keeps it); null only when that copy failed (then it's only in the cache). */
+type Phase = { kind: "idle" } | { kind: "recording" } | { kind: "done"; id: string | null; uri: string; durationMs: number };
 
 const clock = (ms: number) => {
   const sec = Math.floor(ms / 1000);
@@ -62,25 +64,38 @@ async function ensureNotice(): Promise<NoticePermission> {
  * microphone taken), a call, or Hivo leaving the screen without the service. */
 type End = "user" | "auto" | "call" | "background";
 
+/** The take a killed run left as a draft (`draftId`), back on the "done" step. */
+function draftPhase(draftId: string | undefined): Phase {
+  const d = draftId ? getState().outbox.find((o) => o.id === draftId && o.state === "draft") : undefined;
+  return d && d.files[0] ? { kind: "done", id: d.id, uri: d.files[0].uri, durationMs: d.durationMs ?? 0 } : { kind: "idle" };
+}
+
 /** Record a flow or a melody; kept in the outbox, sent at the next sync.
- * `backRef`: what the hardware Back does here (App.tsx calls it). */
-export function RecordScreen({ target: initialTarget, onDone, backRef }: { target: IdeaTarget | null; onDone: () => void; backRef: MutableRefObject<(() => void) | null> }) {
+ * `backRef`: what the hardware Back does here (App.tsx calls it).
+ * `draftId` (optional): reopen a take that wasn't kept yet (a draft row). */
+export function RecordScreen({ target: initialTarget, onDone, backRef, draftId }: { target: IdeaTarget | null; onDone: () => void; backRef: MutableRefObject<(() => void) | null>; draftId?: string }) {
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const rec = useAudioRecorderState(recorder, 250);
-  const [phase, setPhase] = useState<Phase>({ kind: "idle" });
-  const [title, setTitle] = useState("");
-  const [target, setTarget] = useState<IdeaTarget | null>(initialTarget);
-  const [message, setMessage] = useState<string | null>(null);
+  const [phase, setPhase] = useState<Phase>(() => draftPhase(draftId));
+  const restored = useRef(phase.kind === "done" ? getState().outbox.find((o) => o.id === draftId) : undefined);
+  const [title, setTitle] = useState(restored.current?.title ?? "");
+  const [target, setTarget] = useState<IdeaTarget | null>(restored.current?.target ?? initialTarget);
+  const [message, setMessage] = useState<string | null>(restored.current ? c().recDraftRestored : null);
   const [denied, setDenied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<NoticePermission | null>(null);
   const [hint, setHint] = useState(false);
   const stoppingByUser = useRef(false);
+  /** Start pressed and not settled yet: a second tap does nothing (F11). */
+  const starting = useRef(false);
   /** This take runs in expo-audio's foreground service (goes on with the screen off). */
   const background = useRef(false);
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
-  const t = tr(T);
+  const durationRef = useRef(0);
+  durationRef.current = rec.durationMillis;
+  const targetRef = useRef(target);
+  targetRef.current = target;
   const player = useAudioPlayer(phase.kind === "done" ? phase.uri : null);
   const playing = useAudioPlayerStatus(player).playing;
 
@@ -131,6 +146,7 @@ export function RecordScreen({ target: initialTarget, onDone, backRef }: { targe
   // Hivo left the screen while recording without the foreground service
   // (notifications denied): stop and keep what was recorded (Android cuts a
   // background app's microphone anyway). With the service, it goes on.
+  // Subscribed once: everything it reads is in refs.
   useEffect(() => {
     const sub = AppState.addEventListener("change", (st) => {
       if (st === "background" && phaseRef.current.kind === "recording" && !stoppingByUser.current && stopOnBackground(background.current)) {
@@ -139,10 +155,16 @@ export function RecordScreen({ target: initialTarget, onDone, backRef }: { targe
       }
     });
     return () => sub.remove();
-  });
+  }, []);
 
+  /** Drops the take: its draft (and file) from the outbox, or the cache file. */
   function discard() {
     player.pause();
+    const p = phaseRef.current;
+    if (p.kind === "done") {
+      if (p.id) removeOut(p.id);
+      else deleteFile(p.uri);
+    }
     setPhase({ kind: "idle" });
     setMessage(null);
   }
@@ -154,12 +176,16 @@ export function RecordScreen({ target: initialTarget, onDone, backRef }: { targe
     ]);
   }
 
-  /** Back (on screen or hardware): never during a take; a finished take is confirmed first. */
+  /** Back (on screen or hardware): never during a take (it says so); a finished take is confirmed first. */
   function back() {
-    if (phaseRef.current.kind === "recording" || busy) return;
+    if (phaseRef.current.kind === "recording") {
+      setMessage(c().recStopFirst);
+      return;
+    }
+    if (busy) return;
     if (phaseRef.current.kind === "done") {
       confirmDiscard(() => {
-        player.pause();
+        discard();
         onDone();
       });
       return;
@@ -174,6 +200,16 @@ export function RecordScreen({ target: initialTarget, onDone, backRef }: { targe
   });
 
   async function start() {
+    if (starting.current || phaseRef.current.kind !== "idle") return;
+    starting.current = true;
+    try {
+      await startTake();
+    } finally {
+      starting.current = false;
+    }
+  }
+
+  async function startTake() {
     started.current = false;
     setMessage(null);
     const p = await requestRecordingPermissionsAsync();
@@ -233,15 +269,28 @@ export function RecordScreen({ target: initialTarget, onDone, backRef }: { targe
     await setAudioModeAsync({ allowsRecording: false, allowsBackgroundRecording: false }).catch(() => {});
     const uri = recorder.uri;
     // The file's own length: the polled state is stale when the take ended in the background.
-    const durationMs = (uri ? await fileDurationMs(uri) : null) ?? rec.durationMillis;
+    const durationMs = (uri ? await fileDurationMs(uri) : null) ?? durationRef.current;
     if (!uri || durationMs < MIN_MEMO_MS) {
+      if (uri) deleteFile(uri);
       setPhase({ kind: "idle" });
       setMessage(s().recTooShort);
       return;
     }
-    setPhase({ kind: "done", uri, durationMs });
     const why = end === "auto" ? stopReason(takeCallStop(), durationMs, MAX_MEMO_MS) : end;
-    setMessage(why === "user" ? null : why === "background" ? s().recBackground : why === "call" ? s().recCall : why === "max" ? s().recMaxReached : s().recStopped);
+    const reason = why === "user" ? null : why === "background" ? s().recBackground : why === "call" ? s().recCall : why === "max" ? s().recMaxReached : s().recStopped;
+    // Into the outbox at once, as a draft: a kill now doesn't lose the take
+    // (B2). Not sent until Keep; Discard removes it.
+    const id = newOutId();
+    try {
+      const file = await adopt(id, { uri, name: `${s().memoLabel}.m4a` });
+      addOutItem(id, "memo", [file], { durationMs, target: targetRef.current, state: "draft" });
+      setPhase({ kind: "done", id, uri: file.uri, durationMs });
+      setMessage(reason);
+    } catch (e) {
+      console.warn("Hivo: could not keep the take as a draft", e);
+      setPhase({ kind: "done", id: null, uri, durationMs });
+      setMessage(e instanceof SpaceError ? s().noSpace : reason);
+    }
   }
 
   async function stop() {
@@ -254,6 +303,12 @@ export function RecordScreen({ target: initialTarget, onDone, backRef }: { targe
     setBusy(true);
     try {
       player.pause();
+      if (phase.id && keepDraftOut(phase.id, { title, target, fallbackName: s().memoLabel })) {
+        requestSync();
+        onDone();
+        return;
+      }
+      // The draft copy had failed (or the draft is gone): adopt now.
       const id = newOutId();
       const file = await adopt(id, { uri: phase.uri, name: `${title.trim() || s().memoLabel}.m4a` });
       addOutItem(id, "memo", [file], { title: title.trim(), target, durationMs: phase.durationMs });
@@ -267,63 +322,79 @@ export function RecordScreen({ target: initialTarget, onDone, backRef }: { targe
 
   const recording = phase.kind === "recording";
   return (
-    <ScrollView contentContainerStyle={{ padding: 16, gap: 16 }} keyboardShouldPersistTaps="handled">
-      {!recording ? (
-        <Pressable onPress={back} hitSlop={10} accessibilityRole="button" style={{ paddingVertical: 4 }}>
-          <Text style={styles.back}>‹ {t.back}</Text>
-        </Pressable>
-      ) : (
-        <View style={{ height: 26 }} />
-      )}
-      <Text style={styles.title}>{s().recTitle}</Text>
-
-      <View style={styles.meter}>
-        <Led color={recording ? C.missing : phase.kind === "done" ? C.ok : C.engrave} size={12} />
-        <Text style={styles.clock}>{clock(phase.kind === "done" ? phase.durationMs : rec.durationMillis)}</Text>
-      </View>
-      <Engrave>{s().recMax(MAX_MEMO_MS / 60000)}</Engrave>
-      {recording && hint ? <Text style={styles.msg}>{s().recInBackground}</Text> : null}
-      {android && notice === "denied" && phase.kind !== "done" ? (
-        <View style={styles.box}>
-          <Text style={styles.msg}>{s().noticeDenied}</Text>
-          {!recording ? <Button label={s().openSettings} onPress={() => void Linking.openSettings()} style={{ marginTop: 8, alignSelf: "flex-start" }} /> : null}
+    <View style={{ flex: 1 }}>
+      {/* Back during a take says "Stop the recording first" instead of leaving. */}
+      <ScreenHeader title={s().recTitle} onBack={back} />
+      <ScrollView contentContainerStyle={{ padding: S.lg, gap: S.lg }} keyboardShouldPersistTaps="handled">
+        <View style={styles.meter}>
+          <Led color={recording ? C.missing : phase.kind === "done" ? C.ok : C.engrave} size={12} />
+          <Text style={styles.clock}>{clock(phase.kind === "done" ? phase.durationMs : rec.durationMillis)}</Text>
         </View>
-      ) : null}
-
-      {denied ? (
-        <View style={styles.box}>
-          <Text style={styles.msg}>{s().micDenied}</Text>
-          <Button label={s().openSettings} onPress={() => void Linking.openSettings()} style={{ marginTop: 8, alignSelf: "flex-start" }} />
-        </View>
-      ) : null}
-
-      {phase.kind === "idle" ? <Button label={s().recStart} variant="primary" onPress={() => void start()} /> : null}
-      {recording ? <Button label={s().recStop} variant="primary" onPress={() => void stop()} /> : null}
-
-      {phase.kind === "done" ? (
-        <View style={{ gap: 12 }}>
-          <Button label={playing ? s().pause : s().play} onPress={() => (playing ? player.pause() : (player.seekTo(0), player.play()))} />
-          <TextInput value={title} onChangeText={setTitle} accessibilityLabel={s().titleLabel} maxLength={200} placeholder={s().recNamePlaceholder} placeholderTextColor={C.engrave} style={styles.input} />
-          <TargetPicker value={target} onChange={setTarget} />
-          <View style={{ flexDirection: "row", gap: 8 }}>
-            <Button label={s().recDiscard} variant="quiet" onPress={() => confirmDiscard(discard)} />
-            <View style={{ flex: 1 }} />
-            <Button label={s().recSave} variant="primary" disabled={busy} onPress={() => void keep()} />
+        <Engrave>{s().recMax(MAX_MEMO_MS / 60000)}</Engrave>
+        {recording && hint ? <Text style={styles.msg}>{s().recInBackground}</Text> : null}
+        {android && notice === "denied" && phase.kind !== "done" ? (
+          <View style={styles.box}>
+            <Text style={styles.msg}>{s().noticeDenied}</Text>
+            {!recording ? <Button label={s().openSettings} onPress={() => void Linking.openSettings()} style={{ marginTop: S.sm, alignSelf: "flex-start" }} /> : null}
           </View>
-        </View>
-      ) : null}
+        ) : null}
 
-      {message ? <Text style={styles.msg}>{message}</Text> : null}
-    </ScrollView>
+        {denied ? (
+          <View style={styles.box}>
+            <Text style={styles.msg}>{s().micDenied}</Text>
+            <Button label={s().openSettings} onPress={() => void Linking.openSettings()} style={{ marginTop: S.sm, alignSelf: "flex-start" }} />
+          </View>
+        ) : null}
+
+        {/* Why the take stopped, above the buttons where it's seen (F6). */}
+        {message ? (
+          <View style={styles.reason}>
+            <Text style={styles.msg}>{message}</Text>
+          </View>
+        ) : null}
+
+        {phase.kind === "idle" ? <Button label={s().recStart} variant="primary" onPress={() => void start()} /> : null}
+        {recording ? <Button label={s().recStop} variant="primary" onPress={() => void stop()} /> : null}
+
+        {phase.kind === "done" ? (
+          <View style={{ gap: S.md }}>
+            <Button label={playing ? s().pause : s().play} onPress={() => (playing ? player.pause() : (player.seekTo(0), player.play()))} />
+            <TextInput
+              value={title}
+              onChangeText={(v) => {
+                setTitle(v);
+                if (phase.id) updateDraft(phase.id, { title: v });
+              }}
+              accessibilityLabel={s().titleLabel}
+              maxLength={200}
+              placeholder={s().recNamePlaceholder}
+              placeholderTextColor={C.engrave}
+              style={styles.input}
+            />
+            <TargetPicker
+              value={target}
+              onChange={(t) => {
+                setTarget(t);
+                if (phase.id) updateDraft(phase.id, { target: t });
+              }}
+            />
+            <View style={{ flexDirection: "row", gap: S.sm }}>
+              <Button label={s().recDiscard} variant="danger" onPress={() => confirmDiscard(discard)} />
+              <View style={{ flex: 1 }} />
+              <Button label={s().recSave} variant="primary" disabled={busy} onPress={() => void keep()} />
+            </View>
+          </View>
+        ) : null}
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  back: { color: C.body, fontSize: 15 },
-  title: { fontFamily: FONT.display, fontSize: 28, color: C.cream, textTransform: "uppercase", letterSpacing: 0.5 },
-  meter: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 18, paddingHorizontal: 16, backgroundColor: C.panel, borderWidth: 1, borderColor: C.rule, borderRadius: RADIUS },
+  meter: { flexDirection: "row", alignItems: "center", gap: S.md, paddingVertical: 18, paddingHorizontal: S.lg, backgroundColor: C.panel, borderWidth: 1, borderColor: C.rule, borderRadius: RADIUS },
   clock: { fontFamily: FONT.mono, fontSize: 40, color: C.cream },
   box: { borderWidth: 1, borderColor: C.warn, borderRadius: RADIUS, padding: 10, backgroundColor: C.panel },
+  reason: { borderLeftWidth: 3, borderLeftColor: C.warn, paddingLeft: 10 },
   msg: { color: C.cream, fontSize: 14, lineHeight: 20 },
   input: { borderWidth: 1, borderColor: C.rule, borderRadius: RADIUS, backgroundColor: C.chassis, color: C.cream, paddingHorizontal: 10, paddingVertical: 10, fontSize: 15 },
 });

@@ -1,17 +1,23 @@
-// App state: the pairing (secure store), the cached library, the phone's own
-// note edits (kept across pairings), ideas and the outbox (AsyncStorage), and
-// the sync status. A tiny external store, read with useSyncExternalStore.
+// App state: the pairing (secure store), the cached library (a file), the
+// phone's own note edits (kept across pairings), ideas and the outbox
+// (AsyncStorage rows), and the sync status. A tiny external store, read with
+// useSyncExternalStore. How storage never loses a row: lib/persist.ts.
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 import { getRandomBytes } from "expo-crypto";
 import * as Device from "expo-device";
+import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import * as SecureStore from "expo-secure-store";
 import { useSyncExternalStore } from "react";
-import { createClient, SyncError, type SyncErrorCode, type Transport } from "./lib/client";
+import { probeTcp } from "../modules/hivo-share";
+import { CancelledError, createClient, SyncError, type SyncErrorCode, type Transport } from "./lib/client";
 import { carryOver, confirmedPairing, extrasBinding, waitForConfirmation } from "./lib/confirm";
+import { AUTO_REDISCOVER_MS, PROBE_TIMEOUT_MS, rediscover, withFound } from "./lib/discover";
 import { completePairing, computerIdOf } from "./lib/handshake";
 import type { PairOffer, Pairing } from "./lib/pairing";
-import { clip } from "./lib/text";
+import { clearCache, decodeEdits, decodeList, KEYS, loadAll, mergeById, mergeEdits, saveCache, saveRow, type KV, type LibraryCache, type Row } from "./lib/persist";
+import { onForeground } from "./lib/syncGate";
+import { clip, safeFileName } from "./lib/text";
 import { desktopIsOlder } from "./lib/update";
 import {
   cacheOf,
@@ -21,9 +27,9 @@ import {
   emptyState,
   forgetGone,
   keepEdits,
-  parseEdits,
   runSync,
   unsyncedText,
+  type Edits,
   type Kind,
   type SyncState,
 } from "./lib/sync";
@@ -32,10 +38,12 @@ import {
   applyIdeaStatuses,
   createIdea,
   deleteIdea,
+  dropEmptyIdeas,
   editIdea,
   ideaPayload,
   ideasToPush,
   newId,
+  parseIdea,
   parseIdeaResults,
   pruneIdeas,
   resetSent,
@@ -45,7 +53,9 @@ import {
 import {
   applyOutStatuses,
   KEEP_SENT_MS,
+  keepDraft,
   parseInboxStatuses,
+  parseOutItem,
   pruneOut,
   resetOut,
   retry,
@@ -53,21 +63,13 @@ import {
   type HoldReason,
   type OutFile,
   type OutItem,
+  type OutState,
   type OutType,
 } from "./lib/outbox";
-import { fileExists, readChunk, removeItemFiles, sweepOutbox } from "./files";
+import { dataFS, fileExists, readChunk, removeItemFiles, sweepOutbox, sweepRecordings } from "./files";
 
 const PAIRING_KEY = "hivo.pairing.v1";
-/** The library as the computer last sent it (big: every note). Per pairing. */
-const CACHE_KEY = "hivo.sync.v1";
-/** Note edits not on the computer yet, and notes of items it deleted: the
- * phone's own text, kept across unpairing and re-pairing. */
-const EDITS_KEY = "hivo.edits.v1";
-// Kept across unpairing: they're what was written and recorded on the phone.
-const IDEAS_KEY = "hivo.ideas.v1";
-const OUTBOX_KEY = "hivo.outbox.v1";
-/** The computer (device id) the ideas' and outbox's "sent" marks are for. */
-const BOUND_KEY = "hivo.extras.device.v1";
+const SENDING_AWAKE_TAG = "hivo-sending";
 
 /** Why ideas / memos / exports didn't go (notes may have synced fine). */
 export type ExtrasError = "outdated" | "demo" | HoldReason;
@@ -75,6 +77,9 @@ export type ExtrasError = "outdated" | "demo" | HoldReason;
 export type AppState = {
   loaded: boolean;
   pairing: Pairing | null;
+  /** The secure store couldn't be read (not "not paired"): show it with
+   * `retryPairingRead`, never the pairing screen. The pairing is still saved. */
+  pairingUnreadable: boolean;
   sync: SyncState;
   syncing: boolean;
   error: SyncErrorCode | null;
@@ -88,11 +93,18 @@ export type AppState = {
   desktopOutdated: boolean;
   /** Paired, waiting for the user to confirm on the computer that it shows this code. */
   confirming: { code: string; desktopName: string; startedAt: number } | null;
+  /** Looking for the computer at another address on the Wi-Fi (its address changed). */
+  rediscovering: boolean;
+  /** Storage trouble: rows that can't be read (kept, never written over) and
+   * whether the last save failed (storage full: everything stays in memory
+   * and is saved at the next try). */
+  storage: { blocked: Row[]; saveFailed: boolean };
 };
 
 let state: AppState = {
   loaded: false,
   pairing: null,
+  pairingUnreadable: false,
   sync: emptyState(),
   syncing: false,
   error: null,
@@ -103,6 +115,8 @@ let state: AppState = {
   sending: null,
   desktopOutdated: false,
   confirming: null,
+  rediscovering: false,
+  storage: { blocked: [], saveFailed: false },
 };
 let boundDevice: string | null = null;
 const listeners = new Set<() => void>();
@@ -124,24 +138,69 @@ export function useApp<T>(select: (s: AppState) => T): T {
   );
 }
 
-// Persistence of the cache, debounced (the note editor writes on every keystroke).
+const kv: KV = {
+  get: (k) => AsyncStorage.getItem(k),
+  set: (k, v) => AsyncStorage.setItem(k, v),
+  remove: (k) => AsyncStorage.removeItem(k),
+};
+
+// ---- Storage ----
+
+const blocked = new Set<Row>();
+function noteStorage(row: Row | null, result: { status: string }): void {
+  if (row) {
+    if (result.status === "ok") blocked.delete(row);
+    else if (result.status === "blocked") blocked.add(row);
+  }
+  const blockedNow = [...blocked];
+  const saveFailed = result.status === "failed";
+  if (saveFailed || blockedNow.join() !== state.storage.blocked.join() || state.storage.saveFailed !== saveFailed) setState({ storage: { blocked: blockedNow, saveFailed } });
+}
+
+// Persistence of the edits and the cache, debounced (the note editor writes on every keystroke).
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 function persistSoon(): void {
   if (persistTimer) clearTimeout(persistTimer);
   persistTimer = setTimeout(() => void flush(), 300);
 }
 
-/** Saves the phone's edits (always) and the library cache (when paired), in two rows. */
-export async function flush(): Promise<void> {
+/** The cache file's text as last written (it's rewritten only when it changed). */
+let lastCacheText: string | null = null;
+/** The cache parts last written, by identity: unchanged, nothing to compare. */
+let lastCacheParts: unknown[] = [];
+let saveChain: Promise<unknown> = Promise.resolve();
+
+/** One save at a time, in order (a later one always sees the latest state). */
+function serial(fn: () => Promise<void>): Promise<void> {
+  const next = saveChain.then(fn, fn);
+  saveChain = next.catch(() => {});
+  return next;
+}
+
+/** Saves the phone's edits (always, their own row) and the library cache
+ * (when paired, its own file, only when it changed). One failing never
+ * stops the other. Never throws. */
+export function flush(): Promise<void> {
   if (persistTimer) clearTimeout(persistTimer);
   persistTimer = null;
-  try {
-    const rows: [string, string][] = [[EDITS_KEY, JSON.stringify(editsOf(state.sync))]];
-    if (state.pairing) rows.push([CACHE_KEY, JSON.stringify(cacheOf(state.sync))]);
-    await AsyncStorage.multiSet(rows);
-  } catch (e) {
-    console.warn("Hivo: could not save the local cache", e);
-  }
+  return serial(async () => {
+    const edits = editsOf(state.sync);
+    const r = await saveRow<Edits>(kv, KEYS.edits, edits, { blocked: blocked.has("edits"), decode: decodeEdits, merge: mergeEdits, encode: (v) => JSON.stringify(v), now: Date.now() });
+    noteStorage("edits", r);
+    if (r.status === "ok" && r.value !== edits) setState({ sync: { ...state.sync, pending: r.value.pending, gone: r.value.gone } });
+    if (r.status === "failed") console.warn("Hivo: could not save the note edits", r.error);
+    if (!state.pairing) return;
+    const c = cacheOf(state.sync);
+    const parts = [c.items, c.conflicts, c.tooLong, c.helloDone, c.rebase, c.generatedAt, c.lastSyncAt];
+    if (parts.every((p, i) => p === lastCacheParts[i])) return;
+    try {
+      lastCacheText = await saveCache(kv, dataFS, c, lastCacheText);
+      lastCacheParts = parts;
+    } catch (e) {
+      console.warn("Hivo: could not save the library cache", e);
+      noteStorage(null, { status: "failed" });
+    }
+  });
 }
 
 function setSync(sync: SyncState): void {
@@ -156,18 +215,27 @@ function persistExtrasSoon(): void {
   extrasTimer = setTimeout(() => void flushExtras(), 300);
 }
 
-export async function flushExtras(): Promise<void> {
+/** Saves ideas, the outbox and the binding, each in its own row. A row that
+ * couldn't be read is never written over (read again first, then merged).
+ * Never throws. */
+export function flushExtras(): Promise<void> {
   if (extrasTimer) clearTimeout(extrasTimer);
   extrasTimer = null;
-  try {
-    await AsyncStorage.multiSet([
-      [IDEAS_KEY, JSON.stringify(state.ideas)],
-      [OUTBOX_KEY, JSON.stringify(state.outbox)],
-      [BOUND_KEY, boundDevice ?? ""],
-    ]);
-  } catch (e) {
-    console.warn("Hivo: could not save ideas and memos", e);
-  }
+  return serial(async () => {
+    const now = Date.now();
+    const ideas = state.ideas;
+    const ri = await saveRow<Idea[]>(kv, KEYS.ideas, ideas, { blocked: blocked.has("ideas"), decode: decodeList(parseIdea), merge: mergeById, encode: (v) => JSON.stringify(v), now });
+    noteStorage("ideas", ri);
+    if (ri.status === "ok" && ri.value !== ideas) setState({ ideas: mergeById(ri.value, state.ideas) });
+    const outbox = state.outbox;
+    const ro = await saveRow<OutItem[]>(kv, KEYS.outbox, outbox, { blocked: blocked.has("outbox"), decode: decodeList(parseOutItem), merge: mergeById, encode: (v) => JSON.stringify(v), now });
+    noteStorage("outbox", ro);
+    if (ro.status === "ok" && ro.value !== outbox) setState({ outbox: mergeById(ro.value, state.outbox) });
+    const rb = await saveRow<string>(kv, KEYS.bound, boundDevice ?? "", { blocked: blocked.has("bound"), decode: (raw) => raw ?? "", merge: (stored, mem) => mem || stored, encode: (v) => v, now });
+    noteStorage("bound", rb);
+    if (rb.status === "ok") boundDevice = rb.value || null;
+    for (const r of [ri, ro, rb]) if (r.status === "failed") console.warn("Hivo: could not save ideas and memos", r.error);
+  });
 }
 
 /** `now`: a new or removed record is saved at once (a kill must not lose it); edits are debounced. */
@@ -208,8 +276,14 @@ export function removeIdea(id: string): void {
 
 // ---- Outbox (memos and shared files) ----
 
-/** Adds files already moved into the outbox folder (files.ts `adopt`) as one item. */
-export function addOutItem(id: string, type: OutType, files: OutFile[], init: { title?: string; text?: string; target?: IdeaTarget | null; durationMs?: number | null } = {}): void {
+/** Adds files already moved into the outbox folder (files.ts `adopt`) as one
+ * item, saved at once. `state: "draft"`: a take not kept yet (never sent). */
+export function addOutItem(
+  id: string,
+  type: OutType,
+  files: OutFile[],
+  init: { title?: string; text?: string; target?: IdeaTarget | null; durationMs?: number | null; state?: Extract<OutState, "draft" | "waiting"> } = {},
+): void {
   const item: OutItem = {
     id,
     type,
@@ -219,7 +293,7 @@ export function addOutItem(id: string, type: OutType, files: OutFile[], init: { 
     createdAt: Date.now(),
     durationMs: init.durationMs ?? null,
     files,
-    state: "waiting",
+    state: init.state ?? "waiting",
     error: null,
     sentBytes: 0,
     status: null,
@@ -229,10 +303,25 @@ export function addOutItem(id: string, type: OutType, files: OutFile[], init: { 
   setOutbox([item, ...state.outbox], true);
 }
 
+/** Keep on a draft take (RecordScreen): named, aimed, queued, saved at once. */
+export function keepDraftOut(id: string, init: { title: string; target: IdeaTarget | null; fallbackName: string }): boolean {
+  const cur = state.outbox.find((i) => i.id === id);
+  if (!cur || cur.state !== "draft") return false;
+  const ext = /\.[a-z0-9]{1,5}$/i.exec(cur.files[0]?.name ?? "")?.[0] ?? ".m4a";
+  const fileName = safeFileName(`${init.title.trim() || init.fallbackName}${ext}`);
+  setOutbox(state.outbox.map((i) => (i.id === id ? keepDraft(i, { title: init.title.trim(), target: init.target, fileName }) : i)), true);
+  return true;
+}
+
+/** A draft's name and target as typed (saved soon: a kill keeps them too). */
+export function updateDraft(id: string, patch: { title?: string; target?: IdeaTarget | null }): void {
+  setOutbox(state.outbox.map((i) => (i.id === id && i.state === "draft" ? { ...i, ...(patch.title !== undefined ? { title: clip(patch.title, 200) } : {}), ...(patch.target !== undefined ? { target: patch.target } : {}) } : i)));
+}
+
 export const newOutId = randomId;
 
 export function retryOut(id: string): void {
-  setOutbox(state.outbox.map((i) => (i.id === id ? retry(i) : i)), true);
+  setOutbox(state.outbox.map((i) => (i.id === id && i.state === "failed" ? retry(i) : i)), true);
 }
 
 /** Removes an item from the phone (and its files). What the computer got stays there. */
@@ -247,79 +336,93 @@ function isPairing(v: unknown): v is Pairing {
   return typeof p.deviceId === "string" && typeof p.key === "string" && Array.isArray(p.hosts) && typeof p.port === "number" && typeof p.desktopName === "string";
 }
 
-function isCache(v: unknown): v is Omit<SyncState, "pending" | "gone"> {
-  if (!v || typeof v !== "object") return false;
-  const s = v as Record<string, unknown>;
-  return Array.isArray(s.items) && !!s.conflicts && typeof s.conflicts === "object";
-}
+/** The library read at launch, held while the pairing can't be read (applied once it can). */
+let heldCache: LibraryCache | null = null;
 
-/** Reads a JSON list; a row that doesn't parse is copied aside first, never
- * overwritten by an empty list at the next save. */
-async function readList<T extends { id: string }>(key: string, raw: string | null | undefined): Promise<T[] | null> {
-  if (!raw) return [];
+type PairingRead = { ok: true; pairing: Pairing | null } | { ok: false };
+async function readPairing(): Promise<PairingRead> {
+  let raw: string | null;
   try {
-    const v: unknown = JSON.parse(raw);
-    if (Array.isArray(v)) return (v as T[]).filter((x) => x && typeof x.id === "string");
-  } catch {
-    // Kept below.
-  }
-  console.warn(`Hivo: ${key} was unreadable; a copy is kept`);
-  await AsyncStorage.setItem(`${key}.corrupt.${Date.now()}`, raw).catch(() => {});
-  return null;
-}
-
-export async function load(): Promise<void> {
-  let pairing: Pairing | null = null;
-  let ideas: Idea[] = [];
-  let outbox: OutItem[] = [];
-  let edits = parseEdits(null);
-  let cacheRaw: string | null = null;
-  let outboxKnown = false;
-  try {
-    const rows = await AsyncStorage.multiGet([IDEAS_KEY, OUTBOX_KEY, BOUND_KEY, EDITS_KEY, CACHE_KEY]);
-    const [rawIdeas, rawOut, bound, rawEdits] = rows.map(([, v]) => v);
-    cacheRaw = rows[4][1];
-    ideas = (await readList<Idea>(IDEAS_KEY, rawIdeas)) ?? [];
-    // An upload cut by the app being killed: back to waiting.
-    const out = await readList<OutItem>(OUTBOX_KEY, rawOut);
-    outbox = (out ?? []).map((x) => (x.state === "sending" ? { ...x, state: "waiting" } : x));
-    outboxKnown = out !== null;
-    boundDevice = bound || null;
-    // Before the split (0.6.2), the edits lived inside the cache row.
-    const editsRaw = rawEdits ?? cacheRaw;
-    try {
-      edits = parseEdits(editsRaw ? JSON.parse(editsRaw) : null);
-    } catch {
-      if (editsRaw) await AsyncStorage.setItem(`${EDITS_KEY}.corrupt.${Date.now()}`, editsRaw).catch(() => {});
-    }
+    raw = await SecureStore.getItemAsync(PAIRING_KEY);
   } catch (e) {
-    console.warn("Hivo: could not read ideas and memos", e);
+    console.warn("Hivo: could not read the pairing", e);
+    return { ok: false };
   }
-  // Sent memos and filed ideas leave the phone after 30 days.
-  const now = Date.now();
-  const pruned = pruneOut(outbox, now);
-  for (const id of pruned.removed) removeItemFiles(id);
-  outbox = pruned.keep;
-  ideas = pruneIdeas(ideas, now, KEEP_SENT_MS);
-  // Files no item points to (an app killed between the copy and the save).
-  // Never when the list couldn't be read: its files are all there is.
-  if (outboxKnown) sweepOutbox(new Set(outbox.map((o) => o.id)));
-  setState({ ideas, outbox });
-  if (pruned.removed.length > 0) void flushExtras();
-
-  let sync = keepEdits(edits);
   try {
-    const raw = await SecureStore.getItemAsync(PAIRING_KEY);
     const parsed: unknown = raw ? JSON.parse(raw) : null;
-    pairing = isPairing(parsed) ? parsed : null;
-    if (pairing) {
-      const c: unknown = cacheRaw ? JSON.parse(cacheRaw) : null;
-      if (isCache(c)) sync = { ...emptyState(), ...c, pending: edits.pending, gone: edits.gone };
+    return { ok: true, pairing: isPairing(parsed) ? parsed : null };
+  } catch {
+    return { ok: true, pairing: null };
+  }
+}
+
+function syncFrom(edits: Edits, cache: LibraryCache | null): SyncState {
+  return cache ? { ...emptyState(), ...cache, pending: edits.pending, gone: edits.gone } : keepEdits(edits);
+}
+
+/** Reads everything; always ends with `loaded: true` (a crash here used to
+ * leave the spinner up for good). */
+export async function load(): Promise<void> {
+  try {
+    const now = Date.now();
+    const got = await loadAll(kv, dataFS, now);
+    for (const r of got.blocked) blocked.add(r);
+    if (got.blocked.length > 0 || got.dropped.length > 0) console.warn("Hivo: storage", { blocked: got.blocked, dropped: got.dropped });
+    boundDevice = got.bound;
+    // An upload cut by the app being killed: back to waiting.
+    let outbox = got.outbox.map((x) => (x.state === "sending" ? { ...x, state: "waiting" as const } : x));
+    // Sent memos and filed ideas leave the phone after 30 days.
+    const pruned = pruneOut(outbox, now);
+    for (const id of pruned.removed) removeItemFiles(id);
+    outbox = pruned.keep;
+    // Empty ideas a killed idea screen left behind.
+    const ideas = dropEmptyIdeas(pruneIdeas(got.ideas, now, KEEP_SENT_MS));
+    // Files no item points to (an app killed between the copy and the save).
+    // Never when the list couldn't be read whole: its files are all there is.
+    if (got.outboxClean && !blocked.has("outbox")) sweepOutbox(new Set(outbox.map((o) => o.id)));
+    // expo-audio's takes never adopted (killed while recording: unplayable).
+    sweepRecordings();
+    setState({ ideas, outbox, storage: { blocked: [...blocked], saveFailed: false } });
+    if (pruned.removed.length > 0 || ideas.length !== got.ideas.length || outbox.length !== got.outbox.length) void flushExtras();
+
+    const p = await readPairing();
+    if (!p.ok) {
+      heldCache = got.cache;
+      setState({ pairingUnreadable: true, sync: keepEdits(got.edits) });
+      return;
+    }
+    setState({ pairing: p.pairing, sync: p.pairing ? syncFrom(got.edits, got.cache) : keepEdits(got.edits) });
+    // What's on disk is what was just read: no rewrite until it changes.
+    if (p.pairing && got.cache) {
+      const c = cacheOf(state.sync);
+      lastCacheParts = [c.items, c.conflicts, c.tooLong, c.helloDone, c.rebase, c.generatedAt, c.lastSyncAt];
     }
   } catch (e) {
     console.warn("Hivo: could not read saved data", e);
+  } finally {
+    setState({ loaded: true });
   }
-  setState({ loaded: true, pairing, sync });
+}
+
+/** "Retry" after the pairing couldn't be read. True once it reads. */
+export async function retryPairingRead(): Promise<boolean> {
+  const p = await readPairing();
+  if (!p.ok) return false;
+  const sync = p.pairing && heldCache ? syncFrom(editsOf(state.sync), heldCache) : state.sync;
+  heldCache = null;
+  setState({ pairingUnreadable: false, pairing: p.pairing, sync });
+  if (p.pairing) void sync_();
+  return true;
+}
+
+/** "Reset this phone's cache" (the error screen): the library cache goes;
+ * the phone's note text, ideas, memos and the pairing stay. Works before
+ * `load` (the app may not have got that far). */
+export async function resetLocalCache(): Promise<void> {
+  await clearCache(kv, dataFS).catch((e) => console.warn("Hivo: could not clear the cache", e));
+  lastCacheText = null;
+  lastCacheParts = [];
+  setState({ sync: keepEdits(editsOf(state.sync)) });
 }
 
 let confirmCancelled = false;
@@ -329,13 +432,14 @@ export function cancelConfirmation(): void {
   confirmCancelled = true;
 }
 
+const transport: Transport = (url, init) => fetch(url, init);
+
 /** Checks a scanned pairing before keeping it: a v1.2 QR (an offer) pairs
  * with /v1/pair (the token works once), then waits while the user confirms
  * on the computer that it shows the same code as this phone (`confirming`);
  * an older computer's QR is checked with /v1/hello. Returns the pairing to
  * save, or why not (`code: null`: cancelled on the phone). */
 export async function verifyPairing(p: Pairing | PairOffer): Promise<{ ok: true; pairing: Pairing } | { ok: false; code: SyncErrorCode | null }> {
-  const transport: Transport = (url, init) => fetch(url, init);
   try {
     if ("token" in p) {
       const r = await completePairing(p, { transport, random: getRandomBytes, now: Date.now, phoneName: phoneName(), appVersion: appVersion() });
@@ -343,7 +447,7 @@ export async function verifyPairing(p: Pairing | PairOffer): Promise<{ ok: true;
       confirmCancelled = false;
       setState({ confirming: { code: r.code, desktopName: r.desktopName, startedAt: Date.now() } });
       try {
-        const call = createClient({ pairing: r.pairing, transport, random: getRandomBytes, now: Date.now });
+        const call = createClient({ pairing: r.pairing, transport, random: getRandomBytes, now: Date.now, probe: probeTcp });
         const sleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
         const done = await waitForConfirmation(call, { phoneName: phoneName(), appVersion: appVersion() }, { now: Date.now, sleep, startedAt: Date.now(), cancelled: () => confirmCancelled });
         return done.ok ? { ok: true, pairing: confirmedPairing(r.pairing, done.hello) } : done;
@@ -352,7 +456,7 @@ export async function verifyPairing(p: Pairing | PairOffer): Promise<{ ok: true;
       }
     }
     let bound = false;
-    const call = createClient({ pairing: p, transport, random: getRandomBytes, now: Date.now, onBound: () => (bound = true) });
+    const call = createClient({ pairing: p, transport, random: getRandomBytes, now: Date.now, probe: probeTcp, onBound: () => (bound = true) });
     const h = (await call("/v1/hello", { phoneName: phoneName(), appVersion: appVersion() })) as { desktopName?: unknown; computerId?: unknown } | null;
     const name = h && typeof h.desktopName === "string" && h.desktopName.trim() ? h.desktopName.trim().slice(0, 80) : p.desktopName;
     const computerId = computerIdOf(h?.computerId);
@@ -362,24 +466,37 @@ export async function verifyPairing(p: Pairing | PairOffer): Promise<{ ok: true;
   }
 }
 
+async function savePairing(p: Pairing): Promise<void> {
+  await SecureStore.setItemAsync(PAIRING_KEY, JSON.stringify(p)).catch((e) => console.warn("Hivo: could not save the pairing", e));
+}
+
 /** A pairing from before 1.2 got a bound answer: from now on only bound ones count. */
 async function markBound(deviceId: string): Promise<void> {
   const p = state.pairing;
   if (!p || p.deviceId !== deviceId || p.bound || p.scheme === "1.2") return;
   const updated: Pairing = { ...p, bound: true };
   setState({ pairing: updated });
-  await SecureStore.setItemAsync(PAIRING_KEY, JSON.stringify(updated)).catch((e) => console.warn("Hivo: could not save the pairing", e));
+  await savePairing(updated);
 }
 
 /** Saves a pairing (already verified: hello done). The same computer as
  * the current pairing (same computer id): its library and the notes waiting
  * to sync stay as they are. Another one: note edits made on the phone stay
- * and are re-based on its first snapshot. Ideas and memos: `runExtras`. */
+ * and are re-based on its first snapshot. Ideas and memos: `runExtras`.
+ * The old computer's cache is cleared before the new key is saved, so a kill
+ * in between can't open this computer's pairing on the other's library.
+ * Throws when the pairing can't be saved (nothing changed then). */
 export async function pair(p: Pairing): Promise<void> {
+  await cancelSync();
   const kept = carryOver(state.pairing, p, state.sync);
+  if (!kept.keepCache) {
+    await clearCache(kv, dataFS);
+    lastCacheText = null;
+    lastCacheParts = [];
+  }
   await SecureStore.setItemAsync(PAIRING_KEY, JSON.stringify(p));
-  if (!kept.keepCache) await AsyncStorage.removeItem(CACHE_KEY);
-  setState({ pairing: p, sync: kept.sync, error: null, errorDetail: null });
+  heldCache = null;
+  setState({ pairing: p, pairingUnreadable: false, sync: kept.sync, error: null, errorDetail: null });
   await flush();
 }
 
@@ -387,8 +504,11 @@ export async function pair(p: Pairing): Promise<void> {
 export async function unpair(): Promise<void> {
   if (persistTimer) clearTimeout(persistTimer);
   persistTimer = null;
+  await cancelSync();
   await SecureStore.deleteItemAsync(PAIRING_KEY);
-  await AsyncStorage.removeItem(CACHE_KEY);
+  await clearCache(kv, dataFS).catch((e) => console.warn("Hivo: could not clear the cache", e));
+  lastCacheText = null;
+  lastCacheParts = [];
   setState({ pairing: null, sync: keepEdits(editsOf(state.sync)), error: null, errorDetail: null, syncing: false });
   await flush();
 }
@@ -416,13 +536,25 @@ export function appVersion(): string {
   return Constants.expoConfig?.version ?? "0.0.0";
 }
 
+/** The screen stays on while something is being sent (Android freezes the
+ * request with the screen off, and the upload stalls). */
+let awake = false;
+function stayAwake(on: boolean): void {
+  if (on === awake) return;
+  awake = on;
+  if (on) void activateKeepAwakeAsync(SENDING_AWAKE_TAG).catch(() => {});
+  else void deactivateKeepAwake(SENDING_AWAKE_TAG).catch(() => {});
+}
+
 /**
  * After the notes: ideas, then the outbox (memos, exports), then what the
  * computer did with them. "outdated" (an older Hivo on the computer), "demo"
  * and a full inbox/disk stop only this part; offline & co. stop the sync.
- * One refused item fails on its own; the others still go.
+ * One refused item fails on its own; the others still go. Not run while the
+ * binding row can't be read (which computer has what is unknown then).
  */
-async function runExtras(call: (path: string, payload: unknown) => Promise<unknown>, pairing: Pairing): Promise<void> {
+async function runExtras(call: (path: string, payload: unknown) => Promise<unknown>, pairing: Pairing, live: () => boolean): Promise<void> {
+  if (blocked.has("bound")) return;
   // Another computer than last time: it has none of them yet. The same one
   // paired again (same computer id) has them: nothing goes twice.
   const binding = extrasBinding(boundDevice, pairing);
@@ -445,14 +577,19 @@ async function runExtras(call: (path: string, payload: unknown) => Promise<unkno
       lastPush = key;
       const results = parseIdeaResults(await call("/v1/ideas", { ideas: push.map(ideaPayload) }));
       if (!results) throw new SyncError("outdated", "bad ideas response");
+      if (!live()) throw new CancelledError();
       setIdeas(applyIdeaResults(state.ideas, push, results), true);
     }
     const io = { call, read: readChunk, exists: fileExists, sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)), now: Date.now };
     const held = await sendQueue(io, {
-      items: () => state.outbox,
-      onStart: (id) => setState({ sending: id }),
-      onUpdate: replaceOut,
+      items: () => (live() ? state.outbox : []),
+      onStart: (id) => {
+        stayAwake(true);
+        setState({ sending: id });
+      },
+      onUpdate: (i) => live() && replaceOut(i),
       onDone: (done) => {
+        if (!live()) return;
         // An export is on the computer now: free the phone (memos stay, to replay).
         if (done.state === "sent" && done.type === "sketch") {
           removeItemFiles(done.id);
@@ -461,7 +598,9 @@ async function runExtras(call: (path: string, payload: unknown) => Promise<unkno
       },
     });
     setState({ sending: null });
+    stayAwake(false);
     const statuses = parseInboxStatuses(await call("/v1/inbox", {}));
+    if (!live()) throw new CancelledError();
     setIdeas(applyIdeaStatuses(state.ideas, statuses));
     setOutbox(applyOutStatuses(state.outbox, statuses));
     setState({ extrasError: held });
@@ -469,54 +608,150 @@ async function runExtras(call: (path: string, payload: unknown) => Promise<unkno
     if (e instanceof SyncError && (e.code === "outdated" || e.code === "demo")) setState({ extrasError: e.code });
     else throw e;
   } finally {
+    stayAwake(false);
     setState({ sending: null, outbox: state.outbox.map((i) => (i.state === "sending" ? { ...i, state: "waiting" } : i)) });
     await flushExtras();
   }
 }
 
-/** Push queued notes, then pull the snapshot. Never throws: errors land in state. */
-export async function sync(): Promise<boolean> {
-  const pairing = state.pairing;
-  if (!pairing || state.syncing) return false;
-  setState({ syncing: true, error: null, errorDetail: null });
+/** The sync running now: cancelled by unpair / pair / a restart. */
+let current: { ctrl: AbortController; done: Promise<boolean>; startedAt: number } | null = null;
+let lastFinishedAt: number | null = null;
+let lastRediscoverAt = 0;
+
+/** Cancels the running sync (if any) and waits a little for it to wind down. */
+export async function cancelSync(): Promise<void> {
+  const c = current;
+  if (!c) return;
+  current = null;
+  again = false;
+  c.ctrl.abort();
+  setState({ syncing: false, sending: null });
+  stayAwake(false);
+  await Promise.race([c.done.catch(() => false), new Promise((r) => setTimeout(r, 5000))]);
+}
+
+/** Sealed hellos to every address of the old network; the pairing's hosts
+ * are updated when the computer answers at a new one. True when found. */
+async function findComputer(pairing: Pairing, signal: AbortSignal | null): Promise<boolean> {
+  setState({ rediscovering: true });
   try {
-    const call = createClient({ pairing, transport: (url, init) => fetch(url, init), random: getRandomBytes, now: Date.now, onBound: () => void markBound(pairing.deviceId) });
-    // Unpaired (or paired elsewhere) while this ran: its results belong to the old computer.
-    const stillPaired = () => state.pairing?.deviceId === pairing.deviceId;
+    const found = await rediscover(
+      pairing.hosts,
+      async (host, stop) => {
+        const ctrl = new AbortController();
+        const abort = () => ctrl.abort();
+        stop.addEventListener("abort", abort);
+        signal?.addEventListener("abort", abort);
+        try {
+          const call = createClient({ pairing: { ...pairing, hosts: [host] }, transport, random: getRandomBytes, now: Date.now, timeoutMs: PROBE_TIMEOUT_MS, signal: ctrl.signal });
+          await call("/v1/hello", { phoneName: phoneName(), appVersion: appVersion() });
+          return true;
+        } catch (e) {
+          // A sealed refusal is from the paired computer too (only it has the key).
+          return e instanceof SyncError && ["clock", "demo", "read-only", "pending"].includes(e.code);
+        } finally {
+          stop.removeEventListener("abort", abort);
+          signal?.removeEventListener("abort", abort);
+        }
+      },
+      { cancelled: () => signal?.aborted === true || state.pairing?.deviceId !== pairing.deviceId },
+    );
+    if (!found || state.pairing?.deviceId !== pairing.deviceId) return false;
+    const updated = { ...state.pairing, hosts: withFound(state.pairing.hosts, found) };
+    setState({ pairing: updated });
+    await savePairing(updated);
+    return true;
+  } finally {
+    setState({ rediscovering: false });
+  }
+}
+
+/** Settings → "Look for my computer again". True when found (a sync follows). */
+export async function lookForComputer(): Promise<boolean> {
+  const p = state.pairing;
+  if (!p || state.rediscovering) return false;
+  lastRediscoverAt = Date.now();
+  const found = await findComputer(p, null);
+  if (found) requestSync();
+  return found;
+}
+
+/** Push queued notes, then pull the snapshot. Never throws: errors land in state. */
+export function sync(): Promise<boolean> {
+  if (!state.pairing || current) return Promise.resolve(false);
+  return sync_();
+}
+
+function sync_(): Promise<boolean> {
+  const pairing = state.pairing;
+  if (!pairing || current) return Promise.resolve(false);
+  const ctrl = new AbortController();
+  const done = runOnce(pairing, ctrl);
+  current = { ctrl, done, startedAt: Date.now() };
+  return done;
+}
+
+async function runOnce(pairing: Pairing, ctrl: AbortController): Promise<boolean> {
+  // Let `current` be set before anything runs.
+  await Promise.resolve();
+  setState({ syncing: true, error: null, errorDetail: null });
+  // Cancelled (unpaired, paired elsewhere, restarted): its results belong to no one.
+  const live = () => !ctrl.signal.aborted && state.pairing?.deviceId === pairing.deviceId;
+  const finish = () => {
+    if (current?.ctrl === ctrl) {
+      current = null;
+      setState({ syncing: false });
+    }
+  };
+  try {
+    const call = createClient({ pairing, transport, random: getRandomBytes, now: Date.now, probe: probeTcp, signal: ctrl.signal, onBound: () => void markBound(pairing.deviceId) });
     // Once per app run (and per computer): hello again, so a version change on either side shows.
     const sayHello = helloedFor !== pairing.deviceId;
-    const res = await runSync(call, () => state.sync, (s) => stillPaired() && setSync(s), { phoneName: phoneName(), appVersion: appVersion() }, Date.now, { hello: sayHello });
-    if (!stillPaired()) {
-      setState({ syncing: false });
-      return false;
-    }
+    const res = await runSync(call, () => state.sync, (s) => live() && setSync(s), { phoneName: phoneName(), appVersion: appVersion() }, Date.now, { hello: sayHello });
+    if (!live()) throw new CancelledError();
     if (sayHello) helloedFor = pairing.deviceId;
     if (res.desktopVersion !== undefined) setState({ desktopOutdated: desktopIsOlder(res.desktopVersion, appVersion()) });
     // The computer's id, kept with the pairing (a computer updated since pairing says it now).
     if (res.computerId && state.pairing && state.pairing.computerId !== res.computerId) {
       const updated = { ...state.pairing, computerId: res.computerId };
       setState({ pairing: updated });
-      await SecureStore.setItemAsync(PAIRING_KEY, JSON.stringify(updated)).catch((e) => console.warn("Hivo: could not save the pairing", e));
+      await savePairing(updated);
     }
-    await runExtras(call, state.pairing ?? pairing);
+    await runExtras(call, state.pairing ?? pairing, live);
+    if (!live()) throw new CancelledError();
     if (res.desktopName && state.pairing && res.desktopName !== state.pairing.desktopName) {
       const updated = { ...state.pairing, desktopName: res.desktopName };
       setState({ pairing: updated });
-      await SecureStore.setItemAsync(PAIRING_KEY, JSON.stringify(updated));
+      await savePairing(updated);
     }
-    // The client tries the host that answered first for the rest of this
-    // sync; the saved order stays the desktop's (its best address first).
     await flush();
-    setState({ syncing: false });
+    lastFinishedAt = Date.now();
+    finish();
     if (again) {
       again = false;
       void sync();
     }
     return true;
   } catch (e) {
+    if (e instanceof CancelledError || !live()) {
+      finish();
+      return false;
+    }
     const code: SyncErrorCode = e instanceof SyncError ? e.code : "server";
     again = false;
-    setState({ syncing: false, error: code, errorDetail: e instanceof Error ? e.message : String(e) });
+    // No saved address answered: the computer may have a new one on the same Wi-Fi.
+    if ((code === "offline" || code === "off") && Date.now() - lastRediscoverAt > AUTO_REDISCOVER_MS) {
+      lastRediscoverAt = Date.now();
+      const found = await findComputer(pairing, ctrl.signal).catch(() => false);
+      if (found && live()) {
+        finish();
+        void sync();
+        return false;
+      }
+    }
+    if (current?.ctrl === ctrl) setState({ error: code, errorDetail: e instanceof Error ? e.message : String(e) });
+    finish();
     await flush();
     return false;
   }
@@ -529,6 +764,18 @@ let helloedFor: string | null = null;
 /** Sync now, or right after the one running (something new to send). */
 export function requestSync(): void {
   if (!state.pairing) return;
-  if (state.syncing) again = true;
+  if (current) again = true;
   else void sync();
+}
+
+/**
+ * The app came back to the screen: sync, unless one finished less than 30 s
+ * ago (F12); a sync stuck for over a minute (the screen went off mid-upload)
+ * is cancelled and a fresh one starts (B3). App.tsx calls this instead of
+ * `sync()` on "active".
+ */
+export function syncOnForeground(): void {
+  const action = onForeground({ paired: !!state.pairing, syncing: current !== null, startedAt: current?.startedAt ?? null, finishedAt: lastFinishedAt }, Date.now());
+  if (action === "sync") void sync();
+  else if (action === "restart") void cancelSync().then(() => void sync());
 }

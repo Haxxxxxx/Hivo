@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bandlabLinkIn, cleanTitle, fileNameFor, isOpaqueName, nameFromFile, shareText, titleFromShare } from "./shareMeta";
+import { bandlabLinkIn, cleanTitle, fileNameFor, isBandlabShare, isOpaqueName, nameFromFile, shareText, skippedLabel, titleFromShare } from "./shareMeta";
 
 describe("isOpaqueName", () => {
   it("spots provider ids, numbers and uuids", () => {
@@ -70,6 +70,28 @@ describe("fileNameFor", () => {
     expect(fileNameFor("msf_1.m4a", false, "Night: Drive", 1, 3)).toBe("Night Drive 2.m4a");
     expect(fileNameFor("msf_1000032969.m4a", false, "", 0, 1)).toBe("BandLab export.m4a");
     expect(fileNameFor("msf_1000032969", false, "Night Drive", 0, 1)).toBe("Night Drive");
+  });
+
+  it("keeps a picked file's real name even without a display name (F3), renames a bare number", () => {
+    expect(fileNameFor("Beat été test.wav", false, "", 0, 1, "Shared file")).toBe("Beat été test.wav");
+    expect(fileNameFor("19.wav", false, "", 0, 1, "Shared file")).toBe("Shared file.wav");
+  });
+});
+
+describe("share labels", () => {
+  it("BandLab only when it is one", () => {
+    expect(isBandlabShare("Listen on BandLab https://www.bandlab.com/track/x", null)).toBe(true);
+    expect(isBandlabShare(null, "BandLab")).toBe(true);
+    expect(isBandlabShare(null, null)).toBe(false);
+    expect(isBandlabShare("my beat", "Files")).toBe(false);
+  });
+
+  it("an unreadable item shows its name or 'Unnamed file', never a content id (P6)", () => {
+    expect(skippedLabel("19", false, "Unnamed file")).toBe("Unnamed file");
+    expect(skippedLabel("19", undefined, "Unnamed file")).toBe("Unnamed file");
+    expect(skippedLabel("", undefined, "Unnamed file")).toBe("Unnamed file");
+    expect(skippedLabel("msf_1000032969", true, "Unnamed file")).toBe("Unnamed file");
+    expect(skippedLabel("Night.wav", true, "Unnamed file")).toBe("Night.wav");
   });
 });
 

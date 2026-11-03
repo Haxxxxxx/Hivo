@@ -19,6 +19,13 @@ export function checksForDistribution(distribution: unknown): boolean {
   return distribution === "direct";
 }
 
+/** Whether Settings shows an update row at all: "Check for updates" on the
+ * website APK, "Updates: open Google Play" on the Play build. A dev build
+ * (or one without the flag) gets neither: it's from neither place. */
+export function hasUpdateRow(distribution: unknown): boolean {
+  return distribution === "direct" || distribution === "play";
+}
+
 export type Semver = readonly [major: number, minor: number, patch: number];
 
 /** "0.6.1" or "v0.6.1" → [0, 6, 1]; anything else (pre-releases included) → null. */

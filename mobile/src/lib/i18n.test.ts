@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { isOne, plural } from "./i18n";
+import { isOne, plural, sizeText } from "./i18n";
+
+describe("sizeText", () => {
+  it("speaks the app's language (F3: '345 KB' in French)", () => {
+    expect(sizeText(345 * 1024, "en")).toBe("345 KB");
+    expect(sizeText(345 * 1024, "fr")).toBe("345 Ko");
+    expect(sizeText(1.3 * 1024 * 1024, "fr")).toBe("1,3 Mo");
+    expect(sizeText(1.3 * 1024 * 1024, "en")).toBe("1.3 MB");
+    expect(sizeText(10, "en")).toBe("1 KB");
+  });
+});
 
 describe("plural", () => {
   it("matches Intl.PluralRules without needing it (Hermes has none)", () => {

@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Keyboard, KeyboardAvoidingView, Linking, ScrollView, StyleSheet, Text, TextInput, View, type TextInputInstance } from "react-native";
+import { c } from "../captureStrings";
 import { analyzeLyrics, lineAt } from "../lib/lyrics";
-import { Button, Engrave, Led } from "../components/ui";
 import { MiniPlayer } from "../components/MiniPlayer";
+import { ScreenHeader } from "../components/ScreenHeader";
+import { Button, Engrave, Led } from "../components/ui";
 import { canonicalUrl, youtubeId } from "../lib/youtube";
 import { tr } from "../lib/i18n";
 import { findItem, isGone, itemKey, MAX_NOTE_CHARS, noteFor, type Kind } from "../lib/sync";
 import { clearConflict, flush, removeGone, setNote, useApp } from "../store";
 import { T } from "../strings";
-import { s } from "../inboxStrings";
 import type { IdeaTarget } from "../lib/ideas";
-import { C, FONT, RADIUS } from "../theme";
+import { C, FONT, RADIUS, S } from "../theme";
+
+/** Where the computer put the phone's lines after a conflict (its marker line). */
+export const CONFLICT_MARKER = /^--- from .+ ---$/m;
 
 export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind; id: string; onBack: () => void; onRecord: (t: IdeaTarget) => void; onIdea: (t: IdeaTarget) => void }) {
   const item = useApp((s) => s.sync.gone[itemKey(kind, id)] ?? findItem(s.sync, kind, id));
@@ -23,8 +27,11 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
   const written = useRef(stored);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latest = useRef(text);
+  const input = useRef<TextInputInstance>(null);
   const [cursor, setCursor] = useState(0);
   const [counts, setCounts] = useState(false);
+  /** The keyboard is up: the header shrinks to Back + title so the cursor stays in view. */
+  const [typing, setTyping] = useState(false);
   const t = tr(T);
   const bpm = item?.bpm != null && item.bpm > 0 ? Math.round(item.bpm) : null;
   const stats = useMemo(() => analyzeLyrics(text, bpm), [text, bpm]);
@@ -34,6 +41,15 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
   /** The video in the docked player; one at a time, gone with the screen. */
   const [playing, setPlaying] = useState<string | null>(null);
   const closePlayer = useCallback(() => setPlaying(null), []);
+
+  useEffect(() => {
+    const show = Keyboard.addListener("keyboardDidShow", () => setTyping(true));
+    const hide = Keyboard.addListener("keyboardDidHide", () => setTyping(false));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
 
   // A sync replaced the note (merge, or edited on the computer): show it,
   // unless an autosave is about to land.
@@ -69,6 +85,18 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
     timer.current = setTimeout(save, 400);
   }
 
+  /** "Show": the cursor on the computer's marker line, the editor scrolled to it. */
+  function showConflict() {
+    const at = CONFLICT_MARKER.exec(text)?.index ?? -1;
+    if (at < 0) return;
+    setCounts(false);
+    setTimeout(() => {
+      input.current?.focus();
+      input.current?.setSelection(at, at);
+      setCursor(at);
+    }, 50);
+  }
+
   // Save when leaving the screen.
   useEffect(
     () => () => {
@@ -79,39 +107,39 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
   );
 
   const title = item?.title ?? id;
+  const facts = [item?.bpm != null ? `${Math.round(item.bpm)} BPM` : null, item?.key].filter(Boolean).join(" · ");
   return (
-    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <View style={styles.header}>
-        <Pressable onPress={onBack} hitSlop={10} accessibilityRole="button" style={{ paddingVertical: 4 }}>
-          <Text style={styles.back}>‹ {t.back}</Text>
-        </Pressable>
-        <Text style={styles.title} numberOfLines={2}>{title}</Text>
-        <View style={{ flexDirection: "row", alignItems: "center", marginTop: 4, flexWrap: "wrap" }}>
-          {item?.subtitle ? <Text style={styles.sub} numberOfLines={1}>{item.kind === "song" && item.stage ? t.stage[item.stage] ?? item.subtitle : item.subtitle}</Text> : null}
-          {item?.bpm != null || item?.key ? (
-            <Engrave style={{ marginLeft: item?.subtitle ? 10 : 0 }}>{[item?.bpm != null ? `${Math.round(item.bpm)} BPM` : null, item?.key].filter(Boolean).join(" · ")}</Engrave>
-          ) : null}
-        </View>
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
-          {item?.url && videoId ? (
-            // While it plays, the player has its own "Open in YouTube".
-            playing !== videoId ? (
-              <>
-                <Button label={t.playHere} onPress={() => setPlaying(videoId)} style={{ paddingVertical: 6 }} hitSlop={SLOP_6} />
-                <Button label={t.openInYoutube} onPress={() => void Linking.openURL(canonicalUrl(item.url as string)).catch(() => {})} style={{ paddingVertical: 6 }} hitSlop={SLOP_6} />
-              </>
-            ) : null
-          ) : item?.url ? (
-            <Button label={t.openLink} onPress={() => void Linking.openURL(item.url as string).catch(() => {})} style={{ paddingVertical: 6 }} hitSlop={SLOP_6} />
-          ) : null}
-          {item && !gone ? (
-            <>
-              <Button label={s().recordForThis} onPress={() => onRecord({ kind, id, title: item.title })} style={{ paddingVertical: 6 }} />
-              <Button label={s().ideaForThis} onPress={() => onIdea({ kind, id, title: item.title })} style={{ paddingVertical: 6 }} />
-            </>
-          ) : null}
-        </View>
-      </View>
+    // Android 15+ draws edge to edge: the window no longer shrinks for the keyboard, so pad on both.
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
+      <ScreenHeader title={title} onBack={onBack} titleLines={typing ? 1 : 2}>
+        {!typing ? (
+          <>
+            <View style={{ flexDirection: "row", alignItems: "center", marginTop: S.xs, flexWrap: "wrap" }}>
+              {item?.subtitle ? <Text style={styles.sub} numberOfLines={1}>{item.kind === "song" && item.stage ? t.stage[item.stage] ?? item.subtitle : item.subtitle}</Text> : null}
+              {facts ? <Engrave style={{ marginLeft: item?.subtitle ? 10 : 0 }}>{facts}</Engrave> : null}
+            </View>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: S.sm, marginTop: S.sm, paddingVertical: S.xs }}>
+              {item?.url && videoId ? (
+                // While it plays, the player has its own "Open in YouTube".
+                playing !== videoId ? (
+                  <>
+                    <Button label={t.playHere} onPress={() => setPlaying(videoId)} size="compact" />
+                    <Button label={t.openInYoutube} onPress={() => void Linking.openURL(canonicalUrl(item.url as string)).catch(() => {})} size="compact" />
+                  </>
+                ) : null
+              ) : item?.url ? (
+                <Button label={t.openLink} onPress={() => void Linking.openURL(item.url as string).catch(() => {})} size="compact" />
+              ) : null}
+              {item && !gone ? (
+                <>
+                  <Button label={c().recordFor(kind)} onPress={() => onRecord({ kind, id, title: item.title })} size="compact" />
+                  <Button label={c().ideaFor(kind)} onPress={() => onIdea({ kind, id, title: item.title })} size="compact" />
+                </>
+              ) : null}
+            </View>
+          </>
+        ) : null}
+      </ScreenHeader>
 
       {playing ? <MiniPlayer videoId={playing} onClose={closePlayer} /> : null}
 
@@ -119,7 +147,7 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
         <View style={[styles.conflict, { borderColor: C.missing }]}>
           <Led color={C.missing} size={7} />
           <Text style={styles.conflictText}>{t.goneBanner}</Text>
-          <Button label={t.removeFromPhone} variant="danger" onPress={remove} style={{ paddingVertical: 4, paddingHorizontal: 8, marginLeft: 6 }} hitSlop={SLOP_4} />
+          <Button label={t.removeFromPhone} variant="danger" onPress={remove} size="compact" style={{ marginLeft: 6 }} />
         </View>
       ) : null}
 
@@ -133,14 +161,15 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
       {conflictAt ? (
         <View style={styles.conflict}>
           <Led color={C.warn} size={7} />
-          <Text style={styles.conflictText}>{t.conflict}</Text>
-          <Button label={t.dismiss} variant="quiet" onPress={() => clearConflict(kind, id)} style={{ paddingVertical: 4, paddingHorizontal: 8 }} hitSlop={SLOP_4} />
+          <Text style={styles.conflictText}>{c().conflictMarked}</Text>
+          {CONFLICT_MARKER.test(text) ? <Button label={c().conflictShow} onPress={showConflict} size="compact" /> : null}
+          <Button label={t.dismiss} variant="quiet" onPress={() => clearConflict(kind, id)} size="compact" />
         </View>
       ) : null}
 
       {counts ? (
         // Read-only: each line with its syllables (headers set apart).
-        <ScrollView style={styles.editor} contentContainerStyle={{ paddingBottom: 12 }}>
+        <ScrollView style={styles.editor} contentContainerStyle={{ paddingBottom: S.md }}>
           {stats.lines.map((l, i) => (
             <View key={i} style={styles.countRow}>
               <Text style={[styles.countText, l.header && { color: C.body }]}>{l.text || " "}</Text>
@@ -150,6 +179,7 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
         </ScrollView>
       ) : (
         <TextInput
+          ref={input}
           value={text}
           onChangeText={onChange}
           onBlur={save}
@@ -169,7 +199,7 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
         <Engrave style={{ flex: 1 }}>
           {[!counts && text ? t.lineCount(curLine + 1, curCount) : null, stats.bars !== null && bpm !== null ? t.barsAt(stats.bars, bpm) : stats.syllables > 0 ? t.syllables(stats.syllables) : null].filter(Boolean).join("  ·  ")}
         </Engrave>
-        {text.trim() ? <Button label={counts ? t.hideCounts : t.showCounts} variant="quiet" onPress={() => setCounts((c) => !c)} style={{ paddingVertical: 2, paddingHorizontal: 8 }} hitSlop={SLOP_2} /> : null}
+        {text.trim() ? <Button label={counts ? t.hideCounts : t.showCounts} variant="quiet" onPress={() => setCounts((v) => !v)} size="compact" /> : null}
       </View>
       <View style={styles.footer}>
         <Led color={gone ? C.missing : pending || text !== written.current ? C.warn : C.ok} size={7} />
@@ -180,23 +210,14 @@ export function NoteScreen({ kind, id, onBack, onRecord, onIdea }: { kind: Kind;
   );
 }
 
-// Compact buttons keep their look; the touch area grows to 48 dp
-// (about 30 dp tall with 4 dp padding, 26 dp with 2 dp).
-const SLOP_6 = { top: 7, bottom: 7, left: 4, right: 4 };
-const SLOP_4 = { top: 9, bottom: 9, left: 4, right: 4 };
-const SLOP_2 = { top: 11, bottom: 11, left: 4, right: 4 };
-
 const styles = StyleSheet.create({
-  header: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 12, borderBottomWidth: 3, borderBottomColor: C.rule },
-  back: { color: C.body, fontSize: 15 },
-  title: { fontFamily: FONT.display, fontSize: 28, color: C.cream, textTransform: "uppercase", letterSpacing: 0.5, marginTop: 6 },
   sub: { color: C.body, fontSize: 14, flexShrink: 1 },
-  conflict: { flexDirection: "row", alignItems: "center", margin: 12, marginBottom: 0, padding: 10, borderWidth: 1, borderColor: C.warn, borderRadius: RADIUS, backgroundColor: C.panel },
-  conflictText: { color: C.cream, flex: 1, marginLeft: 8, fontSize: 13, lineHeight: 18 },
-  editor: { flex: 1, margin: 12, padding: 12, backgroundColor: C.panel, borderWidth: 1, borderColor: C.rule, borderRadius: RADIUS, color: C.cream, fontSize: 16, lineHeight: 23 },
-  stats: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingBottom: 4 },
-  countRow: { flexDirection: "row", alignItems: "flex-start", gap: 8 },
+  conflict: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6, margin: S.md, marginBottom: 0, padding: 10, borderWidth: 1, borderColor: C.warn, borderRadius: RADIUS, backgroundColor: C.panel },
+  conflictText: { color: C.cream, flex: 1, minWidth: 180, marginLeft: S.sm, fontSize: 13, lineHeight: 18 },
+  editor: { flex: 1, margin: S.md, padding: S.md, backgroundColor: C.panel, borderWidth: 1, borderColor: C.rule, borderRadius: RADIUS, color: C.cream, fontSize: 16, lineHeight: 23 },
+  stats: { flexDirection: "row", alignItems: "center", paddingHorizontal: S.lg, paddingBottom: S.xs, minHeight: 32 },
+  countRow: { flexDirection: "row", alignItems: "flex-start", gap: S.sm },
   countText: { flex: 1, color: C.cream, fontSize: 16, lineHeight: 23 },
   countNum: { color: C.engrave, fontFamily: FONT.mono, fontSize: 12, lineHeight: 23, minWidth: 20, textAlign: "right" },
-  footer: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingBottom: 10 },
+  footer: { flexDirection: "row", alignItems: "center", paddingHorizontal: S.lg, paddingBottom: 10 },
 });
