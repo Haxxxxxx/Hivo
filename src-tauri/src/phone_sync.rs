@@ -451,7 +451,8 @@ pub fn load_store(path: &Path) -> (SyncFile, Option<StoreProblem>) {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (SyncFile::default(), None),
         Err(e) => {
-            let message = format!("The paired phones (phone-sync.json) can't be read right now ({e}). Nothing is saved over them: fix that and restart Hivo.");
+            let detail = format!("The paired phones (phone-sync.json) can't be read right now ({e}). Nothing is saved over them: fix that and restart Hivo.");
+            let message = app_err("phone.storeUnreadable", detail).with("reason", e.to_string()).into();
             return (SyncFile::default(), Some(StoreProblem { message, blocks_saving: true }));
         }
     };
@@ -463,15 +464,13 @@ pub fn load_store(path: &Path) -> (SyncFile, Option<StoreProblem>) {
     let problem = match fs::rename(path, &bad) {
         Ok(()) => {
             let kept = bad.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            StoreProblem {
-                message: format!("The paired phones couldn't be read ({parse}), so every phone needs pairing again. The old file is kept as {kept} in Hivo's settings folder."),
-                blocks_saving: false,
-            }
+            let detail = format!("The paired phones couldn't be read ({parse}), so every phone needs pairing again. The old file is kept as {kept} in Hivo's settings folder.");
+            StoreProblem { message: app_err("phone.storeReset", detail).with("reason", parse.to_string()).with("name", kept).into(), blocks_saving: false }
         }
-        Err(e) => StoreProblem {
-            message: format!("The paired phones couldn't be read ({parse}) or moved aside ({e}). Nothing is saved over them: fix that and restart Hivo."),
-            blocks_saving: true,
-        },
+        Err(e) => {
+            let detail = format!("The paired phones couldn't be read ({parse}) or moved aside ({e}). Nothing is saved over them: fix that and restart Hivo.");
+            StoreProblem { message: app_err("phone.storeStuck", detail).with("reason", format!("{parse}; {e}")).into(), blocks_saving: true }
+        }
     };
     (SyncFile::default(), Some(problem))
 }
@@ -483,7 +482,7 @@ pub fn read_store(path: &Path) -> SyncFile {
 
 pub fn write_store(path: &Path, file: &SyncFile) -> Result<(), String> {
     let raw = serde_json::to_string_pretty(file).map_err(|e| e.to_string())?;
-    crate::cover::write_private(path, raw.as_bytes()).map_err(|e| format!("could not save phone sync settings: {e}"))
+    crate::cover::write_private(path, raw.as_bytes()).map_err(|e| app_err("phone.saveFailed", format!("could not save phone sync settings: {e}")).with("reason", e.to_string()).into())
 }
 
 /// A device paired the 1.1 way (16-byte id, 32-byte key that was in the QR),
@@ -509,6 +508,18 @@ pub fn add_device(file: &mut SyncFile, now: i64) -> Result<StoredDevice, String>
     Ok(device)
 }
 
+fn not_paired() -> String {
+    app_err("phone.notPaired", "That phone isn't paired any more.").into()
+}
+
+fn too_many_phones() -> String {
+    app_err("phone.tooMany", format!("{MAX_DEVICES} phones are paired already. Forget one first.")).with("max", MAX_DEVICES).into()
+}
+
+fn confirm_gone() -> String {
+    app_err("phone.confirmGone", "That phone isn't waiting for a confirmation any more: pair it again.").into()
+}
+
 /// A v1.2 pairing went through: the device with its derived key. A re-pair
 /// replaces the key in place (its name and what it sent stay; the old key
 /// stops working only now, so an abandoned re-pair QR breaks nothing).
@@ -523,10 +534,10 @@ pub fn complete_pairing(file: &mut SyncFile, id: &str, key: &[u8; 32], repair: b
         return Ok(());
     }
     if repair {
-        return Err("That phone isn't paired any more.".to_string());
+        return Err(not_paired());
     }
     if file.devices.len() >= MAX_DEVICES {
-        return Err(format!("{MAX_DEVICES} phones are paired already. Forget one first."));
+        return Err(too_many_phones());
     }
     file.devices.push(StoredDevice {
         id: id.to_string(),
@@ -749,6 +760,8 @@ pub struct Inner {
     error: Mutex<Option<String>>,
     /// What went wrong reading phone-sync.json at launch (`load_store`).
     store_problem: Mutex<Option<StoreProblem>>,
+    /// Held while the store is snapshotted and written (`persist`).
+    save_lock: Mutex<()>,
     pub inbox: Arc<crate::phone_inbox::Inbox>,
     /// The webview says so when it shows sample data: uploads are refused.
     demo: AtomicBool,
@@ -793,6 +806,7 @@ impl Inner {
         let replay = ReplayGuard::load(replay_log(&path), now_ms());
         Arc::new(Inner {
             store_problem: Mutex::new(problem),
+            save_lock: Mutex::new(()),
             inbox,
             demo: AtomicBool::new(false),
             path,
@@ -830,6 +844,15 @@ impl Inner {
         }
     }
 
+    /// Writes the current store. Callers drop their `store` guard first (lock
+    /// order: `save_lock`, then `store`): the snapshot is taken and written
+    /// under `save_lock`, so an older one never lands after a newer one.
+    fn persist(&self) -> Result<(), String> {
+        let _writing = lock(&self.save_lock);
+        let snapshot = lock(&self.store).clone();
+        self.save(&snapshot)
+    }
+
     fn save(&self, file: &SyncFile) -> Result<(), String> {
         let mut problem = lock(&self.store_problem);
         if let Some(p) = problem.as_ref().filter(|p| p.blocks_saving) {
@@ -851,9 +874,8 @@ impl Inner {
     fn expire_unseen(&self) {
         let mut store = lock(&self.store);
         if expire_unseen(&mut store, now_ms()) {
-            let snapshot = store.clone();
             drop(store);
-            if let Err(e) = self.save(&snapshot) {
+            if let Err(e) = self.persist() {
                 eprintln!("phone sync: {e}");
             }
         }
@@ -874,9 +896,8 @@ impl Inner {
             d.app_version = app_version;
         }
         if renamed || stale {
-            let snapshot = store.clone();
             drop(store);
-            if let Err(e) = self.save(&snapshot) {
+            if let Err(e) = self.persist() {
                 eprintln!("phone sync: {e}");
             }
         }
@@ -924,13 +945,13 @@ impl Inner {
         let id = match repair {
             Some(id) => {
                 if !lock(&self.store).devices.iter().any(|d| d.id == id) {
-                    return Err("That phone isn't paired any more.".to_string());
+                    return Err(not_paired());
                 }
                 id.to_string()
             }
             None => {
                 if lock(&self.store).devices.len() + self.new_confirming(now) >= MAX_DEVICES {
-                    return Err(format!("{MAX_DEVICES} phones are paired already. Forget one first."));
+                    return Err(too_many_phones());
                 }
                 B64.encode(random_bytes::<16>()?)
             }
@@ -968,7 +989,7 @@ impl Inner {
         let c = {
             let mut confirms = lock(&self.confirms);
             confirms.retain(|_, c| !c.expired(now));
-            confirms.remove(id).ok_or_else(|| "That phone isn't waiting for a confirmation any more: pair it again.".to_string())?
+            confirms.remove(id).ok_or_else(confirm_gone)?
         };
         let mut store = lock(&self.store);
         complete_pairing(&mut store, id, &c.key, c.repair, c.port, now)?;
@@ -980,9 +1001,8 @@ impl Inner {
                 d.app_version = c.app_version;
             }
         }
-        let snapshot = store.clone();
         drop(store);
-        self.save(&snapshot)
+        self.persist()
     }
 
     /// "Not my phone": the waiting pairing is dropped (a re-pair's old key
@@ -1005,9 +1025,8 @@ impl Inner {
             b
         }));
         store.computer_id = Some(id.clone());
-        let snapshot = store.clone();
         drop(store);
-        if let Err(e) = self.save(&snapshot) {
+        if let Err(e) = self.persist() {
             eprintln!("phone sync: {e}");
         }
         id
@@ -1065,7 +1084,7 @@ pub fn start(inner: &Arc<Inner>, host: Arc<dyn Host>, ip: IpAddr) -> Result<u16,
         .and_then(|p| tiny_http::Server::http(SocketAddr::new(ip, p)).ok())
         .map(Ok)
         .unwrap_or_else(|| tiny_http::Server::http(SocketAddr::new(ip, 0)))
-        .map_err(|e| format!("could not open a port for phone sync: {e}"))?;
+        .map_err(|e| -> String { app_err("phone.noPort", format!("could not open a port for phone sync: {e}")).with("reason", e.to_string()).into() })?;
     let port = server.server_addr().to_ip().map(|a| a.port()).ok_or("phone sync: no port")?;
     let server = Arc::new(server);
     let thread = {
@@ -1103,9 +1122,8 @@ pub fn start(inner: &Arc<Inner>, host: Arc<dyn Host>, ip: IpAddr) -> Result<u16,
     let mut store = lock(&inner.store);
     if store.port != Some(port) {
         note_port(&mut store, port);
-        let snapshot = store.clone();
         drop(store);
-        inner.save(&snapshot)?;
+        inner.persist()?;
     }
     Ok(port)
 }
@@ -1629,7 +1647,7 @@ fn status_of(inner: &Inner, desktop_version: &str) -> PhoneSyncStatus {
             })
             .collect(),
         // A file problem first: it outlasts a listener error.
-        error: lock(&inner.store_problem).as_ref().map(|p| p.message.clone()).or_else(|| lock(&inner.error).clone()),
+        error: lock(&inner.store_problem).as_ref().map(|p| p.message.clone()).or_else(|| inner.inbox.problem()).or_else(|| lock(&inner.error).clone()),
     }
 }
 
@@ -1729,9 +1747,8 @@ pub async fn phone_sync_enable(app: AppHandle, on: bool, lang: Option<String>) -
     {
         let mut store = lock(&inner.store);
         store.enabled = on;
-        let snapshot = store.clone();
         drop(store);
-        inner.save(&snapshot)?;
+        inner.persist()?;
     }
     if on {
         start_for_app(&app, &inner)?;
@@ -1798,9 +1815,8 @@ pub fn phone_sync_forget(app: AppHandle, device_id: String) -> Result<PhoneSyncS
     let inner = state_inner(&app)?;
     let mut store = lock(&inner.store);
     if forget_device(&mut store, &device_id) {
-        let snapshot = store.clone();
         drop(store);
-        inner.save(&snapshot)?;
+        inner.persist()?;
     }
     // A QR still up for it, or a pairing waiting for "Confirm", stops working too.
     lock(&inner.pairs).remove(&device_id);
@@ -1826,7 +1842,7 @@ pub async fn phone_sync_confirm(app: AppHandle, device_id: String, accept: bool,
         confirms.get(&device_id).map(|c| c.code.clone())
     };
     let Some(code) = code else {
-        return Err(app_err("phone.confirmGone", "That phone isn't waiting for a confirmation any more: pair it again.").into());
+        return Err(confirm_gone());
     };
     if confirm(&app, Confirm::Code(code), lang.as_deref()).await {
         inner.confirm_pair(&device_id, now_ms())?;
