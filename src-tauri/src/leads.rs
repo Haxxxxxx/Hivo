@@ -150,12 +150,15 @@ pub fn lead_markdown(lead: &Lead, date: &str) -> String {
 }
 
 /// Writes the lead into `<folder>/_leads/` (created if needed), overwriting
-/// an earlier save of the same url. Returns the file's path.
+/// an earlier save of the same url. Returns the file's path. Never through a
+/// symlink: a linked `_leads` folder or lead file is refused (`kits.rs` rules).
 pub fn write_lead(folder: &Path, lead: &Lead, date: &str) -> Result<PathBuf, String> {
-    let dir = folder.join(LEADS_DIR);
-    fs::create_dir_all(&dir).map_err(|e| path_err("io.create", &dir, format!("couldn't create {}: {e}", dir.display())))?;
+    let dir = crate::kits::sub_dir(folder, LEADS_DIR)?;
     let path = dir.join(lead_file_name(lead));
-    fs::write(&path, lead_markdown(lead, date)).map_err(|e| path_err("io.write", &path, format!("couldn't write {}: {e}", path.display())))?;
+    if crate::kits::is_link(&path) {
+        return Err(path_err("io.link", &path, format!("{} is a link: refusing to write through it", path.display())));
+    }
+    crate::kits::write_new(&path, lead_markdown(lead, date).as_bytes()).map_err(|e| path_err("io.write", &path, format!("couldn't write {}: {e}", path.display())))?;
     Ok(path)
 }
 
@@ -411,6 +414,32 @@ mod tests {
         assert!(l.is_err(), "unknown source");
         let l: Result<Lead, _> = serde_json::from_str(r#"{"url":"https://a.b/c","title":"t","producer":"","year":"","source":"web","traits":[],"path":"/etc"}"#);
         assert!(l.is_err(), "unknown field");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn never_writes_through_a_link() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("hivo-leads-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (beats, elsewhere) = (root.join("beats"), root.join("elsewhere"));
+        fs::create_dir_all(&beats).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        // A linked `_leads` folder.
+        symlink(&elsewhere, beats.join(LEADS_DIR)).unwrap();
+        assert!(write_lead(&beats, &lead(), "2026-10-24").is_err());
+        assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0, "nothing written through the link");
+        // A linked lead file in a real `_leads` folder.
+        fs::remove_file(beats.join(LEADS_DIR)).unwrap();
+        fs::create_dir_all(beats.join(LEADS_DIR)).unwrap();
+        let target = elsewhere.join("target.md");
+        fs::write(&target, "keep").unwrap();
+        symlink(&target, beats.join(LEADS_DIR).join(lead_file_name(&lead()))).unwrap();
+        let refused = write_lead(&beats, &lead(), "2026-10-24");
+        let kept = fs::read_to_string(&target).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        assert!(refused.is_err());
+        assert_eq!(kept, "keep");
     }
 
     #[test]

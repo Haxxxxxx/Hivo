@@ -11,6 +11,7 @@
 
 use crate::error::app_err;
 use crate::actions::validate_name;
+use crate::phone_sync::StoreProblem;
 use crate::sketch::{is_sketch_audio, SKETCH_DIR};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use base64::Engine;
@@ -237,9 +238,49 @@ fn stored_name(index: usize, name: &str) -> String {
 
 // ---- The store ----
 
+/// The index, or an empty one when there's no file. Like `phone-sync.json`
+/// (`phone_sync::load_store`): a file that can't be read is left alone and
+/// blocks saving; one that doesn't parse is kept as `index.json.bad-<ms>`
+/// (never over an older one) and the inbox starts empty.
+fn load_index(path: &Path) -> (IndexFile, Option<StoreProblem>) {
+    let raw = match fs::read(path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return (IndexFile::default(), None),
+        Err(e) => {
+            let detail = format!("The phone inbox (phone-inbox/index.json) can't be read right now ({e}). Nothing is saved over it: fix that and restart Hivo.");
+            let message = app_err("phone.inboxUnreadable", detail).with("reason", e.to_string()).into();
+            return (IndexFile::default(), Some(StoreProblem { message, blocks_saving: true }));
+        }
+    };
+    let parse = match serde_json::from_slice(&raw) {
+        Ok(index) => return (index, None),
+        Err(e) => e,
+    };
+    let bad = crate::workspace::bad_path(path);
+    let problem = match fs::rename(path, &bad) {
+        Ok(()) => {
+            let kept = bad.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let detail = format!("The phone inbox couldn't be read ({parse}), so it starts empty. The old list is kept as {kept} in Hivo's settings folder (phone-inbox).");
+            StoreProblem { message: app_err("phone.inboxReset", detail).with("reason", parse.to_string()).with("name", kept).into(), blocks_saving: false }
+        }
+        Err(e) => {
+            let detail = format!("The phone inbox couldn't be read ({parse}) or moved aside ({e}). Nothing is saved over it: fix that and restart Hivo.");
+            StoreProblem { message: app_err("phone.inboxStuck", detail).with("reason", format!("{parse}; {e}")).into(), blocks_saving: true }
+        }
+    };
+    (IndexFile::default(), Some(problem))
+}
+
 pub struct Inbox {
     root: PathBuf,
     items: Mutex<Vec<InboxItem>>,
+    /// Taken before `items` for every write of the index (`persist`): the
+    /// snapshot is cloned and written under it, so an older snapshot from
+    /// another request thread never lands after a newer one.
+    save_lock: Mutex<()>,
+    /// What went wrong reading `index.json` at launch (`load_index`), shown
+    /// in Settings → Phone sync until a save works.
+    problem: Mutex<Option<StoreProblem>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -253,10 +294,18 @@ impl Inbox {
     /// Reads the index (nothing is created until the first write) and drops
     /// uploads older than a week that never finished.
     pub fn open(root: PathBuf) -> Inbox {
-        let index: IndexFile = fs::read_to_string(root.join("index.json")).ok().and_then(|r| serde_json::from_str(&r).ok()).unwrap_or_default();
-        let inbox = Inbox { root, items: Mutex::new(index.items) };
+        let (index, problem) = load_index(&root.join("index.json"));
+        if let Some(p) = &problem {
+            eprintln!("phone inbox: {}", crate::error::detail_of(&p.message));
+        }
+        let inbox = Inbox { root, items: Mutex::new(index.items), save_lock: Mutex::new(()), problem: Mutex::new(problem) };
         inbox.drop_stale(now_ms());
         inbox
+    }
+
+    /// The index problem found at launch, while no save has worked since.
+    pub fn problem(&self) -> Option<String> {
+        lock(&self.problem).as_ref().map(|p| p.message.clone())
     }
 
     pub fn files_dir(&self) -> PathBuf {
@@ -267,10 +316,25 @@ impl Inbox {
         self.files_dir().join(id)
     }
 
+    /// Writes the current items. Callers drop their `items` guard first (lock
+    /// order: `save_lock`, then `items`).
+    fn persist(&self) -> Result<(), String> {
+        let _writing = lock(&self.save_lock);
+        let snapshot = lock(&self.items).clone();
+        self.save(&snapshot)
+    }
+
     fn save(&self, items: &[InboxItem]) -> Result<(), String> {
+        let mut problem = lock(&self.problem);
+        // Plain, like the other save errors (they reach phones too).
+        if let Some(p) = problem.as_ref().filter(|p| p.blocks_saving) {
+            return Err(crate::error::detail_of(&p.message));
+        }
         fs::create_dir_all(&self.root).map_err(|e| io_error(&e, "could not create the phone inbox"))?;
         let raw = serde_json::to_vec(&IndexFile { items: items.to_vec() }).map_err(|e| e.to_string())?;
-        crate::cover::write_private(&self.root.join("index.json"), &raw).map_err(|e| io_error(&e, "could not save the phone inbox"))
+        crate::cover::write_private(&self.root.join("index.json"), &raw).map_err(|e| io_error(&e, "could not save the phone inbox"))?;
+        *problem = None;
+        Ok(())
     }
 
     /// Drops uploads that haven't moved for `PARTIAL_TTL_MS` (at start and
@@ -287,9 +351,8 @@ impl Inbox {
         if items.len() == before {
             return false;
         }
-        let snapshot = items.clone();
         drop(items);
-        let _ = self.save(&snapshot);
+        let _ = self.persist();
         true
     }
 
@@ -384,9 +447,8 @@ impl Inbox {
             results.push(json!({ "id": item_id, "status": "stored", "filedTo": null }));
         }
         if changed {
-            let snapshot = items.clone();
             drop(items);
-            self.save(&snapshot)?;
+            self.persist()?;
         }
         Ok(json!({ "results": results }))
     }
@@ -489,9 +551,8 @@ impl Inbox {
                 0
             }
         };
-        let snapshot = items.clone();
         drop(items);
-        self.save(&snapshot)?;
+        self.persist()?;
         Ok(json!({ "offset": offset }))
     }
 
@@ -566,9 +627,8 @@ impl Inbox {
         }
         let received = item.files.iter().filter(|f| f.complete).count();
         let of = item.file_count;
-        let snapshot = items.clone();
         drop(items);
-        self.save(&snapshot)?;
+        self.persist()?;
         Ok((json!({ "status": if ready { "stored" } else { "waiting" }, "received": received, "of": of }), ready && !was_ready))
     }
 
@@ -675,9 +735,8 @@ impl Inbox {
         if status != Status::Filed {
             item.filed_as = None;
         }
-        let snapshot = items.clone();
         drop(items);
-        self.save(&snapshot)
+        self.persist()
     }
 
     /// Files an item in two steps that can't leave it half done: it's marked
@@ -695,9 +754,8 @@ impl Inbox {
             item.filed_as = Some(filed_as.to_string());
             // Where this filing copies to (None: the copy is `filed_to` itself).
             item.copied_to = copied_to;
-            let snapshot = items.clone();
             drop(items);
-            if let Err(e) = self.save(&snapshot) {
+            if let Err(e) = self.persist() {
                 self.put_back(before);
                 return Err(e);
             }
@@ -712,9 +770,8 @@ impl Inbox {
         if let Some(item) = items.iter_mut().find(|i| i.id == before.id) {
             *item = before;
         }
-        let snapshot = items.clone();
         drop(items);
-        let _ = self.save(&snapshot);
+        let _ = self.persist();
     }
 
     /// Removes the item and its files from the inbox (an item still arriving
@@ -727,9 +784,8 @@ impl Inbox {
             return Ok(());
         }
         let _ = fs::remove_dir_all(self.item_dir(id));
-        let snapshot = items.clone();
         drop(items);
-        self.save(&snapshot)
+        self.persist()
     }
 
     /// "File as a new song": `<parent>/<name>/BandLab/` with the audio (zips
@@ -1499,5 +1555,52 @@ mod tests {
         #[cfg(unix)]
         assert_eq!(io_error(&io::Error::from_raw_os_error(28), "x"), "disk full");
         assert!(io_error(&io::Error::from(io::ErrorKind::PermissionDenied), "could not write").starts_with("could not write"));
+    }
+
+    #[test]
+    fn concurrent_saves_keep_the_latest_state() {
+        let d = temp("race");
+        let inbox = std::sync::Arc::new(Inbox::open(d.0.clone()));
+        let threads: Vec<_> = (0..8)
+            .map(|t| {
+                let inbox = inbox.clone();
+                std::thread::spawn(move || {
+                    for i in 0..15 {
+                        inbox.push_ideas("dev", "Pixel", &json!({ "ideas": [{ "id": format!("t{t}i{i}"), "title": "x", "updatedAt": 1 }] }), 1).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        // The file on disk is the last state, not an older snapshot written late.
+        assert_eq!(Inbox::open(d.0.clone()).list().len(), 120);
+    }
+
+    #[test]
+    fn a_broken_index_is_set_aside_and_an_unreadable_one_blocks_saving() {
+        let d = temp("badindex");
+        fs::write(d.0.join("index.json"), "not json").unwrap();
+        let inbox = Inbox::open(d.0.clone());
+        assert!(inbox.list().is_empty());
+        let problem = inbox.problem().expect("reported");
+        assert_eq!(crate::error::code_of(&problem).as_deref(), Some("phone.inboxReset"));
+        let kept: Vec<_> = fs::read_dir(&d.0).unwrap().filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().starts_with("index.json.bad-")).collect();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(fs::read(kept[0].path()).unwrap(), b"not json", "the broken file is kept");
+        // A save works and clears the note.
+        inbox.push_ideas("dev", "Pixel", &json!({ "ideas": [{ "id": "i1", "title": "x", "updatedAt": 1 }] }), 1).unwrap();
+        assert_eq!(inbox.problem(), None);
+        assert_eq!(Inbox::open(d.0.clone()).list().len(), 1);
+        // Can't be read at all (a folder in its place): left alone, saving refused.
+        let blocked = d.0.join("blocked");
+        fs::create_dir_all(blocked.join("index.json")).unwrap();
+        let inbox = Inbox::open(blocked.clone());
+        assert_eq!(inbox.problem().and_then(|p| crate::error::code_of(&p)).as_deref(), Some("phone.inboxUnreadable"));
+        assert!(inbox.push_ideas("dev", "Pixel", &json!({ "ideas": [{ "id": "i1", "title": "x", "updatedAt": 1 }] }), 1).is_err());
+        assert!(blocked.join("index.json").is_dir(), "nothing written over it");
+        // No file at all is just empty.
+        assert_eq!(Inbox::open(d.0.join("fresh")).problem(), None);
     }
 }

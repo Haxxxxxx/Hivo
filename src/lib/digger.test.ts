@@ -30,6 +30,10 @@ describe("digger links", () => {
     expect(foundKey({ text: " ", site: "youtube.com", url: "https://www.youtube.com/watch?v=aaaaaaaaaaa" })).toBe("https://www.youtube.com/watch?v=aaaaaaaaaaa | youtube.com");
     expect(deeperExclude([{ text: "", site: "youtube.com", url: "https://a.example/1" }, { text: "", site: "youtube.com", url: "https://a.example/2" }], []).length).toBe(2);
     expect(foundKey(l("x".repeat(300))).length).toBe(120);
+    // Shared with `long_keys_match_the_webview` in digger.rs: code points, no ellipsis.
+    const long = foundKey({ text: `${"A".repeat(100)}\u{1F525}${"b".repeat(29)}`, site: "YouTube.com" });
+    expect(long).toBe(`${"a".repeat(100)}\u{1F525}${"b".repeat(19)}`);
+    expect(Array.from(long).length).toBe(120);
     expect(deeperExclude([l("A"), l("B")], [[l("b"), l("C")], [l("D")]])).toEqual(["a | beatstars", "b | beatstars", "c | beatstars", "d | beatstars"]);
     const many = Array.from({ length: 70 }, (_, i) => l(`Beat ${i}`));
     expect(deeperExclude(many, []).length).toBe(MAX_EXCLUDE);

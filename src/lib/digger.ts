@@ -30,7 +30,8 @@ const MAX_KEY_CHARS = 120;
 export function foundKey(link: { text: string; site: string; url?: string }): string {
   const text = link.text.trim();
   const head = text || (link.url ?? "").trim();
-  return `${head} | ${link.site.trim()}`.toLowerCase().slice(0, MAX_KEY_CHARS);
+  // Cut on code points, then lowercase: the same as `cut_key` in Rust (no ellipsis).
+  return Array.from(`${head} | ${link.site.trim()}`).slice(0, MAX_KEY_CHARS).join("").toLowerCase();
 }
 
 type Keyed = { text: string; site: string; url?: string };
