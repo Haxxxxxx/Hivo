@@ -1,9 +1,10 @@
+import { getRandomBytes } from "expo-crypto";
 import { useEffect, useMemo, useState } from "react";
 import { AppState, Keyboard, Linking, StyleSheet, Text, View } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import type { ShouldStartLoadRequest, WebViewOpenWindowEvent } from "react-native-webview/lib/WebViewTypes";
 import { lang, tr } from "../lib/i18n";
-import { externalUrl, fromPlayerPage, navDecision, parsePlayerMessage, PLAYER_LOAD_TIMEOUT_MS, playerUrl, problemFor, type PlayerProblem } from "../lib/youtube";
+import { externalUrl, fromPlayerPage, navDecision, parsePlayerMessage, PLAYER_LOAD_TIMEOUT_MS, playerKey, playerUrl, problemFor, type PlayerProblem } from "../lib/youtube";
 import { T } from "../strings";
 import { C, RADIUS } from "../theme";
 import { Button, Led, Spinner } from "./ui";
@@ -21,7 +22,9 @@ const SMALL_H = 108;
  */
 export function MiniPlayer({ videoId, onClose }: { videoId: string; onClose: () => void }) {
   const t = tr(T);
-  const page = useMemo(() => playerUrl(videoId, lang()), [videoId]);
+  // Only messages signed with this player's key are read (review #18).
+  const key = useMemo(() => playerKey(getRandomBytes), []);
+  const page = useMemo(() => playerUrl(videoId, lang(), key), [videoId, key]);
   const watch = `https://www.youtube.com/watch?v=${videoId}`;
   const [big, setBig] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -67,7 +70,7 @@ export function MiniPlayer({ videoId, onClose }: { videoId: string; onClose: () 
 
   function onMessage(e: WebViewMessageEvent) {
     if (!fromPlayerPage(e.nativeEvent.url)) return;
-    const m = parsePlayerMessage(e.nativeEvent.data);
+    const m = parsePlayerMessage(e.nativeEvent.data, key);
     if (m?.type === "error") setProblem({ kind: problemFor(m.code), code: m.code });
   }
 

@@ -1,7 +1,9 @@
 // What the phone keeps between runs, and how it never loses it.
 //
-// - Small rows in AsyncStorage, each read on its own: ideas, the outbox (memo
-//   and export records), the extras binding and the phone's note edits. One
+// - Small rows in AsyncStorage, each read on its own: the outbox (memo and
+//   export records) and the extras binding. Ideas and the phone's note edits
+//   are files since 0.8.0 (`withFile`: up to 20,000 characters each, a few
+//   dozen of them made a row over the 2 MB cursor window: review #9). One
 //   row that can't be read is flagged (`blocked`) and never written over: its
 //   content may still be there, and an empty list saved on top of it would
 //   wipe unsent ideas and, at the next launch, the memo files (the outbox
@@ -34,6 +36,9 @@ export const KEYS = {
 
 /** The library cache, in the app's documents. */
 export const CACHE_FILE = "library-cache.json";
+
+/** Ideas and note edits, in the app's documents (their rows before 0.8.0). */
+export const ROW_FILES = { [KEYS.ideas]: "ideas.json", [KEYS.edits]: "edits.json" } as const;
 
 export type Row = "ideas" | "outbox" | "bound" | "edits";
 
@@ -126,6 +131,42 @@ export async function readAtomic(fs: FS, name: string): Promise<Read> {
     return { ok: false, error };
   }
 }
+
+/**
+ * `kv` with one key kept in a file instead of its row. Read: the file, else
+ * the old row while it's still there (a kill during the first write, between
+ * the move's delete and its rename, finds the row, which still holds the
+ * last save), else the temp file; an unreadable file or row throws, so the
+ * caller's "blocked, never written over" holds for both. Write: the file
+ * (atomic), then the old row goes, so the file is the only copy from the
+ * first good save on (a remove that fails fails the save: tried again).
+ * Every other key is the plain row.
+ */
+export function withFile(kv: KV, fs: FS, key: string, file: string): KV {
+  return {
+    async get(k) {
+      if (k !== key) return kv.get(k);
+      const main = await fs.read(file);
+      if (main !== null) return main;
+      return (await kv.get(key)) ?? (await fs.read(tmpOf(file)));
+    },
+    async set(k, v) {
+      if (k !== key) return kv.set(k, v);
+      await writeAtomic(fs, file, v);
+      await kv.remove(key);
+    },
+    async remove(k) {
+      if (k !== key) return kv.remove(k);
+      await fs.remove(tmpOf(file));
+      await fs.remove(file);
+      await kv.remove(key);
+    },
+  };
+}
+
+/** The phone's storage: rows, with ideas and edits in their files. */
+export const phoneKV = (kv: KV, fs: FS): KV =>
+  Object.entries(ROW_FILES).reduce<KV>((acc, [key, file]) => withFile(acc, fs, key, file), kv);
 
 const marks = (v: unknown): Record<string, number> => {
   const out: Record<string, number> = {};

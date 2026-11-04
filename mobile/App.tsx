@@ -298,9 +298,12 @@ export default function App() {
     // Shared while Hivo is open (registered first: a share can start copying right away).
     const share = onShare(showShare);
     const start = onShareStart(() => setCopying(true));
+    // A link that comes while the phone's data is still loading is asked about once it's loaded.
+    let early: string | null = null;
     void load().then(async () => {
       if (getState().pairing) void sync();
-      pairFromLink(await Linking.getInitialURL());
+      const initial = await Linking.getInitialURL().catch(() => null);
+      pairFromLink(early ?? initial);
       // Started by "Share to Hivo".
       const shared = await takeShared().catch(() => null);
       setCopying(false);
@@ -311,6 +314,7 @@ export default function App() {
     });
     const link = Linking.addEventListener("url", ({ url }) => {
       if (getState().loaded) pairFromLink(url);
+      else early = url;
     });
     // Sync when the app comes back; save the cache when it leaves.
     const sub = AppState.addEventListener("change", (st) => {

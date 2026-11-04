@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { EMBED_PAGE, PLAYER_LOAD_TIMEOUT_MS, canonicalUrl, externalUrl, fromPlayerPage, navDecision, parsePlayerMessage, playerUrl, problemFor, samePage, youtubeId } from "./youtube";
+import { EMBED_PAGE, PLAYER_LOAD_TIMEOUT_MS, canonicalUrl, externalUrl, fromPlayerPage, navDecision, parsePlayerMessage, playerKey, playerUrl, problemFor, samePage, youtubeId } from "./youtube";
+
+const K = "0123456789abcdef0123456789abcdef";
 // The desktop module (pure; only a type import): the phone must read ids and links exactly like it.
 import { canonicalUrl as desktopCanonicalUrl, embedUrl as desktopEmbedUrl, youtubeId as desktopYoutubeId } from "../../../src/lib/digger";
 
@@ -36,6 +38,9 @@ describe("the player page", () => {
   it("frames the website's page with a strict id and the app's language", () => {
     expect(playerUrl(ID, "en")).toBe(PAGE);
     expect(playerUrl(ID, "fr")).toBe(`https://www.hi-vo.fr/embed.html?v=${ID}&hl=fr`);
+    expect(playerUrl(ID, "en", K)).toBe(`${PAGE}#k=${K}`);
+    expect(playerUrl(ID, "en", "not-a-key")).toBe(PAGE);
+    expect(playerKey((n) => new Uint8Array(n).fill(171))).toBe("ab".repeat(16));
     expect(playerUrl(`${ID}&autoplay=0`, "en")).toBeNull();
     expect(playerUrl("../x", "en")).toBeNull();
     expect(playerUrl("", "en")).toBeNull();
@@ -90,16 +95,20 @@ describe("the player page", () => {
   });
 
   it("reads only the player page's own messages", () => {
-    expect(parsePlayerMessage('{"hivo":1,"type":"ready"}')).toEqual({ type: "ready" });
-    expect(parsePlayerMessage('{"hivo":1,"type":"state","state":1}')).toEqual({ type: "state", state: 1 });
-    expect(parsePlayerMessage('{"hivo":1,"type":"error","code":150}')).toEqual({ type: "error", code: 150 });
-    expect(parsePlayerMessage('{"type":"error","code":150}')).toBeNull();
-    expect(parsePlayerMessage('{"hivo":1,"type":"error","code":"150"}')).toBeNull();
-    expect(parsePlayerMessage('{"hivo":1,"type":"error","code":1.5}')).toBeNull();
-    expect(parsePlayerMessage('{"hivo":1,"type":"navigate","url":"x"}')).toBeNull();
-    expect(parsePlayerMessage("not json")).toBeNull();
-    expect(parsePlayerMessage("null")).toBeNull();
-    expect(parsePlayerMessage(`{"hivo":1,"type":"ready","pad":"${"x".repeat(300)}"}`)).toBeNull();
+    // A frame that can't read the page's key (YouTube's, cross-origin) can't forge one (review #18).
+    expect(parsePlayerMessage('{"hivo":1,"type":"error","code":150}', K)).toBeNull();
+    expect(parsePlayerMessage(`{"hivo":1,"k":"${"0".repeat(32)}","type":"error","code":150}`, K)).toBeNull();
+    expect(parsePlayerMessage('{"hivo":1,"k":"","type":"ready"}', "")).toBeNull();
+    expect(parsePlayerMessage(`{"hivo":1,"k":"${K}","type":"ready"}`, K)).toEqual({ type: "ready" });
+    expect(parsePlayerMessage(`{"hivo":1,"k":"${K}","type":"state","state":1}`, K)).toEqual({ type: "state", state: 1 });
+    expect(parsePlayerMessage(`{"hivo":1,"k":"${K}","type":"error","code":150}`, K)).toEqual({ type: "error", code: 150 });
+    expect(parsePlayerMessage('{"type":"error","code":150}', K)).toBeNull();
+    expect(parsePlayerMessage(`{"hivo":1,"k":"${K}","type":"error","code":"150"}`, K)).toBeNull();
+    expect(parsePlayerMessage(`{"hivo":1,"k":"${K}","type":"error","code":1.5}`, K)).toBeNull();
+    expect(parsePlayerMessage(`{"hivo":1,"k":"${K}","type":"navigate","url":"x"}`, K)).toBeNull();
+    expect(parsePlayerMessage("not json", K)).toBeNull();
+    expect(parsePlayerMessage("null", K)).toBeNull();
+    expect(parsePlayerMessage(`{"hivo":1,"k":"${K}","type":"ready","pad":"${"x".repeat(300)}"}`, K)).toBeNull();
     expect(fromPlayerPage(PAGE)).toBe(true);
     expect(fromPlayerPage("https://www.hi-vo.fr/")).toBe(false);
     expect(fromPlayerPage(`https://www.youtube-nocookie.com/embed/${ID}`)).toBe(false);

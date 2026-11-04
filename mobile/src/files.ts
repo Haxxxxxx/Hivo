@@ -108,7 +108,7 @@ export function removeItemFiles(id: string): void {
   }
 }
 
-/** The app's own data files (the library cache): `<documents>/hivo-data/<name>`. */
+/** The app's own data files (the library cache, ideas, note edits): `<documents>/hivo-data/<name>`. */
 function dataFile(name: string): File {
   const d = new Directory(Paths.document, "hivo-data");
   if (!d.exists) d.create({ intermediates: true, idempotent: true });

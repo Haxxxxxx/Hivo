@@ -16,7 +16,7 @@ export interface PrivacyCopy {
 }
 
 /** Bump when the text changes. */
-export const PRIVACY_UPDATED = "2026-11-03";
+export const PRIVACY_UPDATED = "2026-11-04";
 
 /** The owner sets VITE_CONTACT_EMAIL in Vercel; never a hardcoded address. */
 const CONTACT = (import.meta.env.VITE_CONTACT_EMAIL ?? "").trim();
@@ -29,7 +29,7 @@ const operatorAt = OPERATOR_ADDRESS ? `, ${OPERATOR_ADDRESS}` : "";
 
 const en: PrivacyCopy = {
   title: "Privacy policy",
-  updated: "Last updated: 3 November 2026",
+  updated: "Last updated: 4 November 2026",
   lead: "Hivo is a free app for a music crew: a desktop app (Mac, Windows), a phone app (Android) and this website. This page says what each part sends, where, and why. The short version: your music and your notes stay on your own devices unless you turn on a feature that sends them, and each of those is listed below.",
   sections: [
     {
@@ -90,8 +90,8 @@ const en: PrivacyCopy = {
       title: "Phone sync and the phone app",
       body: [
         "When you turn on Phone sync in the desktop app's Settings (off by default), the desktop app opens a port on your local network so your paired phone can reach it. It answers only phones you paired; anything else is refused. It's phone ↔ computer only.",
-        "The phone app talks only to your own computer, over your local Wi-Fi, and everything it sends is encrypted with the key from the pairing QR code. There is no Hivo server in between, no account, and Hivo adds no analytics, ads or tracking. The one exception is the video player below, and only when you tap Play.",
-        "Only when you tap Settings → \"Look for my computer again\" (for when the computer's address changed), the phone looks for it on your local network: it sends the same sealed request it uses to sync, which carries the phone's device id and nothing else, to the computer's usual addresses, then to each address of the Wi-Fi network the phone is on (or, if the phone can't tell, of the computer's last network). It never does this on its own.",
+        "The phone app talks only to your own computer, over your local Wi-Fi, and everything it sends is encrypted with the key from the pairing QR code. There is no Hivo server in between, no account, and Hivo adds no analytics, ads or tracking. The exceptions are listed below: the video player (only when you tap Play), the QR code scanner, and the daily update check of the version downloaded from this website.",
+        "Only when you tap Settings → \"Look for my computer again\" (for when the computer's address changed), the phone looks for it on your local network: it sends the same request it uses to sync to the computer's usual addresses, then to each address of the Wi-Fi networks the phone is on (at most two; or, if the phone can't tell, of the computer's last networks). Its content is sealed; the phone's device id (a random code, not your name or number) travels unencrypted with it, so any device at those addresses can read it. It never does this on its own.",
         "When you tap \"Play here\" on a saved prod's YouTube link, the phone loads YouTube's own player from its privacy-enhanced host (youtube-nocookie.com) inside a small page of this website (hi-vo.fr/embed.html), so YouTube and this website's host see that request (the video id and your internet address). Nothing loads until you tap Play, the player keeps no cookies or storage after you close it, and Hivo never downloads the video. \"Open in YouTube\" hands the link to the YouTube app or your browser instead.",
         "To scan the pairing QR code, the Android app uses Google Play services' code scanner (ML Kit). Google says ML Kit sends Google device information (such as model and OS version), the app's name and version, performance metrics and error codes, for diagnostics and usage analytics, encrypted in transit and not shared with third parties.",
         "Your notes, ideas and voice memos are stored on the phone and on your computer. The camera is used only to scan the pairing QR code: no photo is taken or kept. The microphone is used only while you record a voice memo, and the recording goes nowhere but your computer.",
@@ -126,7 +126,7 @@ const en: PrivacyCopy = {
 
 const fr: PrivacyCopy = {
   title: "Politique de confidentialité",
-  updated: "Mise à jour : 3 novembre 2026",
+  updated: "Mise à jour : 4 novembre 2026",
   lead: "Hivo est une appli gratuite pour un crew de musique : une appli pour l'ordi (Mac, Windows), une appli pour le téléphone (Android) et ce site. Cette page dit ce que chaque partie envoie, où et pourquoi. En bref : ta musique et tes notes restent sur tes appareils, sauf si tu actives une fonction qui les envoie, et chacune est listée ci-dessous.",
   sections: [
     {
@@ -187,8 +187,8 @@ const fr: PrivacyCopy = {
       title: "Synchro téléphone et appli du téléphone",
       body: [
         "Quand tu actives la Synchro téléphone dans les Réglages de l'appli de l'ordi (désactivée par défaut), l'appli ouvre un port sur ton réseau local pour que ton téléphone associé puisse la joindre. Elle ne répond qu'aux téléphones associés ; tout le reste est refusé. Ça se passe seulement entre le téléphone et l'ordi.",
-        "L'appli du téléphone ne parle qu'à ton propre ordi, par ton Wi-Fi local, et tout ce qu'elle envoie est chiffré avec la clé du QR code d'association. Pas de serveur Hivo entre les deux, pas de compte, et Hivo n'ajoute ni statistiques, ni pub, ni pistage. Seule exception : le lecteur vidéo ci-dessous, et seulement quand tu appuies sur Lire.",
-        "Seulement quand tu touches Réglages → Rechercher mon ordi (si l'adresse de l'ordi a changé), le téléphone le cherche sur ton réseau local. Il envoie la même requête chiffrée que pour la synchro, qui contient l'identifiant d'appareil du téléphone et rien d'autre, aux adresses habituelles de l'ordi, puis à chaque adresse du réseau Wi-Fi où se trouve le téléphone (ou, s'il ne peut pas le savoir, du dernier réseau de l'ordi). Il ne le fait jamais de lui-même.",
+        "L'appli du téléphone ne parle qu'à ton propre ordi, par ton Wi-Fi local, et tout ce qu'elle envoie est chiffré avec la clé du QR code d'association. Pas de serveur Hivo entre les deux, pas de compte, et Hivo n'ajoute ni statistiques, ni pub, ni pistage. Les exceptions sont détaillées ci-dessous : le lecteur vidéo (seulement quand tu appuies sur Lire), le scanner de QR code et la vérification quotidienne des mises à jour de la version téléchargée sur ce site.",
+        "Seulement quand tu touches Réglages → Rechercher mon ordi (si l'adresse de l'ordi a changé), le téléphone le cherche sur ton réseau local. Il envoie la même requête que pour la synchro aux adresses habituelles de l'ordi, puis à chaque adresse des réseaux Wi-Fi où se trouve le téléphone (deux au plus ; ou, s'il ne peut pas le savoir, des derniers réseaux de l'ordi). Son contenu est chiffré ; l'identifiant d'appareil du téléphone (un code aléatoire, ni ton nom ni ton numéro) passe en clair avec, donc tout appareil à ces adresses peut le lire. Il ne le fait jamais de lui-même.",
         "Quand tu appuies sur « Lire ici » sur le lien YouTube d'une prod gardée, le téléphone charge le lecteur de YouTube depuis son adresse à confidentialité renforcée (youtube-nocookie.com), dans une petite page de ce site (hi-vo.fr/embed.html) : YouTube et l'hébergeur de ce site voient donc cette requête (l'identifiant de la vidéo et ton adresse internet). Rien ne se charge avant que tu appuies sur Lire, le lecteur ne garde ni cookies ni stockage une fois fermé, et Hivo ne télécharge jamais la vidéo. « Ouvrir dans YouTube » passe le lien à l'appli YouTube ou à ton navigateur.",
         "Pour scanner le QR code d'association, l'appli Android utilise le scanner de codes des services Google Play (ML Kit). D'après Google, ML Kit envoie à Google des infos sur l'appareil (comme le modèle et la version du système), le nom et la version de l'appli, des mesures de performance et des codes d'erreur, pour le diagnostic et les statistiques d'usage, chiffrés pendant le transfert et sans les partager avec des tiers.",
         "Tes notes, idées et mémos vocaux sont gardés sur le téléphone et sur ton ordi. La caméra sert uniquement à scanner le QR code d'association : aucune photo n'est prise ni gardée. Le micro sert uniquement pendant que tu enregistres un mémo vocal, et l'enregistrement ne va nulle part ailleurs que sur ton ordi.",

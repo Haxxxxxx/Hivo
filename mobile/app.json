@@ -165,7 +165,8 @@
           "backgroundColor": "#0d0d0c"
         }
       ],
-      "./plugins/withDarkDialogs"
+      "./plugins/withDarkDialogs",
+      "./plugins/withLatestIntent"
     ]
   }
 }
