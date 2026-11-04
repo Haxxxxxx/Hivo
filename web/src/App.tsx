@@ -71,13 +71,21 @@ function Logo() {
   );
 }
 
+function PrivacyLink() {
+  return (
+    <a href={tr(W).privacyHref} className="underline hover:text-cream">
+      {tr(W).privacy}
+    </a>
+  );
+}
+
 function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="mx-auto flex min-h-dvh max-w-md flex-col gap-8 px-5 py-10">
       <Logo />
       {children}
       <p className="mt-auto text-[11px] leading-relaxed text-engrave">
-        {tr(W).footer}
+        {tr(W).footer} <PrivacyLink />
       </p>
     </div>
   );
@@ -364,6 +372,9 @@ function Dashboard({ topError }: { topError: string | null }) {
           />
         )}
       </main>
+      <footer className="border-t border-rule px-3 py-2 text-[11px] text-engrave sm:px-5">
+        <PrivacyLink />
+      </footer>
     </div>
   );
 }
