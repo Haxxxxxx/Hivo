@@ -966,8 +966,10 @@ export const useCrewStore = create<CrewState>((set, get) => {
 
     revokeInvite: async (code) => {
       if (!supabase) return;
-      const { error } = await supabase.from("crew_invites").delete().eq("code", code);
+      // select(): RLS lets only the owner's delete match; none matched is not "revoked".
+      const { data, error } = await supabase.from("crew_invites").delete().eq("code", code).select("code");
       if (error) throw new Error(crewErrorMessage(error));
+      if (!data?.length) throw new Error(crewText("ownerOnly"));
       set({ invites: get().invites.filter((i) => i.code !== code), invite: get().invite === code ? null : get().invite });
     },
 
@@ -975,8 +977,9 @@ export const useCrewStore = create<CrewState>((set, get) => {
       const sc = scope();
       if (!supabase || !sc || userId === sc.userId) return;
       // Their shared songs leave with them (after_member_left on the server).
-      const { error } = await supabase.from("crew_members").delete().eq("crew_id", sc.crewId).eq("user_id", userId);
+      const { data, error } = await supabase.from("crew_members").delete().eq("crew_id", sc.crewId).eq("user_id", userId).select("user_id");
       if (error) throw new Error(crewErrorMessage(error));
+      if (!data?.length) throw new Error(crewText("ownerOnly"));
       await loadCrewData();
     },
 

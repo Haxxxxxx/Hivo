@@ -226,3 +226,15 @@ describe("French typography", () => {
     expect(hits).toEqual([]);
   });
 });
+
+describe("placeholders", () => {
+  it("a ${…} sits in a template literal, never in a quoted string (it would show as text)", () => {
+    const bad: string[] = [];
+    for (const [file, src] of Object.entries(SOURCES)) {
+      for (const t of lex(src)) {
+        if (t.kind === "str" && /["']/.test(src[t.at - 1] ?? "") && /\$\{\w/.test(t.text)) bad.push(`${file}: ${t.text.slice(0, 60)}`);
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+});
