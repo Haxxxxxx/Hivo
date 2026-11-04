@@ -545,7 +545,14 @@ const MAX_KEY_CHARS: usize = 120;
 pub fn found_key(link: &WebLink) -> String {
     let text = link.text.trim();
     let head = if text.is_empty() { link.url.trim() } else { text };
-    clip(&format!("{} | {}", head, link.site.trim()), MAX_KEY_CHARS).to_lowercase()
+    cut_key(&format!("{} | {}", head, link.site.trim()))
+}
+
+/// A key cut to `MAX_KEY_CHARS` code points (no ellipsis, nothing else
+/// changed), then lowercased: `foundKey` does exactly the same, so a key
+/// the webview sends back matches the one built here.
+fn cut_key(key: &str) -> String {
+    key.chars().take(MAX_KEY_CHARS).collect::<String>().to_lowercase()
 }
 
 /// `items` clipped to `max_chars`, blanks and repeats dropped, at most `max`.
@@ -578,8 +585,19 @@ struct DeeperInput {
 fn sanitize_deeper(request: &DigDeeperRequest) -> Result<DeeperInput, String> {
     let seed = &request.analysis;
     let mut analysis = sanitize_analysis(&json!({ "summary": seed.summary, "traits": seed.traits, "tempo": seed.tempo, "queries": seed.queries }))?;
-    // Clip first, then lowercase: the same order as `found_key`.
-    let exclude: Vec<String> = dedup_clipped(&request.exclude, MAX_KEY_CHARS, MAX_EXCLUDE).into_iter().map(|k| k.to_lowercase()).collect();
+    // Cut the same way as `found_key` (a clip would add "…" and never match).
+    // Control chars are blanked for the prompt (real keys have none: link
+    // texts and sites are clipped when they're made).
+    let mut exclude: Vec<String> = Vec::new();
+    let keys = request.exclude.iter().map(|k| cut_key(k).chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>());
+    for key in keys.filter(|k| !k.trim().is_empty()) {
+        if exclude.len() >= MAX_EXCLUDE {
+            break;
+        }
+        if !exclude.contains(&key) {
+            exclude.push(key);
+        }
+    }
     let found_titles = dedup_clipped(&request.found_titles, MAX_TITLE_CHARS, MAX_FOUND_TITLES);
     let liked = dedup_clipped(&request.liked_titles, MAX_TITLE_CHARS, MAX_LIKED);
     for q in dedup_clipped(&request.searches_done, crate::youtube::MAX_QUERY_CHARS, MAX_SEARCHES_DONE) {
@@ -1415,7 +1433,7 @@ mod tests {
         assert_eq!(a.traits[1].chars().count(), 40);
         assert_eq!(a.queries, ["dark trap type beat".to_string(), "drill beat".to_string()]);
         assert_eq!(ex.len(), MAX_EXCLUDE);
-        // Lowercased, blanks and repeats dropped, control chars blanked, long keys clipped.
+        // Lowercased, blanks and repeats dropped, control chars blanked, long keys cut.
         assert_eq!(ex[0], "night drive | beatstars");
         assert_eq!(ex[1], "cold room | youtube.com");
         assert_eq!(ex[2].chars().count(), MAX_KEY_CHARS);
@@ -1522,6 +1540,20 @@ mod tests {
         // A titled link still keys on its title, whatever its url.
         let titled = WebLink { url: "https://x.example/1".into(), site: "BeatStars".into(), text: "Night".into(), resolved: true };
         assert_eq!(found_key(&titled), "night | beatstars");
+    }
+
+    /// Shared with src/lib/digger.test.ts: a key over `MAX_KEY_CHARS` is cut
+    /// on code points, no ellipsis, and the cut the webview sends back matches.
+    #[test]
+    fn long_keys_match_the_webview() {
+        let text = format!("{}\u{1F525}{}", "A".repeat(100), "b".repeat(29));
+        assert_eq!(text.chars().count(), 130);
+        let link = WebLink { url: "https://x.example/1".into(), site: "YouTube.com".into(), text, resolved: true };
+        let key = found_key(&link);
+        let expected = format!("{}\u{1F525}{}", "a".repeat(100), "b".repeat(19));
+        assert_eq!(key, expected);
+        assert_eq!(key.chars().count(), MAX_KEY_CHARS);
+        assert!(drop_found(vec![link], std::slice::from_ref(&expected)).is_empty());
     }
 
     /// A local server: `/start` → 302 `/mid` (relative), `/mid` refuses HEAD
