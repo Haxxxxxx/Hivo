@@ -21,7 +21,10 @@
   // to say so and offer "Open in YouTube". Only there: the player reports its
   // state through YouTube's postMessage protocol (enablejsapi), and this page
   // forwards the error code and state, nothing else. The desktop is unchanged.
-  var app = window.ReactNativeWebView;
+  // Every message carries the key the app put in this page's fragment: the
+  // bridge reaches YouTube's frame too, which can't read this page's address.
+  var key = (/^#k=([0-9a-f]{32})$/.exec(location.hash) || [])[1];
+  var app = key ? window.ReactNativeWebView : undefined;
   var frame = document.createElement("iframe");
   frame.src = PLAYER + "/embed/" + id + "?autoplay=1" + (app ? "&playsinline=1&enablejsapi=1&origin=" + encodeURIComponent(location.origin) : "");
   frame.allow = "autoplay; encrypted-media";
@@ -32,6 +35,7 @@
 
   var send = function (msg) {
     msg.hivo = 1;
+    msg.k = key;
     app.postMessage(JSON.stringify(msg));
   };
   var heard = false;

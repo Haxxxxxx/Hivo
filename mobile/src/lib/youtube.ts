@@ -47,8 +47,20 @@ export const EMBED_ORIGIN = "https://www.hi-vo.fr";
 export const EMBED_PAGE = `${EMBED_ORIGIN}/embed.html`;
 
 /** The player page for a video id, in the app's language, or null for anything that isn't an id. */
-export function playerUrl(id: string, lang: "en" | "fr"): string | null {
-  return VIDEO_ID.test(id) ? `${EMBED_PAGE}?v=${id}&hl=${lang}` : null;
+export function playerUrl(id: string, lang: "en" | "fr", key?: string): string | null {
+  if (!VIDEO_ID.test(id)) return null;
+  return `${EMBED_PAGE}?v=${id}&hl=${lang}${key && PLAYER_KEY.test(key) ? `#k=${key}` : ""}`;
+}
+
+const PLAYER_KEY = /^[0-9a-f]{32}$/;
+
+/** A new player's key (16 random bytes, hex), put in the page's fragment by
+ * `playerUrl`: embed.js signs its messages with it. The bridge reaches every
+ * frame (Android) and the message's url is the top page's whatever frame
+ * sent it, so a frame that can't read the top page's address (YouTube's,
+ * cross-origin) can't make a message the app takes. Review #18. */
+export function playerKey(random: (n: number) => Uint8Array): string {
+  return Array.from(random(16), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 /** How long the player page gets to load before the "didn't load" card (with Retry) shows. */
@@ -114,9 +126,10 @@ export function externalUrl(url: string): string {
 
 export type PlayerMessage = { type: "ready" } | { type: "state"; state: number } | { type: "error"; code: number };
 
-/** A message from the player page (web/public/embed.js), or null for anything
- * else. Only checked fields of small integers get through. */
-export function parsePlayerMessage(data: string): PlayerMessage | null {
+/** A message from the player page (web/public/embed.js) carrying this
+ * player's `key`, or null for anything else. Only checked fields of small
+ * integers get through. */
+export function parsePlayerMessage(data: string, key: string): PlayerMessage | null {
   if (typeof data !== "string" || data.length > 200) return null;
   let m: unknown;
   try {
@@ -126,7 +139,7 @@ export function parsePlayerMessage(data: string): PlayerMessage | null {
   }
   if (!m || typeof m !== "object") return null;
   const r = m as Record<string, unknown>;
-  if (r.hivo !== 1) return null;
+  if (r.hivo !== 1 || !PLAYER_KEY.test(key) || r.k !== key) return null;
   const int = (v: unknown) => typeof v === "number" && Number.isInteger(v) && v >= -1 && v < 1000;
   if (r.type === "ready") return { type: "ready" };
   if (r.type === "state" && int(r.state)) return { type: "state", state: r.state as number };

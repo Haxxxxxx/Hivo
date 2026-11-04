@@ -78,7 +78,8 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
         {/* Website APK: check; Play: open Play; a dev build: neither. */}
         {hasUpdateRow(Constants.expoConfig?.extra?.distribution) ? <UpdateCheck style={{ marginTop: S.xl }} /> : null}
 
-        <Button label={t.forget} variant="danger" onPress={confirmUnpair} style={{ marginTop: S.xl }} />
+        {/* Nothing to unpair from when no computer is paired. */}
+        {pairing ? <Button label={t.forget} variant="danger" onPress={confirmUnpair} style={{ marginTop: S.xl }} /> : null}
       </ScrollView>
     </View>
   );

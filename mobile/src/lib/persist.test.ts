@@ -15,7 +15,9 @@ import {
   mergeEdits,
   parseCache,
   parseList,
+  phoneKV,
   readAtomic,
+  ROW_FILES,
   saveCache,
   saveRow,
   writeAtomic,
@@ -301,5 +303,94 @@ describe("pure helpers", () => {
   it("mergeEdits keeps both sides, the phone's wins", () => {
     const p = (text: string) => ({ kind: "song" as const, id: "a", text, baseHash: "", editedAt: 1 });
     expect(mergeEdits({ pending: { x: p("stored"), y: p("y") }, gone: {} }, { pending: { x: p("mem") }, gone: {} }).pending).toEqual({ x: p("mem"), y: p("y") });
+  });
+});
+
+describe("ideas and edits in files (review #9)", () => {
+  const IDEAS = ROW_FILES[KEYS.ideas];
+  const EDITS = ROW_FILES[KEYS.edits];
+  const save = (kv: KV, ideas: Idea[], blocked = false) =>
+    saveRow<Idea[]>(kv, KEYS.ideas, ideas, { blocked, decode: decodeList(parseIdea), merge: mergeById, encode: (v) => JSON.stringify(v), now: 1 });
+
+  it("an install from before reads its rows, and the first save moves them to the files", async () => {
+    const edits = { pending: { a: { text: "x", base: "1", at: 1 } }, gone: {} };
+    const rows = fakeKV({ [KEYS.ideas]: JSON.stringify([idea("a")]), [KEYS.edits]: JSON.stringify(edits), [KEYS.outbox]: JSON.stringify([memo("m")]) });
+    const { fs, files } = fakeFS();
+    const kv = phoneKV(rows.kv, fs);
+    const r = await loadAll(kv, fs, 1);
+    expect(r.ideas.map((i) => i.id)).toEqual(["a"]);
+    expect(r.edits).toEqual(decodeEdits(JSON.stringify(edits)));
+    expect(r.blocked).toEqual([]);
+    expect(await save(kv, [idea("b"), ...r.ideas])).toMatchObject({ status: "ok" });
+    expect(rows.data.has(KEYS.ideas)).toBe(false);
+    expect(parseList(files.get(IDEAS) as string, parseIdea).items.map((i) => i.id)).toEqual(["b", "a"]);
+    // Untouched: the outbox stays a row, the edits row moves at its own first save.
+    expect(rows.data.has(KEYS.outbox)).toBe(true);
+    expect(rows.data.has(KEYS.edits)).toBe(true);
+    expect(files.has(EDITS)).toBe(false);
+  });
+
+  it("a big list the cursor window can't hold reads back whole from its file", async () => {
+    const rows = fakeKV();
+    const { fs } = fakeFS();
+    const kv = phoneKV(rows.kv, fs);
+    const many = Array.from({ length: 120 }, (_, n) => idea(`i${n}`, "y".repeat(20_000)));
+    expect(await save(kv, many)).toMatchObject({ status: "ok" });
+    rows.badRead.add(KEYS.ideas); // the row would throw; it isn't read any more
+    expect((await loadAll(kv, fs, 2)).ideas).toHaveLength(120);
+  });
+
+  it("a kill during the first write keeps the row, which is read", async () => {
+    const rows = fakeKV({ [KEYS.ideas]: JSON.stringify([idea("a")]) });
+    const { fs, kill } = fakeFS();
+    const kv = phoneKV(rows.kv, fs);
+    for (const at of [1, 2]) {
+      kill(at);
+      expect(await save(kv, [idea("b"), idea("a")])).toMatchObject({ status: "failed" });
+      kill(Infinity);
+      expect((await loadAll(kv, fs, 3)).ideas.map((i) => i.id)).toEqual(["a"]);
+    }
+  });
+
+  it("a kill between a later move's delete and rename reads the complete temp file", async () => {
+    const rows = fakeKV();
+    const { fs, kill } = fakeFS();
+    const kv = phoneKV(rows.kv, fs);
+    await save(kv, [idea("a")]);
+    kill(2);
+    expect(await save(kv, [idea("b"), idea("a")])).toMatchObject({ status: "failed" });
+    kill(Infinity);
+    expect((await loadAll(kv, fs, 3)).ideas.map((i) => i.id)).toEqual(["b", "a"]);
+  });
+
+  it("an old row that can't be read stays blocked and is never written over", async () => {
+    const rows = fakeKV({ [KEYS.ideas]: "kept" });
+    rows.badRead.add(KEYS.ideas);
+    const { fs, files } = fakeFS();
+    const kv = phoneKV(rows.kv, fs);
+    const r = await loadAll(kv, fs, 1);
+    expect(r.blocked).toContain("ideas");
+    expect(await save(kv, [idea("new")], true)).toEqual({ status: "blocked" });
+    expect(files.has(IDEAS)).toBe(false);
+    expect(rows.data.get(KEYS.ideas)).toBe("kept");
+  });
+
+  it("a save whose old row can't be removed fails, and is tried again", async () => {
+    const rows = fakeKV({ [KEYS.ideas]: JSON.stringify([idea("a")]) });
+    const { fs, files } = fakeFS();
+    const kv = phoneKV({ ...rows.kv, remove: async () => { throw new Error("locked"); } }, fs);
+    expect((await save(kv, [idea("a")])).status).toBe("failed");
+    expect(files.has(IDEAS)).toBe(true);
+    // The file wins from now on.
+    expect((await loadAll(kv, fs, 2)).ideas.map((i) => i.id)).toEqual(["a"]);
+  });
+
+  it("a bad file is copied aside to a row and its good records kept", async () => {
+    const rows = fakeKV();
+    const { fs } = fakeFS({ [IDEAS]: JSON.stringify([idea("a"), { nope: 1 }]) });
+    const r = await loadAll(phoneKV(rows.kv, fs), fs, 7);
+    expect(r.ideas.map((i) => i.id)).toEqual(["a"]);
+    expect(r.dropped).toContain("ideas");
+    expect(rows.data.has(`${KEYS.ideas}.corrupt.7`)).toBe(true);
   });
 });

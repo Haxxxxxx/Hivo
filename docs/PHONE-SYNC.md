@@ -155,7 +155,9 @@ the result, and keep its own text when the status is `"missing"` or `"too long"`
   **Library** with three tabs (Saved prods / Beats / Songs, search box),
   **Note** editor (plain text, `[Verse 1]`/`[Hook]` headers, autosave),
   header shows desktop name + "Synced 2 min ago" + a Sync button.
-- Offline first: snapshot + notes cached locally (AsyncStorage); edits queue
+- Offline first: snapshot + notes cached locally (files in the app's documents
+  for the library cache, ideas and note edits; small rows in AsyncStorage for
+  the rest, `mobile/src/lib/persist.ts`); edits queue
   with their `baseHash`; sync = push queued changes (`/v1/notes`), then pull
   `/v1/snapshot`; conflicts show a small banner on that note.
 - Prods (any item with a link): "Open link" in the system browser; a YouTube
