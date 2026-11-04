@@ -118,9 +118,9 @@ const T = dict(
     phone: "Téléphone",
     aimedAt: (title: string) => `Écrit pour ${title}`,
     aimedGone: (title: string) => `Écrit pour ${title}, qui n'est plus sur cet ordi : choisis-en un autre.`,
-    pickTarget: "Choisis un son, une prod ou une prod enregistrée",
+    pickTarget: "Choisis un son, un beat ou une prod enregistrée",
     songs: "Sons",
-    beats: "Prods",
+    beats: "Beats",
     prods: "Prods enregistrées",
     addToNote: "Ajouter à ses notes",
     attach: "Joindre",
@@ -155,7 +155,7 @@ const T = dict(
     filedMemo: "Copié dans le dossier Voice memos du son",
     filedMemoTo: (title: string) => `Copié dans le dossier Voice memos de ${title}`,
     filedLink: (title: string) => `Lié à ${title}`,
-    filedLinkCopy: (title: string) => `Lié à ${title} (copié dans _memos du dossier de prods)`,
+    filedLinkCopy: (title: string) => `Lié à ${title} (copié dans _memos du dossier de beats)`,
     dismissed: "Écarté",
     openSong: "Ouvrir le son",
     reveal: "Afficher dans le dossier",
@@ -381,8 +381,7 @@ function InboxCard({ item, options, onNotice }: { item: InboxItem; options: Targ
     try {
       await work();
     } catch (e) {
-      const msg = errorText(e);
-      setError(msg === "disk full" ? "This computer's disk is full." : msg);
+      setError(errorText(e));
     } finally {
       setBusy(false);
     }
