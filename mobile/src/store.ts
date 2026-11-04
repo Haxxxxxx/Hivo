@@ -16,7 +16,7 @@ import { lookAgain, PROBE_TIMEOUT_MS, SAVED_TIMEOUT_MS, withFound, type LookProg
 import { completePairing, computerIdOf } from "./lib/handshake";
 import type { PairOffer, Pairing } from "./lib/pairing";
 import { createPendingSaves } from "./lib/pendingSave";
-import { clearCache, decodeEdits, decodeList, KEYS, loadAll, mergeById, mergeEdits, saveCache, saveRow, type KV, type LibraryCache, type Row } from "./lib/persist";
+import { clearCache, decodeEdits, decodeList, KEYS, loadAll, mergeById, mergeEdits, phoneKV, saveCache, saveRow, type KV, type LibraryCache, type Row } from "./lib/persist";
 import { onForeground } from "./lib/syncGate";
 import { clip, safeFileName } from "./lib/text";
 import { desktopIsOlder } from "./lib/update";
@@ -145,11 +145,14 @@ export function useApp<T>(select: (s: AppState) => T): T {
   );
 }
 
-const kv: KV = {
-  get: (k) => AsyncStorage.getItem(k),
-  set: (k, v) => AsyncStorage.setItem(k, v),
-  remove: (k) => AsyncStorage.removeItem(k),
-};
+const kv: KV = phoneKV(
+  {
+    get: (k) => AsyncStorage.getItem(k),
+    set: (k, v) => AsyncStorage.setItem(k, v),
+    remove: (k) => AsyncStorage.removeItem(k),
+  },
+  dataFS,
+);
 
 // ---- Storage ----
 
