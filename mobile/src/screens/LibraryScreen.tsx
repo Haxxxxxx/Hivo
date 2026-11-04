@@ -55,7 +55,8 @@ export function LibraryScreen({ kind, onKind, onOpen, onPair }: Props) {
     );
   }
 
-  const empty = total > 0 ? t.noMatch : syncing || sync.lastSyncAt === null ? t.loadingLibrary : t.libEmpty;
+  // "Loading" only before the first sync: after it, an empty tab is empty, syncing or not.
+  const empty = total > 0 ? t.noMatch : sync.lastSyncAt === null ? t.loadingLibrary : t.libEmpty;
 
   return (
     <View style={{ flex: 1 }}>
@@ -94,7 +95,7 @@ export function LibraryScreen({ kind, onKind, onOpen, onPair }: Props) {
         keyboardDismissMode="on-drag"
         ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: C.rule }} />}
         ListEmptyComponent={<Text style={styles.empty}>{empty}</Text>}
-        refreshControl={<RefreshControl refreshing={pulled && syncing} onRefresh={pull} colors={[C.cream]} progressBackgroundColor={C.raised} tintColor={C.cream} />}
+        refreshControl={<RefreshControl refreshing={pulled && syncing} onRefresh={pull} colors={[C.cream]} progressBackgroundColor={C.ruleStrong} tintColor={C.cream} />}
         renderItem={({ item }) => {
           const key = itemKey(item.kind, item.id);
           return (
@@ -177,7 +178,8 @@ const styles = StyleSheet.create({
   rowSub: { color: C.body, fontSize: 13, flexShrink: 1 },
   // BPM · key keeps its words: the title (one line, cut) gives way; a very long key wraps within half the row.
   right: { alignItems: "flex-end", marginLeft: 12, maxWidth: "50%", flexShrink: 0 },
-  empty: { color: C.engrave, textAlign: "center", padding: 32, fontSize: 14, lineHeight: 20 },
+  // Starts below where Android's pull spinner rests (it sat on the text: device pass, 2026-11-04).
+  empty: { color: C.engrave, textAlign: "center", padding: 32, paddingTop: 88, fontSize: 14, lineHeight: 20 },
   unpaired: { padding: 20 },
   unpairedText: { color: C.body, fontSize: 15, lineHeight: 21 },
   stepNum: { fontFamily: FONT.display, fontSize: 20, color: C.cream, width: 18 },
