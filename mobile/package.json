@@ -1,6 +1,6 @@
 {
   "name": "hivo-mobile",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "main": "index.ts",
   "dependencies": {
     "@expo-google-fonts/barlow-condensed": "^0.4.1",
