@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import QRCode from "qrcode";
 import * as api from "../lib/tauri";
 import { formatDateTime } from "../lib/format";
-import type { PhoneConfirming, PhonePairing, PhoneSyncStatus } from "../types";
+import type { FirewallState, PhoneConfirming, PhonePairing, PhoneSyncStatus } from "../types";
+import { btnPrimary } from "../ui";
 import { usePhoneInbox } from "../store/usePhoneInbox";
 import { dict, tr } from "../i18n";
 import { errorText, errorReason } from "../lib/errors";
@@ -50,6 +51,16 @@ const T = dict(
     confirmYes: "Confirm",
     confirmNo: "Not my phone",
     confirmDropped: "Not confirmed within 5 minutes, the pairing is dropped.",
+    fwTitle: "Windows is blocking your phone",
+    fwBlocked: "Windows Firewall has a rule blocking Hivo, so your phone can't reach this computer.",
+    fwNotAllowed: "Windows Firewall doesn't let Hivo accept connections on this network, so your phone can't reach this computer.",
+    fwPublic: "This Wi-Fi is also marked Public: Fix it marks it Private (a home network). Do that only on your own Wi-Fi.",
+    fwFix: "Fix it",
+    fwFixing: "Fixing…",
+    fwFixHint: "Windows asks for admin rights once.",
+    fwFixed: "Fixed: your phone can reach Hivo now. Scan the code again if it gave up.",
+    fwStill: "Still blocked after the fix: another firewall (antivirus) may be blocking Hivo. Allow it there, or in the firewall settings.",
+    notFound: "No phone yet? Check that it's on the same Wi-Fi as this computer (not a guest network), and that the phone has no VPN on.",
   },
   {
     title: "Synchro téléphone",
@@ -93,6 +104,16 @@ const T = dict(
     confirmYes: "Confirmer",
     confirmNo: "Pas mon téléphone",
     confirmDropped: "Sans confirmation dans les 5 minutes, l'appairage est abandonné.",
+    fwTitle: "Windows bloque ton téléphone",
+    fwBlocked: "Le pare-feu Windows a une règle qui bloque Hivo, donc ton téléphone ne peut pas joindre cet ordi.",
+    fwNotAllowed: "Le pare-feu Windows n'autorise pas Hivo à recevoir des connexions sur ce réseau, donc ton téléphone ne peut pas joindre cet ordi.",
+    fwPublic: "Ce Wi-Fi est aussi marqué Public\u202f: Réparer le marque Privé (un réseau domestique). Fais-le seulement sur ton propre Wi-Fi.",
+    fwFix: "Réparer",
+    fwFixing: "Réparation…",
+    fwFixHint: "Windows demande les droits administrateur une fois.",
+    fwFixed: "Réparé\u202f: ton téléphone peut joindre Hivo. Rescanne le code s'il a abandonné.",
+    fwStill: "Toujours bloqué après la réparation\u202f: un autre pare-feu (antivirus) bloque peut-être Hivo. Autorise-le là-bas, ou dans les réglages du pare-feu.",
+    notFound: "Toujours pas de téléphone\u202f? Vérifie qu'il est sur le même Wi-Fi que cet ordi (pas un réseau invité) et qu'il n'a pas de VPN activé.",
   },
 );
 
@@ -105,6 +126,11 @@ export function PhoneSyncSettings() {
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const windows = navigator.userAgent.includes("Windows");
+  // Windows Firewall vs phone sync: checked when sync is on, and again when a QR gets no phone.
+  const [fw, setFw] = useState<FirewallState | null>(null);
+  const [fwBusy, setFwBusy] = useState(false);
+  const [fwResult, setFwResult] = useState<"fixed" | "still" | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -125,6 +151,28 @@ export function PhoneSyncSettings() {
     }, 2000);
     return () => clearInterval(id);
   }, [pairing, waitingConfirm]);
+
+  const checkFirewall = useCallback(() => {
+    if (!windows) return;
+    api.phoneSyncFirewallCheck().then(setFw).catch(() => {});
+  }, [windows]);
+
+  async function fixFirewall() {
+    setFwBusy(true);
+    setError(null);
+    setFwResult(null);
+    try {
+      const s = await api.phoneSyncFirewallFix();
+      setFw(s);
+      setFwResult(s.needsFix ? "still" : "fixed");
+    } catch (e) {
+      const msg = errorText(e);
+      // "No" in the dialog or the admin prompt: nothing to say.
+      if (msg !== api.PAIR_CANCELLED) setError(msg);
+    } finally {
+      setFwBusy(false);
+    }
+  }
 
   async function run(fn: () => Promise<PhoneSyncStatus>) {
     setBusy(true);
@@ -167,7 +215,6 @@ export function PhoneSyncSettings() {
   }
 
   const on = !!status?.on;
-  const windows = navigator.userAgent.includes("Windows");
   const paired = status?.devices ?? [];
   // Paired with this QR: stored (again, for a re-pair) since it was shown.
   const justPaired = pairing ? paired.find((d) => d.id === pairing.deviceId && d.lastSeenMs && d.pairedAtMs >= pairing.issuedAtMs) : undefined;
@@ -175,6 +222,16 @@ export function PhoneSyncSettings() {
   const waitingThis = pairing ? confirming.find((c) => c.id === pairing.deviceId) : undefined;
   const expired = !!pairing && !justPaired && !waitingThis && now > pairing.expiresAtMs;
   const others = confirming.filter((c) => c.id !== waitingThis?.id);
+  // The QR has been up 20 s and no phone got through.
+  const quiet = !!pairing && !justPaired && !waitingThis && !expired && now - pairing.issuedAtMs >= 20_000;
+
+  useEffect(() => {
+    if (on) checkFirewall();
+    else setFw(null);
+  }, [on, checkFirewall]);
+  useEffect(() => {
+    if (quiet) checkFirewall();
+  }, [quiet, checkFirewall]);
 
   const confirmBlock = (c: PhoneConfirming) => (
     <div key={c.id} className="mt-3 rounded-lg border border-rule bg-raised p-4">
@@ -230,14 +287,36 @@ export function PhoneSyncSettings() {
       {on && <div className="mt-1 font-mono text-[11px] text-engrave">{status?.addresses.length ? t.addresses(status.addresses.join(", ")) : t.noAddress}</div>}
       {status?.error && <div className="mt-2 text-xs text-red-300">{errorReason(status.error)}</div>}
       <p className="mt-2 text-[11px] leading-relaxed text-engrave">{t.firewall}</p>
-      {windows && on && (
-        <p className="mt-1 text-[11px] leading-relaxed text-engrave">
-          {t.firewallWindows}{" "}
-          <button onClick={() => void api.phoneSyncOpenFirewall().catch((e) => setError(errorText(e)))} className="text-body underline hover:text-cream">
-            {t.openFirewall}
-          </button>
-        </p>
+      {windows && on && fw?.needsFix ? (
+        <div className="mt-3 rounded-lg border border-hot bg-panel p-3">
+          <div className="text-xs font-semibold text-cream">{t.fwTitle}</div>
+          <p className="mt-1 text-xs leading-relaxed text-body">
+            {fw.blocked ? t.fwBlocked : t.fwNotAllowed}
+            {fw.publicNetwork ? ` ${t.fwPublic}` : ""}
+          </p>
+          {fwResult === "still" && <p className="mt-1 text-xs leading-relaxed text-warn">{t.fwStill}</p>}
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            <button onClick={() => void fixFirewall()} disabled={fwBusy} className={`${btnPrimary} disabled:opacity-40`}>
+              {fwBusy ? t.fwFixing : t.fwFix}
+            </button>
+            <span className="text-[11px] text-engrave">{t.fwFixHint}</span>
+            <button onClick={() => void api.phoneSyncOpenFirewall().catch((e) => setError(errorText(e)))} className="text-[11px] text-body underline hover:text-cream">
+              {t.openFirewall}
+            </button>
+          </div>
+        </div>
+      ) : (
+        windows &&
+        on && (
+          <p className="mt-1 text-[11px] leading-relaxed text-engrave">
+            {t.firewallWindows}{" "}
+            <button onClick={() => void api.phoneSyncOpenFirewall().catch((e) => setError(errorText(e)))} className="text-body underline hover:text-cream">
+              {t.openFirewall}
+            </button>
+          </p>
+        )
       )}
+      {fwResult === "fixed" && on && <div className="mt-2 text-xs text-ok">{t.fwFixed}</div>}
 
       {on && !pairing && (
         <button onClick={() => void pair()} disabled={busy} className="mt-3 rounded-md bg-orange-500 px-3 py-2 text-sm font-medium text-chassis hover:bg-orange-400 disabled:opacity-40">
@@ -271,6 +350,7 @@ export function PhoneSyncSettings() {
           <div className={`mt-2 text-xs ${justPaired ? "text-emerald-300" : "text-engrave"}`}>
             {justPaired ? t.connected(justPaired.name ?? t.unnamed) : expired || waitingThis ? null : t.waiting}
           </div>
+          {quiet && !fw?.needsFix && <p className="mt-1 text-[11px] leading-relaxed text-engrave">{t.notFound}</p>}
           <div className="mt-3 flex gap-2">
             <button
               onClick={() => {

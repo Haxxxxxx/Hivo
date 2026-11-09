@@ -82,6 +82,8 @@ const COMMANDS: &[&str] = &[
     "phone_sync_pair",
     "phone_sync_forget",
     "phone_sync_open_firewall",
+    "phone_sync_firewall_check",
+    "phone_sync_firewall_fix",
     "phone_sync_repair",
     "phone_sync_confirm",
     "phone_inbox_link_memo",

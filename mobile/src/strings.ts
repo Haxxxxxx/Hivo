@@ -282,7 +282,7 @@ export const T = dict(
 
 const ERRORS = dict(
   {
-    offline: "Not on the same Wi-Fi as your computer, or the computer's firewall blocks Hivo. On a Wi-Fi without internet, Android may use mobile data instead: turn mobile data off while you sync",
+    offline: "Not on the same Wi-Fi as your computer, or the computer's firewall blocks Hivo (on Windows: Hivo → Settings → Phone sync → Fix it). On a Wi-Fi without internet, Android may use mobile data instead: turn mobile data off while you sync",
     off: "Phone sync is off on the desktop",
     "read-only": "Hivo on the computer can't save right now: open it to fix",
     "update-desktop": "Update Hivo on the computer: it's older than this phone's app",
@@ -300,7 +300,7 @@ const ERRORS = dict(
     pairAgain: "Pair again",
   },
   {
-    offline: `Pas sur le même Wi-Fi que ton ordi, ou le pare-feu de l'ordi bloque Hivo. Sur un Wi-Fi sans internet, Android peut passer par les données mobiles${NB}: coupe-les le temps de la synchro`,
+    offline: `Pas sur le même Wi-Fi que ton ordi, ou le pare-feu de l'ordi bloque Hivo (sur Windows${NB}: Hivo → Réglages → Synchro téléphone → Réparer). Sur un Wi-Fi sans internet, Android peut passer par les données mobiles${NB}: coupe-les le temps de la synchro`,
     off: "La sync téléphone est coupée sur l'ordi",
     "read-only": `Hivo sur l'ordi ne peut pas enregistrer pour l'instant${NB}: ouvre-le pour régler ça`,
     "update-desktop": `Mets Hivo à jour sur l'ordi${NB}: il est plus ancien que l'app de ce téléphone`,

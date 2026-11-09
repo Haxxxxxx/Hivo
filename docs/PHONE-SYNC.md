@@ -582,3 +582,33 @@ minutes paired in your place.
   screen stays on while an upload sends; a desktop that answers
   `offset:n` without moving forward 5 times holds the item
   ("desktop-error") instead of looping.
+
+## Windows Firewall: "Fix it" (2026-11, no protocol change)
+The common reason a phone gets nothing from a Windows computer (the pairing
+code never shows there; the phone says "not on the same Wi-Fi"): the first time
+Hivo opened its port, Windows asked "Allow access?", the window was closed and
+Windows quietly stored an inbound **Block** rule for Hivo's exe; or the Wi-Fi is
+marked **Public**, where no allow rule of Hivo's applies.
+- `src-tauri/src/firewall.rs`. `phone_sync_firewall_check` (no admin) reads,
+  with PowerShell, the network category of the interface carrying the QR's
+  first address, whether the firewall is on for it and the enabled inbound
+  rules for Hivo's own exe; `assess` (pure, tested on every OS) says
+  `needsFix` when a Block rule covers that network or no Allow rule does.
+  Off Windows: `supported: false`.
+- `phone_sync_firewall_fix`: a native dialog says what changes (and warns to
+  do it only on one's own Wi-Fi when it's Public), then one UAC prompt runs one
+  script: removes Hivo's inbound Block rules (a Public-only one is kept), adds
+  "Hivo phone sync" (group `Hivo`, TCP, this exe, `RemoteAddress LocalSubnet`,
+  Private + Domain; replaced on a second run) and sets that one interface to
+  Private when it was Public. No to either prompt = nothing changes. The exe
+  is `current_exe()` and the address this computer's own; both are quoted
+  PowerShell literals sent with `-EncodedCommand`, never webview input.
+- Settings → Phone sync checks when sync is on and again when a QR has been
+  up 20 s without a phone; "Fix it" shows only when `needsFix`. Otherwise the
+  20 s tip names the other causes (guest Wi-Fi, VPN on the phone). The phone's
+  "offline" message points to Fix it.
+- Not covered: third-party firewalls (antivirus suites). The check can't see
+  them; after a fix that still reads blocked the box says so.
+- By hand (admin PowerShell), what the fix does:
+  `New-NetFirewallRule -DisplayName "Hivo phone sync" -Direction Inbound -Program <Hivo.exe> -Action Allow -Protocol TCP -RemoteAddress LocalSubnet -Profile Private,Domain`,
+  remove the Block rules for the same exe, `Set-NetConnectionProfile -InterfaceAlias "Wi-Fi" -NetworkCategory Private`.

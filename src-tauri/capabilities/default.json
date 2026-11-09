@@ -90,6 +90,8 @@
     "allow-phone-sync-pair",
     "allow-phone-sync-forget",
     "allow-phone-sync-open-firewall",
+    "allow-phone-sync-firewall-check",
+    "allow-phone-sync-firewall-fix",
     "allow-phone-sync-repair",
     "allow-phone-sync-confirm",
     "allow-phone-inbox-link-memo",
