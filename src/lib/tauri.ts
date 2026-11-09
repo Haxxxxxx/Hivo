@@ -34,6 +34,7 @@ import type {
   LookupSource,
   SpotifyStatus,
   PhoneSyncStatus,
+  FirewallState,
   PhonePairing,
   PhoneSyncRequest,
 } from "../types";
@@ -402,6 +403,10 @@ export const phoneSyncPair = (): Promise<PhonePairing> => invoke("phone_sync_pai
 export const PAIR_CANCELLED = "cancelled";
 /** Windows: "Allow an app through Windows Firewall". */
 export const phoneSyncOpenFirewall = (): Promise<void> => invoke("phone_sync_open_firewall");
+/** Windows: whether the firewall lets a phone in (a few seconds: PowerShell). */
+export const phoneSyncFirewallCheck = (): Promise<FirewallState> => invoke("phone_sync_firewall_check");
+/** Windows: "Fix it" (a native dialog, then one admin prompt). Rejects with `PAIR_CANCELLED` on a no. */
+export const phoneSyncFirewallFix = (): Promise<FirewallState> => invoke("phone_sync_firewall_fix", { lang: currentLang() });
 /** A phone with a newer Hivo said hello: this computer may have an update. */
 export function onPhoneNewer(handler: () => void): Promise<UnlistenFn> {
   return listen("phone-sync-phone-newer", () => handler());
