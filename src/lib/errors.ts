@@ -242,6 +242,8 @@ const EN: Record<string, Msg> = {
   // Phone sync and the phone inbox
   "phone.firewall": () => "The firewall settings couldn't be opened.",
   "phone.windowsOnly": () => "Only on Windows.",
+  "phone.firewallCheck": () => "Hivo couldn't check Windows Firewall.",
+  "phone.firewallFix": () => "Windows didn't let Hivo change the firewall. Try again, or allow Hivo by hand in the firewall settings.",
   "phone.unavailable": () => "Phone sync isn't available (no config folder).",
   "phone.off": () => "Turn phone sync on first.",
   "phone.noLan": () => "No local network address found. Connect this computer to Wi-Fi (or a local network) first.",
@@ -486,6 +488,8 @@ const FR: Record<string, Msg> = {
   "spotify.noCredentials": () => "Ajoute d'abord des identifiants Spotify dans les Réglages.",
   "phone.firewall": () => "Les réglages du pare-feu n'ont pas pu s'ouvrir.",
   "phone.windowsOnly": () => "Seulement sur Windows.",
+  "phone.firewallCheck": () => "Hivo n'a pas pu vérifier le pare-feu Windows.",
+  "phone.firewallFix": () => "Windows n'a pas laissé Hivo modifier le pare-feu. Réessaie, ou autorise Hivo à la main dans les réglages du pare-feu.",
   "phone.unavailable": () => "La sync téléphone n'est pas dispo (pas de dossier de réglages).",
   "phone.off": () => "Active d'abord la sync téléphone.",
   "phone.noLan": () => "Aucune adresse réseau locale trouvée. Connecte d'abord cet ordi au Wi-Fi (ou à un réseau local).",

@@ -1669,6 +1669,47 @@ pub fn phone_sync_open_firewall() -> Result<(), String> {
     }
 }
 
+/// Windows: whether the firewall lets a phone reach phone sync, for the
+/// interface carrying the address the QR names first. Elsewhere `supported: false`.
+#[tauri::command]
+pub async fn phone_sync_firewall_check() -> Result<crate::firewall::FirewallState, String> {
+    tauri::async_runtime::spawn_blocking(|| crate::firewall::check(lan_addresses().first().copied()))
+        .await
+        .map_err(|e| app_err("phone.firewallCheck", format!("could not check the firewall: {e}")).into())
+}
+
+/// Windows: "Fix it". A native dialog says what changes, then one UAC
+/// prompt runs `firewall::fix` (Hivo's exe and this computer's own address
+/// only: nothing from the webview). Answers the state afterwards, or
+/// `CANCELLED` when the user said no to either prompt.
+#[tauri::command]
+pub async fn phone_sync_firewall_fix(app: AppHandle, lang: Option<String>) -> Result<crate::firewall::FirewallState, String> {
+    let Some(ip) = lan_addresses().first().copied() else {
+        return Err(app_err("phone.noLan", "No local network address found. Connect this computer to Wi-Fi (or a local network) first.").into());
+    };
+    let before = tauri::async_runtime::spawn_blocking(move || crate::firewall::check(Some(ip))).await.unwrap_or_else(|_| crate::firewall::FirewallState::unknown());
+    if !before.supported {
+        return Err(app_err("phone.windowsOnly", "Only on Windows.").into());
+    }
+    if !confirm(&app, Confirm::Firewall(before.public_network), lang.as_deref()).await {
+        return Err(CANCELLED.to_string());
+    }
+    let make_private = before.public_network;
+    let outcome = tauri::async_runtime::spawn_blocking(move || crate::firewall::fix(ip, make_private))
+        .await
+        .unwrap_or_else(|e| crate::firewall::FixOutcome::Failed(e.to_string()));
+    match outcome {
+        crate::firewall::FixOutcome::Done => {}
+        crate::firewall::FixOutcome::Cancelled => return Err(CANCELLED.to_string()),
+        crate::firewall::FixOutcome::Failed(e) => {
+            return Err(app_err("phone.firewallFix", format!("Windows didn't let Hivo change the firewall ({e}).")).with("reason", e).into())
+        }
+    }
+    tauri::async_runtime::spawn_blocking(move || crate::firewall::check(Some(ip)))
+        .await
+        .map_err(|e| app_err("phone.firewallCheck", format!("could not check the firewall: {e}")).into())
+}
+
 /// What `phone_sync_pair` answers when the user said no in the dialog.
 pub const CANCELLED: &str = "cancelled";
 
@@ -1678,6 +1719,8 @@ enum Confirm {
     Pair,
     /// The code the phone should show.
     Code(String),
+    /// The Windows Firewall fix; true when it also sets the Wi-Fi to Private.
+    Firewall(bool),
 }
 
 /// The native confirmation (Rust-side text, the app's language from the
@@ -1706,6 +1749,24 @@ async fn confirm(app: &AppHandle, what: Confirm, lang: Option<&str>) -> bool {
             "Associer un nouveau téléphone ?",
             "Le QR code qui suit permet au téléphone qui le scanne de lire et modifier tes notes et d'envoyer des fichiers à cet ordi. Ne le montre qu'à ton propre téléphone.",
             "Afficher le QR code",
+        ),
+        (Confirm::Firewall(public), false) => (
+            "Let your phone reach Hivo?",
+            if public {
+                "Windows will ask for admin rights once. Hivo then allows itself through Windows Firewall on private networks (only devices on your local network, only Hivo) and marks this Wi-Fi as Private, a home network. Do it only on your own Wi-Fi, not a café's or a school's."
+            } else {
+                "Windows will ask for admin rights once. Hivo then removes the rule blocking it and allows itself through Windows Firewall on private networks (only devices on your local network, only Hivo)."
+            },
+            "Continue",
+        ),
+        (Confirm::Firewall(public), true) => (
+            "Laisser ton téléphone joindre Hivo\u{202f}?",
+            if public {
+                "Windows va demander les droits administrateur une fois. Hivo s'autorise ensuite dans le pare-feu Windows sur les réseaux privés (seulement les appareils de ton réseau local, seulement Hivo) et marque ce Wi-Fi comme Privé, un réseau domestique. Fais-le seulement sur ton propre Wi-Fi, pas celui d'un café ou d'une école."
+            } else {
+                "Windows va demander les droits administrateur une fois. Hivo supprime ensuite la règle qui le bloque et s'autorise dans le pare-feu Windows sur les réseaux privés (seulement les appareils de ton réseau local, seulement Hivo)."
+            },
+            "Continuer",
         ),
         (Confirm::Code(code), false) => {
             code_message = format!("Confirm only if your phone shows this code: {}. Anyone who scanned the QR code could be asking: if it isn't your phone, choose Cancel, then Not my phone.", spaced(&code));

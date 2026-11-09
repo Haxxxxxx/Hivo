@@ -18,6 +18,7 @@ mod models;
 mod package;
 mod paths;
 mod phone_inbox;
+mod firewall;
 mod phone_sync;
 mod render;
 mod resolve;
@@ -124,6 +125,8 @@ pub fn run() {
             phone_sync::phone_sync_enable,
             phone_sync::phone_sync_pair,
             phone_sync::phone_sync_open_firewall,
+            phone_sync::phone_sync_firewall_check,
+            phone_sync::phone_sync_firewall_fix,
             phone_sync::phone_sync_forget,
             phone_sync::phone_sync_repair,
             phone_sync::phone_sync_confirm,

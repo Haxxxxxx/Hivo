@@ -854,6 +854,20 @@ export interface PhoneSyncStatus {
   error: string | null;
 }
 
+/** Windows Firewall vs phone sync (src-tauri/src/firewall.rs). */
+export interface FirewallState {
+  /** False off Windows. */
+  supported: boolean;
+  /** The check couldn't tell. */
+  unknown: boolean;
+  /** The Wi-Fi is marked Public. */
+  publicNetwork: boolean;
+  /** A Block rule for Hivo applies on this network. */
+  blocked: boolean;
+  /** A phone can't get in: show "Fix it". */
+  needsFix: boolean;
+}
+
 /** A pairing QR (v1.2): a one-time token and this computer's public key, never the device key. */
 export interface PhonePairing {
   deviceId: string;
