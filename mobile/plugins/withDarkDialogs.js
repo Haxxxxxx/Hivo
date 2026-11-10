@@ -24,6 +24,12 @@ const COLORS = {
 };
 
 const DIALOG = "Theme.Hivo.Dialog";
+// The title has its own style with the cream colour set explicitly: React
+// Native's title view takes ?android:windowTitleStyle from the activity theme
+// (DayNight's light text appearance), so it came out near-black on the dark
+// surface ("Recording notification" was unreadable, 2026-11-10).
+const TITLE = "Widget.Hivo.Dialog.Title";
+const TITLE_TEXT = "TextAppearance.Hivo.Dialog.Title";
 const POSITIVE = "Widget.Hivo.Dialog.Positive";
 const OTHER = "Widget.Hivo.Dialog.Other";
 const DRAWABLE = "hivo_dialog_background";
@@ -69,7 +75,13 @@ function applyDialogStyles(styles) {
     ["android:fontFamily", "sans-serif-medium"],
   ]);
   setStyle(res, OTHER, "Widget.AppCompat.Button.ButtonBar.AlertDialog", [["android:textColor", "@color/hivo_dialog_muted"]]);
+  setStyle(res, TITLE_TEXT, "TextAppearance.AppCompat.Title", [["android:textColor", "@color/hivo_dialog_title"]]);
+  setStyle(res, TITLE, "RtlOverlay.DialogWindowTitle.AppCompat", [
+    ["android:textAppearance", `@style/${TITLE_TEXT}`],
+    ["android:textColor", "@color/hivo_dialog_title"],
+  ]);
   setStyle(res, DIALOG, "Theme.AppCompat.Dialog.Alert", [
+    ["android:windowTitleStyle", `@style/${TITLE}`],
     ["android:windowBackground", `@drawable/${DRAWABLE}`],
     ["android:colorBackground", "@color/hivo_dialog_surface"],
     ["colorBackgroundFloating", "@color/hivo_dialog_surface"],
@@ -85,6 +97,12 @@ function applyDialogStyles(styles) {
   if (app) {
     setItem(app, "alertDialogTheme", `@style/${DIALOG}`);
     setItem(app, "android:alertDialogTheme", `@style/${DIALOG}`);
+    // React Native draws Alert titles with its own layout
+    // (alert_title_layout.xml: style="?android:attr/windowTitleStyle"),
+    // inflated with the activity's context: the attribute is read from
+    // AppTheme, not the dialog theme. AppTheme has no window title bar
+    // (NoActionBar), so this only reaches those dialog titles.
+    setItem(app, "android:windowTitleStyle", `@style/${TITLE}`);
   }
   return styles;
 }
