@@ -357,7 +357,15 @@ const fileStem = (p: string) => (p.split(/[\\/]/).pop() ?? p).replace(/\.[^.]+$/
  * old path comes back first, its note is restored. Sizes are kept for every
  * tracked path. Returns null when nothing changed.
  */
-export function relinkBeatNotes(links: BeatLinks, beats: ScannedBeat[], complete: boolean): Required<BeatLinks> | null {
+export function relinkBeatNotes(
+  links: BeatLinks,
+  beats: ScannedBeat[],
+  complete: boolean,
+  /** Beats phone memos are filed on (`beat:<path>`): tracked like a noted
+   * beat (size learnt, followed when moved), so a memo-only beat keeps its
+   * memos after a move (review 2026-11-10). */
+  memoBeats: string[] = [],
+): (Required<BeatLinks> & { moved: { from: string; to: string }[] }) | null {
   const notes = { ...(links.beatNotes ?? {}) };
   const sizes = { ...(links.beatNoteSizes ?? {}) };
   const moves = { ...(links.beatNoteMoves ?? {}) };
@@ -382,7 +390,9 @@ export function relinkBeatNotes(links: BeatLinks, beats: ScannedBeat[], complete
     }
   }
 
-  const tracked = () => new Set([...Object.keys(notes), ...Object.values(leadBeats).filter((p): p is string => typeof p === "string")]);
+  const memos = new Set(memoBeats);
+  const moved: { from: string; to: string }[] = [];
+  const tracked = () => new Set([...Object.keys(notes), ...Object.values(leadBeats).filter((p): p is string => typeof p === "string"), ...memos]);
   if (complete) {
     const taken = tracked();
     const lost = [...taken].filter((p) => !here.has(p));
@@ -403,6 +413,8 @@ export function relinkBeatNotes(links: BeatLinks, beats: ScannedBeat[], complete
       }
       moves[old] = text !== undefined ? { to: to.path, size, text } : { to: to.path, size };
       for (const [hash, p] of Object.entries(leadBeats)) if (p === old) leadBeats[hash] = to.path;
+      if (memos.delete(old)) memos.add(to.path);
+      moved.push({ from: old, to: to.path });
       sizes[to.path] = to.sizeBytes;
       delete sizes[old];
       free.splice(free.indexOf(to), 1);
@@ -422,7 +434,7 @@ export function relinkBeatNotes(links: BeatLinks, beats: ScannedBeat[], complete
   const ids = Object.keys(moves);
   for (const old of ids.slice(0, Math.max(0, ids.length - MAX_BEAT_MOVES))) delete moves[old];
 
-  return changed ? { beatNotes: notes, beatNoteSizes: nextSizes, beatNoteMoves: moves, leadBeats } : null;
+  return changed ? { beatNotes: notes, beatNoteSizes: nextSizes, beatNoteMoves: moves, leadBeats, moved } : null;
 }
 
 /** What the Digger keeps of the last dig across restarts (`save_last_dig`). */

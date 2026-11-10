@@ -171,6 +171,17 @@ describe("digger links", () => {
       expect(relinkBeatNotes({ leadBeats: { h1: "/b/Night.mp3" } }, [b("/b/Night.mp3", 77)], true)?.beatNoteSizes).toEqual({ "/b/Night.mp3": 77 });
     });
 
+    it("follows a beat that only has phone memos on it, and says what moved (review 2026-11-10)", () => {
+      // First scan: the memo beat's size is learnt.
+      const learnt = relinkBeatNotes({}, [b("/b/Night.mp3", 55)], true, ["/b/Night.mp3"]);
+      expect(learnt?.beatNoteSizes).toEqual({ "/b/Night.mp3": 55 });
+      expect(learnt?.moved).toEqual([]);
+      // Then it moves: followed, and reported so the inbox can re-file its memos.
+      const next = relinkBeatNotes(learnt!, [b("/b/2026/Night.mp3", 55)], true, ["/b/Night.mp3"]);
+      expect(next?.moved).toEqual([{ from: "/b/Night.mp3", to: "/b/2026/Night.mp3" }]);
+      expect(next?.beatNoteSizes).toEqual({ "/b/2026/Night.mp3": 55 });
+    });
+
     it("leaves everything alone when nothing moved", () => {
       expect(relinkBeatNotes(links, [b("/b/Untitled.mp3", 1234), b("/b/kept.mp3", 9)], true)).toBeNull();
       // A noted beat missing from the scan keeps its note and its last size.

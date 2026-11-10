@@ -149,16 +149,57 @@ pub fn lead_markdown(lead: &Lead, date: &str) -> String {
     lines.join("\n")
 }
 
-/// Writes the lead into `<folder>/_leads/` (created if needed), overwriting
-/// an earlier save of the same url. Returns the file's path. Never through a
-/// symlink: a linked `_leads` folder or lead file is refused (`kits.rs` rules).
+/// An earlier save of the same link in `dir` (`<any slug>-<hash>.md`, a
+/// regular file): a new title must not make a second file for one video.
+fn saved_file(dir: &Path, hash: &str) -> Option<PathBuf> {
+    let entries = fs::read_dir(dir).ok()?;
+    entries.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| {
+        p.extension().is_some_and(|x| x == "md")
+            && p.file_stem().and_then(|s| s.to_str()).and_then(stem_hash) == Some(hash)
+            && fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_file())
+    })
+}
+
+/// What the user wrote in an earlier save: the lines after Hivo's footer.
+/// None when the footer is gone: the whole file was rewritten by hand.
+fn own_text(existing: &str) -> Option<String> {
+    let at = existing.lines().position(|l| l.trim() == FOOTER)?;
+    let tail: Vec<&str> = existing.lines().skip(at + 1).collect();
+    Some(tail.join("\n").trim_matches('\n').to_string())
+}
+
+/// Writes the lead into `<folder>/_leads/` (created if needed). Saving the
+/// same link again refreshes its facts in the same file and keeps what the
+/// user typed below the footer; a file whose footer was removed is the
+/// user's own and is left as it is. Written to a temporary file then
+/// renamed over the old one, so a failed write never loses it (review
+/// 2026-11-10). Returns the file's path. Never through a symlink: a linked
+/// `_leads` folder or lead file is refused (`kits.rs` rules).
 pub fn write_lead(folder: &Path, lead: &Lead, date: &str) -> Result<PathBuf, String> {
     let dir = crate::kits::sub_dir(folder, LEADS_DIR)?;
-    let path = dir.join(lead_file_name(lead));
-    if crate::kits::is_link(&path) {
-        return Err(path_err("io.link", &path, format!("{} is a link: refusing to write through it", path.display())));
+    let fresh = dir.join(lead_file_name(lead));
+    if crate::kits::is_link(&fresh) {
+        return Err(path_err("io.link", &fresh, format!("{} is a link: refusing to write through it", fresh.display())));
     }
-    crate::kits::write_new(&path, lead_markdown(lead, date).as_bytes()).map_err(|e| path_err("io.write", &path, format!("couldn't write {}: {e}", path.display())))?;
+    let path = saved_file(&dir, &lead_hash(&lead.url)).unwrap_or(fresh);
+    let mut text = lead_markdown(lead, date);
+    if let Ok(existing) = fs::read_to_string(&path) {
+        match own_text(&existing) {
+            None => return Ok(path),
+            Some(own) if !own.is_empty() => {
+                text.push('\n');
+                text.push_str(&own);
+                text.push('\n');
+            }
+            Some(_) => {}
+        }
+    }
+    let tmp = path.with_extension("md.tmp");
+    let write = |p: &Path| crate::kits::write_new(p, text.as_bytes());
+    write(&tmp).and_then(|_| fs::rename(&tmp, &path)).map_err(|e| {
+        let _ = crate::kits::clear_target(&tmp);
+        path_err("io.write", &path, format!("couldn't write {}: {e}", path.display()))
+    })?;
     Ok(path)
 }
 
@@ -440,6 +481,29 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         assert!(refused.is_err());
         assert_eq!(kept, "keep");
+    }
+
+    #[test]
+    fn saving_again_keeps_what_the_user_typed() {
+        // Review 2026-11-10: a re-save deleted the file first and dropped hand edits.
+        let root = std::env::temp_dir().join(format!("hivo-leads-own-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let first = write_lead(&root, &lead(), "2026-10-24").unwrap();
+        let mut text = fs::read_to_string(&first).unwrap();
+        text.push_str("\nMy notes: hook over the 2nd loop.\n");
+        fs::write(&first, &text).unwrap();
+        // Same link, another title: same file, fresh facts, the user's lines kept.
+        let again = write_lead(&root, &Lead { title: "Night (prod. X)".into(), summary: Some("Updated.".into()), ..lead() }, "2026-10-25").unwrap();
+        assert_eq!(first, again, "one file per link, whatever the title");
+        let now = fs::read_to_string(&again).unwrap();
+        assert!(now.contains("Updated.") && now.contains("My notes: hook over the 2nd loop."));
+        assert_eq!(fs::read_dir(root.join(LEADS_DIR)).unwrap().count(), 1, "no temp file or duplicate left");
+        // Footer removed by hand: the file is the user's, left as it is.
+        fs::write(&again, "# Night\n\n- Link: https://www.youtube.com/watch?v=abc\n\nAll mine.\n").unwrap();
+        write_lead(&root, &lead(), "2026-10-26").unwrap();
+        assert!(fs::read_to_string(&again).unwrap().contains("All mine."));
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

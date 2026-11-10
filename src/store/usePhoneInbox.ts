@@ -170,9 +170,20 @@ export function startPhoneInbox(): () => void {
       .catch((e) => console.error("phone inbox: following a relink failed", e))
       .finally(() => void usePhoneInbox.getState().refresh());
   });
+  // A beat file moved or renamed (the Digger's scan followed it): memos
+  // linked to it (`beat:<path>`) follow too, so its notes panel still lists them.
+  const unsubBeats = useAppStore.subscribe((s, prev) => {
+    if (s.lastBeatMoves === prev.lastBeatMoves || s.lastBeatMoves.length === 0 || s.demoMode) return;
+    const moves = relinkedFilings(usePhoneInbox.getState().items, s.lastBeatMoves, "beat");
+    if (moves.length === 0) return;
+    void Promise.all(moves.map((m) => api.phoneInboxMark(m.id, "filed", m.filedTo)))
+      .catch((e) => console.error("phone inbox: following a moved beat failed", e))
+      .finally(() => void usePhoneInbox.getState().refresh());
+  });
   return () => {
     stopped = true;
     unlisten?.();
     unsubRelinks();
+    unsubBeats();
   };
 }

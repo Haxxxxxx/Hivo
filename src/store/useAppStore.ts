@@ -177,6 +177,9 @@ interface AppState {
   /** The last records moved to new paths (a rename, "Continue in FL Studio"):
    * what's open elsewhere (the session window) follows them. */
   lastRelinks: Relink[];
+  /** The last beats followed to a new path (a beat file moved or renamed):
+   * the phone inbox re-files the memos linked to them (usePhoneInbox). */
+  lastBeatMoves: { from: string; to: string }[];
   dismissRelinked: () => void;
   search: string;
   selected: Set<string>;
@@ -353,7 +356,8 @@ interface AppState {
   /** After a beats scan: notes and hand-made lead links follow moved or
    * renamed beats (only after a `complete` scan: not capped, every folder
    * read), tracked beats' sizes are remembered (`relinkBeatNotes`). */
-  syncBeatNotes: (beats: { path: string; name: string; sizeBytes: number }[], complete: boolean) => void;
+  /** `memoBeats`: beats phone memos are filed on, followed like noted beats. */
+  syncBeatNotes: (beats: { path: string; name: string; sizeBytes: number }[], complete: boolean, memoBeats?: string[]) => void;
   /** A pure workspace change (src/lib/*) applied and saved like any edit. */
   applyWorkspace: (change: (ws: Workspace) => Workspace) => void;
   /** A saved prod's beat set by hand: a path, null ("not in your prods"), or undefined (back to the name match). */
@@ -749,6 +753,7 @@ export const useAppStore = create<AppState>((set, get) => {
     },
     relinked: [],
     lastRelinks: [],
+    lastBeatMoves: [],
     dismissRelinked: () => set({ relinked: [] }),
     search: "",
     selected: new Set(),
@@ -1334,13 +1339,19 @@ export const useAppStore = create<AppState>((set, get) => {
 
     setLeadNote: (hash, text) => mutateWorkspace((ws) => ({ ...ws, leadNotes: setNote(ws.leadNotes, hash, text) })),
     setBeatNote: (path, text) => mutateWorkspace((ws) => ({ ...ws, beatNotes: setNote(ws.beatNotes, path, text) })),
-    syncBeatNotes: (beats, complete) => {
+    syncBeatNotes: (beats, complete, memoBeats = []) => {
       const ws = get().workspace;
       if (ws.sample) return;
-      const hasLinks = Object.keys(ws.beatNotes ?? {}).length > 0 || Object.keys(ws.beatNoteMoves ?? {}).length > 0 || Object.values(ws.leadBeats ?? {}).some((p) => typeof p === "string");
+      const hasLinks =
+        memoBeats.length > 0 ||
+        Object.keys(ws.beatNotes ?? {}).length > 0 ||
+        Object.keys(ws.beatNoteMoves ?? {}).length > 0 ||
+        Object.values(ws.leadBeats ?? {}).some((p) => typeof p === "string");
       if (!hasLinks) return;
-      const next = relinkBeatNotes(ws, beats, complete);
-      if (!next) return;
+      const result = relinkBeatNotes(ws, beats, complete, memoBeats);
+      if (!result) return;
+      const { moved, ...next } = result;
+      if (moved.length) set({ lastBeatMoves: moved });
       // Notes that moved to another beat path: the phone re-keys its edits too.
       const before = ws.beatNotes ?? {};
       const after = next.beatNotes ?? before;

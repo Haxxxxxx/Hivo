@@ -119,13 +119,24 @@ export function memosForSong(items: InboxItem[], songKey: string): InboxItem[] {
   });
 }
 
-/** Items filed to a song that moved (relinks): their new `filedTo`. */
-export function relinkedFilings(items: InboxItem[], relinks: { from: string; to: string }[]): { id: string; filedTo: string }[] {
-  const map = new Map(relinks.map((r) => [targetKey({ kind: "song", id: r.from }), targetKey({ kind: "song", id: r.to })]));
+/** Items filed to a song (or, `kind: "beat"`, a beat) that moved: their new `filedTo`. */
+export function relinkedFilings(items: InboxItem[], relinks: { from: string; to: string }[], kind: "song" | "beat" = "song"): { id: string; filedTo: string }[] {
+  const map = new Map(relinks.map((r) => [targetKey({ kind, id: r.from }), targetKey({ kind, id: r.to })]));
   return items.flatMap((i) => {
     const to = i.status === "filed" && i.filedTo ? map.get(i.filedTo) : undefined;
     return to ? [{ id: i.id, filedTo: to }] : [];
   });
+}
+
+/** The beats that filed memos point at (`beat:<path>`): followed when a beat moves. */
+export function memoBeatPaths(items: InboxItem[]): string[] {
+  const out = new Set<string>();
+  for (const i of items) {
+    if (i.status !== "filed" || i.itemType !== "memo") continue;
+    const t = parseTargetKey(i.filedTo);
+    if (t?.kind === "beat") out.add(t.id);
+  }
+  return [...out];
 }
 
 /** Memos linked to a beat or a prod (the Digger's notes panel lists them). */

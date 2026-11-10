@@ -13,6 +13,7 @@ import {
   knownTarget,
   memosFor,
   memosForSong,
+  memoBeatPaths,
   relinkedFilings,
   newCount,
   parseTargetKey,
@@ -133,6 +134,13 @@ describe("memos", () => {
     // A rename moves what was filed to the song.
     expect(relinkedFilings([...list, memo("beat:/b.wav")], [{ from: "/Music/Projects/Envy.flp", to: "/Music/Projects/Envy v2.flp" }])).toEqual([
       { id: "song:/Music/Projects/Envy.flp", filedTo: "song:/Music/Projects/Envy v2.flp" },
+    ]);
+  });
+  it("follows a moved beat: memos filed on it get its new path (review 2026-11-10)", () => {
+    const list = [memo("beat:/Beats/Night.mp3"), memo("beat:/Beats/Other.mp3"), memo("song:/Music/Night.flp")];
+    expect(memoBeatPaths(list).sort()).toEqual(["/Beats/Night.mp3", "/Beats/Other.mp3"]);
+    expect(relinkedFilings(list, [{ from: "/Beats/Night.mp3", to: "/Beats/2026/Night.mp3" }], "beat")).toEqual([
+      { id: "beat:/Beats/Night.mp3", filedTo: "beat:/Beats/2026/Night.mp3" },
     ]);
   });
   it("formats durations", () => {
