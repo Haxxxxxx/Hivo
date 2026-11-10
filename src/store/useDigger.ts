@@ -2,6 +2,8 @@ import { create } from "zustand";
 import * as api from "../lib/tauri";
 import { canonicalUrl, deeperExclude, foundTitles, leadHash, likedTitles, restoreDig, searchesDone, toggleLiked, withFallbackQueries, type KeptDig, type Liked } from "../lib/digger";
 import { useAppStore } from "./useAppStore";
+import { usePhoneInbox } from "./usePhoneInbox";
+import { memoBeatPaths } from "../lib/phoneInbox";
 import type { BeatFacts, BeatFile, DigResult, Lead, ProdScan, SavedLead, WebLink, YoutubeVideo } from "../types";
 import { errorReason, errorText } from "../lib/errors";
 
@@ -227,7 +229,7 @@ export const useDigger = create<DiggerState>((set, get) => ({
       set({ beats, scanInfo: { total: scan.total, capped: scan.capped, ignored: scan.ignored }, picked: get().picked.filter((p) => known.has(p)) });
       // Notes follow a renamed or moved beat; never after a partial scan (a
       // beat missing from it may only be on an unplugged drive).
-      useAppStore.getState().syncBeatNotes(beats, !scan.capped && !(scan.unreachable > 0));
+      useAppStore.getState().syncBeatNotes(beats, !scan.capped && !(scan.unreachable > 0), memoBeatPaths(usePhoneInbox.getState().items));
       void get().analyseBeats();
       // "In your prods" beyond the beats list; a failure only leaves it as it was.
       void api
