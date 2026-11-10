@@ -32,6 +32,18 @@ describe("withDarkDialogs", () => {
     expect(dialog.$.parent).toBe("Theme.AppCompat.Dialog.Alert");
     expect(value(dialog, "android:windowBackground")).toBe("@drawable/hivo_dialog_background");
   });
+  it("gives the title its own cream style (it was near-black on the dark surface)", () => {
+    const s = applyDialogStyles(styles());
+    const dialog = find(s, "Theme.Hivo.Dialog");
+    const title = find(s, value(dialog, "android:windowTitleStyle").replace("@style/", ""));
+    expect(title.$.parent).toBe("RtlOverlay.DialogWindowTitle.AppCompat");
+    expect(value(title, "android:textColor")).toBe("@color/hivo_dialog_title");
+    const text = find(s, value(title, "android:textAppearance").replace("@style/", ""));
+    expect(value(text, "android:textColor")).toBe("@color/hivo_dialog_title");
+    expect(COLORS.hivo_dialog_title).toBe("#f2efe8");
+    // React Native's title layout reads ?android:windowTitleStyle from the activity theme.
+    expect(value(find(s, "AppTheme"), "android:windowTitleStyle")).toBe(value(dialog, "android:windowTitleStyle"));
+  });
   it("sets the action (last button) apart from Cancel", () => {
     const s = applyDialogStyles(styles());
     const dialog = find(s, "Theme.Hivo.Dialog");
