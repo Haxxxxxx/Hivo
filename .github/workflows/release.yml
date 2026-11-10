@@ -190,6 +190,11 @@ jobs:
     if: github.repository == 'Haxxxxxx/fl-studio-manager' && (github.ref_type == 'tag' || github.ref == 'refs/heads/main')
     runs-on: [self-hosted, macOS, hivo]
     timeout-minutes: 45
+    # Settings → Send feedback (mobile/app.config.js → extra.feedback): the
+    # same public values the desktop build reads; never a secret.
+    env:
+      VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+      VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

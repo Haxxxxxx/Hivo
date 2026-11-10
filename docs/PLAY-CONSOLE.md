@@ -65,10 +65,23 @@ that):
   Hivo collects, but the owner decides whether Data safety needs a line for
   it; re-read Play's guidance on WebViews and embedded third-party content
   before the next review.
+- **Feedback (since 0.7.2, Settings → Send feedback):** only when the user taps
+  Send, the message goes to Hivo's own database (Supabase, EU, the desktop's
+  `submit_feedback` function) with its category, the reply email if typed,
+  app version, Android version, language and a random install id (rate
+  limit). Declare, **before uploading 0.7.2**:
+  - **App activity → Other user-generated content**: collected, not shared,
+    optional, purpose **App functionality** (support) and **Developer
+    communications**.
+  - **Personal info → Email address**: collected, not shared, **optional**
+    (only when typed), purpose **Developer communications**.
+  - **Device or other IDs** is already declared (ML Kit); add **App
+    functionality** as a purpose for the install id if Play asks.
 - Is data encrypted in transit? **Yes** (XChaCha20-Poly1305 with the pairing
-  key; ML Kit's diagnostics over HTTPS).
+  key; ML Kit's diagnostics and feedback over HTTPS).
 - Can users ask for deletion? Everything is on their devices: removing the
-  app (and Forget on the computer) deletes it.
+  app (and Forget on the computer) deletes it. Feedback is deleted on request
+  (the contact in the privacy policy).
 
 The privacy policy says the same (`web/src/privacyCopy.ts`, kept true when what
 the app sends changes).
