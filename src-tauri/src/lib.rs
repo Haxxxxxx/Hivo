@@ -20,6 +20,7 @@ mod paths;
 mod phone_inbox;
 mod firewall;
 mod phone_sync;
+mod prods;
 mod render;
 mod resolve;
 mod scanner;
@@ -67,6 +68,8 @@ pub fn run() {
             settings::pick_sample_folder,
             settings::remove_sample_folder,
             beats::scan_beats,
+            prods::scan_prod_files,
+            prods::move_prod_to_beats,
             digger::dig_beats,
             digger::dig_deeper,
             digger::reset_web_search,

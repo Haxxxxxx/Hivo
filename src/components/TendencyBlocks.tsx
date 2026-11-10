@@ -18,6 +18,7 @@ import {
   collaborators,
   isFromFileDates,
   keyName,
+  pace,
   songShape,
   tempoKeyTendencies,
   weekdayRun,
@@ -96,6 +97,18 @@ const T = dict(
     noStarts: "No song started in the last 12 months.",
     daysIn: (stage: string) => `Days in ${stage}`,
     fromStageLog: "Days in each stage come from Hivo's stage log, not from file dates.",
+    // Pace
+    paceStages: "By stage",
+    paceNow: "Running long",
+    paceCollecting: (since: string | null) =>
+      since
+        ? `Collecting: Hivo has logged stage moves since ${since}. This fills in once songs have moved on from a stage.`
+        : "Collecting: this fills in as songs move from one stage to the next.",
+    stallsIn: (stage: string) => `Songs stay longest in ${stage}`,
+    daysMedian: (n: number) => `${n} day${s(n)}`,
+    stays: (n: number) => `${n} stay${s(n)}`,
+    nothingLong: "Nothing's running long: every song is within its stage's usual time.",
+    longFor: (days: number, stage: string, usual: number) => `${days} days in ${stage} · usually ${usual}`,
     // File-date blocks
     approx: "Approximate: from file dates",
     approxWhy:
@@ -156,6 +169,18 @@ const T = dict(
     noStarts: "Aucun son démarré ces 12 derniers mois.",
     daysIn: (stage: string) => `Jours en ${stage}`,
     fromStageLog: "Les jours par étape viennent du journal des étapes de Hivo, pas des dates des fichiers.",
+    // Pace
+    paceStages: "Par étape",
+    paceNow: "Ça traîne",
+    paceCollecting: (since: string | null) =>
+      since
+        ? `En cours${" "}: Hivo note les changements d'étape depuis ${since}. Ça se remplit quand des sons passent à l'étape suivante.`
+        : "En cours : ça se remplit à mesure que tes sons passent d'une étape à la suivante.",
+    stallsIn: (stage: string) => `Tes sons restent le plus longtemps en ${stage}`,
+    daysMedian: (n: number) => `${n} jour${n < 2 ? "" : "s"}`,
+    stays: (n: number) => `${n} passage${n < 2 ? "" : "s"}`,
+    nothingLong: "Rien ne traîne : chaque son est dans le temps habituel de son étape.",
+    longFor: (days: number, stage: string, usual: number) => `${days} jours en ${stage} · d'habitude ${usual}`,
     approx: "Approximatif : d'après les dates des fichiers",
     approxWhy:
       "Lu dans les dates de tes fichiers de projet, de sauvegarde et de rendu. Copier ou synchroniser un dossier, ou FL Studio qui supprime les vieilles sauvegardes, change ces dates : prends ces chiffres comme des estimations.",
@@ -186,6 +211,10 @@ export function tendencyLooks(id: TendencyBlockId): { id: string; label: string 
       { id: "numbers", label: t.numbers },
       { id: "starts", label: t.starts },
     ],
+    pace: [
+      { id: "stages", label: t.paceStages },
+      { id: "now", label: t.paceNow },
+    ],
   };
   return looks[id];
 }
@@ -203,6 +232,8 @@ export function TendencyBlock({ id, variant, control }: { id: TendencyBlockId; v
       return <CollaboratorsBlock recent={variant === "recent"} control={control} />;
     case "songShape":
       return <SongShapeBlock starts={variant === "starts"} control={control} />;
+    case "pace":
+      return <PaceBlock now={variant === "now"} control={control} />;
   }
 }
 
@@ -636,6 +667,62 @@ function SongShapeBlock({ starts, control }: { starts: boolean; control: ReactNo
             </Tip>
           )}
         </div>
+      )}
+    </TendencyCard>
+  );
+}
+
+// ---- 6. Pace ----
+
+/** Median days per stage from the stage log, and the songs sitting in their
+ * stage much longer than usual (a click opens the song). One neutral series:
+ * the slowest stage is named in words, not coloured. */
+function PaceBlock({ now, control }: { now: boolean; control: ReactNode }) {
+  const songs = useVisibleSongs();
+  const workspace = useAppStore((s) => s.workspace);
+  const openDetail = useAppStore((s) => s.openDetail);
+  const t = tr(T);
+  const out = useMemo(() => pace(songs, workspace), [songs, workspace]);
+  const since = out.sinceMs ? new Date(out.sinceMs).toLocaleDateString(locale(), { day: "numeric", month: "long" }) : null;
+
+  if (out.stages.length === 0) {
+    return (
+      <TendencyCard id="pace" action={control}>
+        <Empty>{t.paceCollecting(since)}</Empty>
+      </TendencyCard>
+    );
+  }
+
+  if (!now) {
+    return (
+      <TendencyCard id="pace" action={control}>
+        {out.slowest && <Headline>{t.stallsIn(statusInfo(out.slowest).label)}</Headline>}
+        <Rows
+          sub
+          rows={out.stages.map((d) => ({ key: d.stage, label: statusInfo(d.stage).label, sub: t.stays(d.songs), count: d.medianDays }))}
+        />
+        <div className="mt-3 text-xs text-engrave">
+          {t.median} · {t.fromStageLog}
+        </div>
+      </TendencyCard>
+    );
+  }
+
+  return (
+    <TendencyCard id="pace" action={control}>
+      {out.runningLong.length === 0 ? (
+        <Empty>{t.nothingLong}</Empty>
+      ) : (
+        <ul className="flex flex-col gap-1.5">
+          {out.runningLong.map((r) => (
+            <li key={r.path}>
+              <button onClick={() => openDetail(r.path)} className="flex w-full items-baseline justify-between gap-3 text-left text-xs hover:text-cream">
+                <span className="min-w-0 truncate text-cream">{r.name}</span>
+                <span className="shrink-0 tabular-nums text-engrave">{t.longFor(r.days, statusInfo(r.stage).label, r.usualDays)}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
     </TendencyCard>
   );

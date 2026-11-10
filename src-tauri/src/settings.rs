@@ -143,6 +143,7 @@ fn apply_preferences(saved: &mut Settings, from: Settings) -> Option<String> {
     saved.ai_language = from.ai_language;
     saved.ai_include_notes = from.ai_include_notes;
     saved.dig_send_audio = from.dig_send_audio;
+    saved.prod_match_downloads = from.prod_match_downloads;
     if matches!(from.caption_language.as_str(), "fr" | "en") {
         saved.caption_language = from.caption_language;
     }

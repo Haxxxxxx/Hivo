@@ -23,6 +23,7 @@ export const DASHBOARD_BLOCK_IDS = [
   "yourSound",
   "collaborators",
   "songShape",
+  "pace",
 ] as const;
 
 export type DashboardBlockId = (typeof DASHBOARD_BLOCK_IDS)[number];
@@ -35,6 +36,7 @@ export const BLOCK_DEFAULT_HIDDEN: Partial<Record<DashboardBlockId, true>> = {
   yourSound: true,
   collaborators: true,
   songShape: true,
+  pace: true,
 };
 
 export function isDefaultHidden(id: DashboardBlockId): boolean {
@@ -64,6 +66,7 @@ export const BLOCK_VARIANTS: Record<DashboardBlockId, readonly string[]> = {
   yourSound: ["top", "shifts"],
   collaborators: ["top", "recent"],
   songShape: ["numbers", "starts"],
+  pace: ["stages", "now"],
 };
 
 export interface DashboardLayout {
@@ -94,6 +97,7 @@ export const DEFAULT_LAYOUT: DashboardLayout = {
     yourSound: "half",
     collaborators: "half",
     songShape: "half",
+    pace: "half",
   },
 };
 

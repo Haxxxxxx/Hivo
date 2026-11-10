@@ -3,10 +3,10 @@ import { Check, Copy, ExternalLink, FolderOpen, NotebookPen, Pause, Play } from 
 import { useDigger } from "../store/useDigger";
 import { useAppStore } from "../store/useAppStore";
 import * as api from "../lib/tauri";
-import { matchBeat, youtubeId } from "../lib/digger";
+import { prodMatch, youtubeId } from "../lib/digger";
 import { formatRelative } from "../lib/format";
 import { dict, tr } from "../i18n";
-import type { BeatFile, SavedLead } from "../types";
+import type { BeatFile, ProdFile, SavedLead } from "../types";
 import { ConfirmButton } from "../ui";
 import { ConvertButton, LikeChip, chip, secondary } from "./DigResults";
 
@@ -22,8 +22,15 @@ const T = dict(
   {
     title: "Saved prods",
     empty: "Nothing saved yet. \"Save to Prods\" on a result keeps its link and facts here, across sessions.",
-    downloadedHint: "A beat you downloaded into a beats folder shows up as \"In your prods\" when its file name matches the title. Wrong or missing? Link it by hand.",
+    downloadedHint: "A beat you downloaded into a beats folder (WAV, MP3, FLAC, OGG, M4A or AIFF) shows up as \"In your prods\" when its file name matches the title. Wrong or missing? Link it by hand.",
     inProds: "In your prods",
+    inDownloads: "In your prods (Downloads)",
+    foundAt: (path: string) => `Found at ${path}`,
+    moveToBeats: "Move to beats folder",
+    moveTitle: (name: string) => `Move ${name} from Downloads into your first beats folder`,
+    lookInDownloads: "Also look in Downloads",
+    lookInDownloadsHint: "Finds prods a converter saved to Downloads, by file name only: nothing is opened. Your computer may ask to allow it once.",
+    downloadsUnreadable: "Downloads couldn't be read: allow Hivo in the system settings (Privacy → Files and folders on a Mac).",
     playBeat: (name: string) => `Play ${name}`,
     pauseBeat: (name: string) => `Pause ${name}`,
     play: "Play",
@@ -55,8 +62,15 @@ const T = dict(
   {
     title: "Prods enregistrées",
     empty: "Rien d'enregistré pour l'instant. « Garder dans mes prods » sur un résultat garde son lien et ses infos ici, d'une session à l'autre.",
-    downloadedHint: `Une prod que tu as téléchargée dans un dossier de prods apparaît comme « Dans tes prods » quand le nom du fichier correspond au titre. Erreur ou oubli${NB}? Relie-la à la main.`,
+    downloadedHint: `Une prod que tu as téléchargée dans un dossier de prods (WAV, MP3, FLAC, OGG, M4A ou AIFF) apparaît comme « Dans tes prods » quand le nom du fichier correspond au titre. Erreur ou oubli${NB}? Relie-la à la main.`,
     inProds: "Dans tes prods",
+    inDownloads: "Dans tes prods (Téléchargements)",
+    foundAt: (path: string) => `Trouvée ici${NB}: ${path}`,
+    moveToBeats: "Ranger dans le dossier de prods",
+    moveTitle: (name: string) => `Déplacer ${name} de Téléchargements vers ton premier dossier de prods`,
+    lookInDownloads: "Chercher aussi dans Téléchargements",
+    lookInDownloadsHint: `Retrouve les prods qu'un convertisseur a mises dans Téléchargements, par le nom du fichier seulement${NB}: rien n'est ouvert. Ton ordi peut demander l'autorisation une fois.`,
+    downloadsUnreadable: `Téléchargements n'a pas pu être lu${NB}: autorise Hivo dans les réglages du système (Confidentialité → Fichiers et dossiers sur Mac).`,
     playBeat: (name: string) => `Écouter ${name}`,
     pauseBeat: (name: string) => `Pause ${name}`,
     play: "Écouter",
@@ -107,6 +121,12 @@ export function SavedLeads({ beats, playingBeat, onPlayBeat, selected, onSelect 
   const leads = useDigger((s) => s.leads);
   const leadError = useDigger((s) => s.leadError);
   const leadBeats = useAppStore((s) => s.workspace.leadBeats);
+  const lookInDownloads = useAppStore((s) => !!s.settings.prodMatchDownloads);
+  const updateSettings = useAppStore((s) => s.updateSettings);
+  const prodScan = useDigger((s) => s.prodScan);
+  const moveError = useDigger((s) => s.moveError);
+  const reload = useDigger((s) => s.load);
+  const files = prodScan?.files ?? [];
   const byName = useMemo(() => beats.slice().sort((a, b) => a.name.localeCompare(b.name)).slice(0, MAX_LINK_OPTIONS), [beats]);
 
   return (
@@ -117,14 +137,15 @@ export function SavedLeads({ beats, playingBeat, onPlayBeat, selected, onSelect 
       ) : (
         <>
           <ul className="flex flex-col gap-2">
-            {leads.map((lead) =>
-              lead.unrecognised ? (
-                <UnrecognisedRow key={lead.path} lead={lead} />
-              ) : (
+            {leads.map((lead) => {
+              if (lead.unrecognised) return <UnrecognisedRow key={lead.path} lead={lead} />;
+              const found = prodMatch(lead, beats, files, leadBeats?.[lead.hash]);
+              return (
               <LeadRow
                 key={lead.path}
                 lead={lead}
-                beat={matchBeat(lead, beats, leadBeats?.[lead.hash])}
+                beat={found?.beat ?? null}
+                file={found?.file ?? null}
                 manual={leadBeats?.[lead.hash]}
                 linkable={byName}
                 playingBeat={playingBeat}
@@ -132,10 +153,24 @@ export function SavedLeads({ beats, playingBeat, onPlayBeat, selected, onSelect 
                 selected={selected === lead.hash}
                 onSelect={(e) => onSelect(lead.hash, e)}
               />
-              ),
-            )}
+              );
+            })}
           </ul>
+          {moveError && <div role="alert" className="rounded-md border border-missing/30 bg-missing/10 px-3 py-2 text-xs text-cream">{moveError}</div>}
           <p className="px-1 text-[11px] text-engrave">{t.downloadedHint}</p>
+          <label className="flex cursor-pointer items-start gap-2 px-1 text-xs text-body">
+            <input
+              type="checkbox"
+              checked={lookInDownloads}
+              onChange={(e) => void updateSettings({ prodMatchDownloads: e.target.checked }).then(() => reload())}
+              className="mt-0.5 accent-orange-500"
+            />
+            <span>
+              {t.lookInDownloads}
+              <span className="block text-[11px] text-engrave">{t.lookInDownloadsHint}</span>
+            </span>
+          </label>
+          {lookInDownloads && prodScan?.downloadsUnreadable && <p className="px-1 text-[11px] text-warn">{t.downloadsUnreadable}</p>}
         </>
       )}
     </div>
@@ -187,6 +222,8 @@ function UnrecognisedRow({ lead }: { lead: SavedLead }) {
 interface RowProps {
   lead: SavedLead;
   beat: BeatFile | null;
+  /** No beat in the list, but a file that confirms it (AIFF in a beats folder, or Downloads). */
+  file: ProdFile | null;
   /** The user's own link (`Workspace.leadBeats`): a path, null, or none. */
   manual: string | null | undefined;
   linkable: BeatFile[];
@@ -196,8 +233,10 @@ interface RowProps {
   onSelect: (e?: MouseEvent) => void;
 }
 
-function LeadRow({ lead, beat, manual, linkable, playingBeat, onPlayBeat, selected, onSelect }: RowProps) {
+function LeadRow({ lead, beat, file, manual, linkable, playingBeat, onPlayBeat, selected, onSelect }: RowProps) {
   const t = tr(T);
+  const moveProdToBeats = useDigger((s) => s.moveProdToBeats);
+  const [moving, setMoving] = useState(false);
   const setLeadBeat = useAppStore((s) => s.setLeadBeat);
   const setPlaying = useDigger((s) => s.setPlaying);
   const deleteLead = useDigger((s) => s.deleteLead);
@@ -231,6 +270,11 @@ function LeadRow({ lead, beat, manual, linkable, playingBeat, onPlayBeat, select
                 {t.inProds}
               </span>
             )}
+            {file && (
+              <span className={`${chip(true)} shrink-0 whitespace-nowrap`} title={t.foundAt(file.path)}>
+                {file.place === "downloads" ? t.inDownloads : t.inProds}
+              </span>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-engrave">
             {beat && manual === undefined && (
@@ -246,7 +290,7 @@ function LeadRow({ lead, beat, manual, linkable, playingBeat, onPlayBeat, select
                 </button>
               </>
             )}
-            {!beat && linkable.length > 0 && (
+            {!beat && !file && linkable.length > 0 && (
               <select
                 value=""
                 onChange={(e) => e.target.value && setLeadBeat(lead.hash, e.target.value)}
@@ -289,6 +333,20 @@ function LeadRow({ lead, beat, manual, linkable, playingBeat, onPlayBeat, select
             className="shrink-0 rounded-full border border-rule-strong p-1.5 text-cream hover:border-hot"
           >
             {localPlaying ? <Pause size={12} /> : <Play size={12} />}
+          </button>
+        )}
+        {file?.place === "downloads" && (
+          <button
+            type="button"
+            disabled={moving}
+            onClick={() => {
+              setMoving(true);
+              void moveProdToBeats(file.path).finally(() => setMoving(false));
+            }}
+            title={t.moveTitle(file.name)}
+            className={`${secondary} flex items-center gap-1 disabled:opacity-40`}
+          >
+            <FolderOpen size={11} aria-hidden /> {t.moveToBeats}
           </button>
         )}
         {id && (
