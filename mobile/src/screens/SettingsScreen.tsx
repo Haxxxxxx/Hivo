@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { c } from "../captureStrings";
 import { confirmUnpair } from "../components/confirmUnpair";
+import { FeedbackPanel } from "../components/FeedbackPanel";
 import { ScreenHeader } from "../components/ScreenHeader";
 import { Button, Engrave, Led, Spinner } from "../components/ui";
 import { UpdateCheck } from "../components/UpdateCheck";
@@ -74,6 +75,9 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
             <Text style={styles.note}>{c().lookHint}</Text>
           </View>
         ) : null}
+
+        {/* Bug, idea, question: to the same place as the desktop's feedback button. */}
+        <FeedbackPanel />
 
         {/* Website APK: check; Play: open Play; a dev build: neither. */}
         {hasUpdateRow(Constants.expoConfig?.extra?.distribution) ? <UpdateCheck style={{ marginTop: S.xl }} /> : null}

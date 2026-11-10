@@ -15,9 +15,20 @@ const { versionCode } = require("./plugins/versionCode");
 /** @param {string | undefined} flag */
 const distribution = (flag) => (flag === "play" || flag === "direct" ? flag : "dev");
 
+// - extra.feedback: where Settings → Send feedback goes (the crew backend's
+//   submit_feedback function, the same as the desktop). From the build's
+//   environment, the repository variables the desktop build uses too; only
+//   the public anon key, never a service key. Absent: the panel says this
+//   build can't send feedback.
+const feedback = () => {
+  const url = process.env.VITE_SUPABASE_URL;
+  const anonKey = process.env.VITE_SUPABASE_ANON_KEY;
+  return url && anonKey ? { url, anonKey } : undefined;
+};
+
 module.exports = ({ config }) => ({
   ...config,
   android: { ...config.android, versionCode: versionCode(config.version) },
-  extra: { ...config.extra, distribution: distribution(process.env.HIVO_DISTRIBUTION) },
+  extra: { ...config.extra, distribution: distribution(process.env.HIVO_DISTRIBUTION), feedback: feedback() },
   plugins: [...(config.plugins ?? []), "./plugins/withReleaseSigning", "./plugins/withPlayServicesVisibility"],
 });
