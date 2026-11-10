@@ -144,7 +144,8 @@ pub fn check_script(exe: &str, ip: &str) -> String {
            if ($null -ne $c) {{\n\
              $cat = [string]$c\n\
              $name = if ($cat -eq 'DomainAuthenticated') {{ 'Domain' }} else {{ $cat }}\n\
-             $on = ([string](Get-NetFirewallProfile -Name $name).Enabled) -eq 'True'\n\
+             $fp = Get-NetFirewallProfile -Name $name\n\
+             if ($fp) {{ $on = ([string]$fp.Enabled) -eq 'True' }}\n\
            }}\n\
          }}\n\
          $rules = @({HIVO_RULES} | Where-Object {{ [string]$_.Enabled -eq 'True' -and [string]$_.Direction -eq 'Inbound' }} | ForEach-Object {{ @{{ action = [string]$_.Action; profile = [string]$_.Profile }} }})\n\
@@ -367,6 +368,15 @@ mod tests {
         assert_eq!(ps_quote("a\u{2019}b"), "'a\u{2019}\u{2019}b'");
         let s = check_script("C:\\x';Remove-Item C:\\ -Recurse;'", "192.168.1.2");
         assert!(s.contains("$exe = 'C:\\x'';Remove-Item C:\\ -Recurse;'''"));
+    }
+
+    #[test]
+    fn a_failed_profile_read_is_unknown_not_off() {
+        // Review 2026-11-10: `$on` stays null when Get-NetFirewallProfile
+        // fails, so the rules still decide instead of "firewall off".
+        let s = check_script("C:\\Hivo\\Hivo.exe", "192.168.1.2");
+        assert!(s.contains("if ($fp) { $on = ([string]$fp.Enabled) -eq 'True' }"));
+        assert!(assess(&probe(Some("Private"), None, &[("Block", "Private")])).needs_fix);
     }
 
     #[test]

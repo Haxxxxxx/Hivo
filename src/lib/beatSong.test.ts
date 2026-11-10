@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { BeatFile, InboxItem, Person, SavedLead, Workspace } from "../types";
 import { EMPTY_WORKSPACE } from "./songs";
+import { MAX_NOTE_CHARS } from "./notes";
 import { beatMemos, beatProducer, beatSongName, moveBeatToSong, producerInName } from "./beatSong";
 
 const beat = (name: string, folder = "/beats"): BeatFile => ({ path: `${folder}/${name}.mp3`, name, folder, sizeBytes: 1, modifiedAtMs: 0 });
@@ -38,6 +39,14 @@ describe("start a song from a beat", () => {
     // No note, no producer: the new song only.
     const bare = moveBeatToSong({ ...EMPTY_WORKSPACE }, "/beats/c.mp3", "/p/C/C.flp", null);
     expect(bare.songs["/p/C/C.flp"]).toEqual({});
+  });
+
+  it("keeps the beat's note on the beat when the two together are too long (review 2026-11-10)", () => {
+    const long = "x".repeat(MAX_NOTE_CHARS - 5);
+    const ws: Workspace = { ...EMPTY_WORKSPACE, beatNotes: { "/beats/a.mp3": "[Hook]\nline" }, songs: { "/p/A/A.flp": { notes: long } } };
+    const next = moveBeatToSong(ws, "/beats/a.mp3", "/p/A/A.flp", null);
+    expect(next.songs["/p/A/A.flp"].notes).toBe(long);
+    expect(next.beatNotes).toEqual({ "/beats/a.mp3": "[Hook]\nline" });
   });
 
   it("picks the memos filed on that beat, and only those", () => {

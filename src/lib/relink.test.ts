@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProjectInfo, Workspace } from "../types";
-import { applyRelinks, emptyScanMemory, findRelinks, isNetworkPath, relinksAfterScan, rootRelinks } from "./relink";
+import { applyRelinks, emptyScanMemory, findRelinks, isNetworkPath, nextSettledOrphans, relinksAfterScan, rootRelinks } from "./relink";
 
 const W = ["/music/Projects"];
 const proj = (path: string, isTemplate = false) => ({ path, isTemplate }) as ProjectInfo;
@@ -227,5 +227,48 @@ describe("rootRelinks", () => {
   it("never overwrites a record already at the new path", () => {
     const w = ws({ "/Volumes/A/Music/S.flp": { status: "prep" }, "/Volumes/B/Music/S.flp": { status: "creation" } });
     expect(rootRelinks(w, "/Volumes/A/Music", "/Volumes/B/Music")).toEqual([]);
+  });
+});
+
+describe("relinksAfterScan: one chance per orphan (review 2026-11-10)", () => {
+  const demo = "/music/Projects/Beats/Demo.flp";
+  const idea = "/music/Projects/Beats/Idea.flp";
+  const other = "/music/Projects/Beats/Other.flp";
+  const record = ws({ [demo]: { status: "release", notes: "hook", shared: true, shareId: "s1" }, [other]: { status: "creation" } });
+
+  it("a project deleted earlier never hands its record to a new one saved later", () => {
+    // Demo.flp is already gone when the session starts.
+    let r = relinksAfterScan([proj(other)], record, W, [], emptyScanMemory());
+    expect(r.relinks).toEqual([]);
+    r = relinksAfterScan([proj(other)], record, W, [], r.memory);
+    expect(r.relinks).toEqual([]);
+    expect(r.settle).toEqual([demo]);
+    // Later in the session the user saves a brand-new Idea.flp in the same folder.
+    r = relinksAfterScan([proj(other), proj(idea)], record, W, [], r.memory);
+    r = relinksAfterScan([proj(other), proj(idea)], record, W, [], r.memory);
+    expect(r.relinks).toEqual([]);
+    // Next launch: the settled list keeps it out too.
+    const saved = { ...record, settledOrphans: [demo] };
+    r = relinksAfterScan([proj(other), proj(idea)], saved, W, [], emptyScanMemory());
+    r = relinksAfterScan([proj(other), proj(idea)], saved, W, [], r.memory);
+    expect(r.relinks).toEqual([]);
+    expect(r.settle).toEqual([]);
+  });
+
+  it("a rename made while Hivo was closed still follows on the next launch", () => {
+    let r = relinksAfterScan([proj(other), proj(idea)], record, W, [], emptyScanMemory());
+    r = relinksAfterScan([proj(other), proj(idea)], record, W, [], r.memory);
+    expect(r.relinks).toEqual([{ from: demo, to: idea, reason: "renamed" }]);
+    expect(r.settle).toEqual([]);
+  });
+
+  it("nextSettledOrphans adds, prunes and stays null when nothing changed", () => {
+    expect(nextSettledOrphans(record, [proj(other)], [demo])).toEqual([demo]);
+    const saved = { ...record, settledOrphans: [demo] };
+    expect(nextSettledOrphans(saved, [proj(other)], [])).toBeNull();
+    // The file is back: dropped.
+    expect(nextSettledOrphans(saved, [proj(other), proj(demo)], [])).toEqual([]);
+    // The record is gone: dropped.
+    expect(nextSettledOrphans({ ...saved, songs: { [other]: { status: "creation" } } } as typeof saved, [proj(other)], [])).toEqual([]);
   });
 });

@@ -684,9 +684,12 @@ fn scan_with(folders: &[String], output_folder: Option<&str>, mut resolver: Reso
 
     // Export-folder mixdowns are matched by name only: when two linked
     // songs share a name, a file there could be either's, so neither gets it.
+    // Names go through the same key as the files ("01 - Intro" and
+    // "Intro (2)" are "intro"), so a numbered song finds its export and
+    // "Intro" doesn't quietly take the renders of "01 - Intro".
     let mut name_counts: HashMap<String, usize> = HashMap::new();
     for p in projects.iter().filter(|p| !p.is_template) {
-        *name_counts.entry(fold(&p.name)).or_default() += 1;
+        *name_counts.entry(export_song_key(&p.name)).or_default() += 1;
     }
 
     // Renders sit next to the .flp; recordings in the sibling Audio/ folder.
@@ -745,7 +748,6 @@ fn scan_with(folders: &[String], output_folder: Option<&str>, mut resolver: Reso
         }
 
         for (k, &i) in indices.iter().enumerate() {
-            let name = &names[k];
             // FL's split-mixer export: `<name>_<track>.wav`, one per track.
             // Two or more of them are stems, not mixdowns.
             let split: Vec<PathBuf> = beside[k].iter().filter(|(_, s)| *s).map(|(p, _)| (*p).clone()).collect();
@@ -777,8 +779,9 @@ fn scan_with(folders: &[String], output_folder: Option<&str>, mut resolver: Reso
             } else {
                 None
             };
-            if let Some(exported) = exports.get(name) {
-                if name_counts.get(name).copied().unwrap_or(0) > 1 {
+            let export_key = export_song_key(&projects[i].name);
+            if let Some(exported) = exports.get(&export_key) {
+                if name_counts.get(&export_key).copied().unwrap_or(0) > 1 {
                     projects[i].ambiguous_exports = exported.len() as u32;
                 } else {
                     renders.extend(exported.iter().cloned());
@@ -1765,6 +1768,29 @@ mod tests {
         assert_eq!(nova.renders.len(), 1, "its own render still counts");
         let solo = projects.iter().find(|p| p.name == "Solo").unwrap();
         assert_eq!((solo.renders.len(), solo.ambiguous_exports), (1, 0));
+    }
+
+    #[test]
+    fn numbered_songs_find_their_exports_and_dont_lend_them() {
+        // Review 2026-11-10: the files were keyed without the "NN - " part,
+        // the songs with it, so "01 - Intro" never found "01 - Intro.wav".
+        let (root, w) = fixture("numbered-exports");
+        w("Projects/01 - Intro/01 - Intro.flp");
+        w("Projects/Outro/Outro.flp");
+        w("Projects/Envy/Envy.flp");
+        w("Projects/02 - Envy/02 - Envy.flp");
+        w("Exports/01 - Intro.wav");
+        w("Exports/Outro (2).wav");
+        w("Exports/Envy.wav");
+        let exports = root.join("Exports").to_string_lossy().to_string();
+        let projects = scan(&[root.join("Projects").to_string_lossy().to_string()], Some(&exports));
+        let _ = fs::remove_dir_all(&root);
+        let by = |n: &str| projects.iter().find(|p| p.name == n).unwrap();
+        assert_eq!(by("01 - Intro").renders.len(), 1);
+        assert_eq!(by("Outro").renders.len(), 1);
+        // "Envy" and "02 - Envy" have the same key: neither takes Envy.wav.
+        assert_eq!((by("Envy").renders.len(), by("Envy").ambiguous_exports), (0, 1));
+        assert_eq!((by("02 - Envy").renders.len(), by("02 - Envy").ambiguous_exports), (0, 1));
     }
 
     #[test]

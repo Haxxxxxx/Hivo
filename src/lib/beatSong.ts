@@ -71,11 +71,15 @@ export function moveBeatToSong(ws: Workspace, beatPath: string, songPath: string
   const song = ws.songs[songPath] ?? {};
   const note = ws.beatNotes?.[beatPath]?.trim() ? ws.beatNotes[beatPath] : "";
   const songNotes = song.notes?.trim() ? song.notes : "";
-  const notes = note ? (songNotes ? `${songNotes.replace(/\s+$/, "")}\n\n${note}` : note).slice(0, MAX_NOTE_CHARS) : song.notes;
+  const merged = note ? (songNotes ? `${songNotes.replace(/\s+$/, "")}\n\n${note}` : note) : "";
+  // Too long together: the beat keeps its note rather than losing its tail
+  // to the cut (review 2026-11-10).
+  const moves = !!note && merged.length <= MAX_NOTE_CHARS;
+  const notes = moves ? merged : song.notes;
   const credits = song.credits ?? [];
   const credit = producerId && !credits.some((c) => c.personId === producerId && c.role === "Producer") ? [...credits, { personId: producerId, role: "Producer" }] : credits;
   const beatNotes = { ...(ws.beatNotes ?? {}) };
-  if (note) delete beatNotes[beatPath];
+  if (moves) delete beatNotes[beatPath];
   return {
     ...ws,
     beatNotes,

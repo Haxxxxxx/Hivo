@@ -108,6 +108,9 @@ pub(crate) fn refuse_reason(path: &Path, mapped_roots: &[String]) -> Option<&'st
     check(path).or_else(|| fs::canonicalize(path).ok().and_then(|real| real_reason(&crate::paths::plain(real).to_string_lossy(), mapped_roots)))
 }
 
+/// Why a sample is left out of a flat zip that already holds its file name.
+const SAME_NAME: &str = "same file name as another sample (the package is flat)";
+
 /// The package contents for one project: every sample that is found, is a
 /// regular file, and passes `refuse_reason`.
 fn plan_one(resolver: &mut Resolver, project: &Path) -> Result<PackagePlan, String> {
@@ -115,6 +118,12 @@ fn plan_one(resolver: &mut Resolver, project: &Path) -> Result<PackagePlan, Stri
     let (found, mut missing) = resolver.package_files(&meta.samples, project);
     let mut files = Vec::new();
     let mut refused = Vec::new();
+    // The zip is flat: a second sample with the same file name (two
+    // `kick.wav` from different folders) can't go in. Listed here, so the
+    // user sees it before writing, instead of a package that looks complete
+    // (review 2026-11-10). The project file's own name is taken first.
+    let mut names: HashSet<String> = HashSet::new();
+    names.insert(project.file_name().unwrap_or_default().to_string_lossy().to_lowercase());
     for path in found {
         let shown = path.to_string_lossy().to_string();
         if let Some(reason) = refuse_reason(&path, resolver.mapped_roots()) {
@@ -122,11 +131,14 @@ fn plan_one(resolver: &mut Resolver, project: &Path) -> Result<PackagePlan, Stri
             continue;
         }
         match fs::metadata(&path) {
-            Ok(m) if m.is_file() => files.push(PlannedFile {
-                name: path.file_name().unwrap_or_default().to_string_lossy().to_string(),
-                path: shown,
-                bytes: m.len(),
-            }),
+            Ok(m) if m.is_file() => {
+                let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                if !names.insert(name.to_lowercase()) {
+                    refused.push(RefusedFile { path: shown, reason: SAME_NAME.to_string() });
+                    continue;
+                }
+                files.push(PlannedFile { name, path: shown, bytes: m.len() })
+            }
             _ => missing.push(shown),
         }
     }
