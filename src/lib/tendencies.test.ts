@@ -5,6 +5,7 @@ import {
   firstSaveMs,
   isFromFileDates,
   keyName,
+  pace,
   sampleFolder,
   songShape,
   stageDays,
@@ -296,5 +297,41 @@ describe("tendency sources", () => {
     expect(songShape(songs, ws(), NOW)).toMatchObject({ timingSource: "fileDates", stageDays: [] });
     const logged = ws({ "/p/a.flp": { stageLog: [{ stage: "creation", atMs: NOW - 2 * DAY }, { stage: "production", atMs: NOW }] } });
     expect(songShape(songs, logged, NOW)).toMatchObject({ timingSource: "stageLog", stageDays: [{ stage: "creation", medianDays: 2, songs: 1 }] });
+  });
+});
+
+describe("pace (C4)", () => {
+  const log = (...steps: [string, number][]) => steps.map(([stage, daysAgo]) => ({ stage: stage as "creation", atMs: NOW - daysAgo * DAY }));
+
+  it("says where songs stall and which ones run long now", () => {
+    const songs = [song("a"), song("b"), song("stuck"), song("fresh"), song("done")];
+    const out = pace(
+      songs,
+      ws({
+        // Finished stays: Creation 4 and 6 days (median 5), Production 20.
+        "/p/a.flp": { status: "prep", stageLog: log(["creation", 40], ["production", 36], ["prep", 16]) },
+        "/p/b.flp": { status: "production", stageLog: log(["creation", 10], ["production", 4]) },
+        // In Creation for 30 days, usual 5: running long.
+        "/p/stuck.flp": { stageLog: log(["creation", 30]) },
+        // In Creation for 6 days: over 5, but under the 7-day floor.
+        "/p/fresh.flp": { stageLog: log(["creation", 6]) },
+        // The last stage never runs long.
+        "/p/done.flp": { status: "promotion", stageLog: log(["creation", 90], ["promotion", 80]) },
+      }),
+      NOW,
+    );
+    expect(out.stages.map((s) => [s.stage, s.medianDays])).toEqual([
+      ["creation", 6],
+      ["production", 20],
+    ]);
+    expect(out.slowest).toBe("production");
+    expect(out.runningLong).toEqual([{ path: "/p/stuck.flp", name: "stuck", stage: "creation", days: 30, usualDays: 6 }]);
+    expect(out.sinceMs).toBe(NOW - 90 * DAY);
+  });
+
+  it("is empty without a log, and ignores a song whose stage no longer matches its log", () => {
+    expect(pace([song("a")], ws(), NOW)).toEqual({ stages: [], slowest: null, runningLong: [], sinceMs: null });
+    const drifted = ws({ "/p/a.flp": { status: "prep", stageLog: log(["creation", 60], ["production", 50]) }, "/p/b.flp": { stageLog: log(["creation", 20], ["production", 10]) } });
+    expect(pace([song("a"), song("b")], drifted, NOW).runningLong).toEqual([]);
   });
 });

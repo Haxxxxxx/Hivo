@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_EXCLUDE, MAX_FOUND_TITLES, MAX_LIKED, MAX_QUERY_CHARS, beatFactsLine, beatQuery, canonicalUrl, converterLink, converterNeedsPaste, deeperExclude, embedUrl, foundKey, matchBeat, nameQueries, relinkBeatNotes, restoreDig, sortBeats, titleFacts, titleKey, foundTitles, googleSearchUrl, leadFacts, leadHash, likedTitles, searchesDone, seedList, toggleLiked, withFallbackQueries, youtubeId, youtubeSearchUrl } from "./digger";
+import { MAX_EXCLUDE, MAX_FOUND_TITLES, MAX_LIKED, MAX_QUERY_CHARS, beatFactsLine, beatQuery, canonicalUrl, converterLink, converterNeedsPaste, deeperExclude, embedUrl, foundKey, matchBeat, nameQueries, prodMatch, relinkBeatNotes, restoreDig, sortBeats, titleFacts, titleKey, foundTitles, googleSearchUrl, leadFacts, leadHash, likedTitles, searchesDone, seedList, toggleLiked, withFallbackQueries, youtubeId, youtubeSearchUrl } from "./digger";
 
 describe("digger links", () => {
   it("builds a YouTube search page link", () => {
@@ -294,5 +294,23 @@ describe("digger leads", () => {
     expect(converterLink("javascript:{url}", video)).toBeNull();
     expect(converterLink(undefined, video)).toBeNull();
     expect(converterLink("", video)).toBeNull();
+  });
+});
+
+describe("prodMatch (C5: In your prods beyond the beats list)", () => {
+  const lead = { title: "Night Drive - Dark Trap Beat" };
+  const beat = { name: "Night Drive - Dark Trap Beat", path: "/beats/night.mp3" };
+  const flac = { name: "Night Drive - Dark Trap Beat", path: "/dl/Night Drive - Dark Trap Beat.flac", place: "downloads" as const };
+
+  it("prefers the beats list, then a file found elsewhere", () => {
+    expect(prodMatch(lead, [beat], [flac])).toEqual({ beat });
+    expect(prodMatch(lead, [], [flac])).toEqual({ file: flac });
+    expect(prodMatch({ title: "Something else" }, [], [flac])).toBeNull();
+  });
+
+  it("keeps a hand-made answer: 'not this beat' finds nothing elsewhere either", () => {
+    expect(prodMatch(lead, [], [flac], null)).toBeNull();
+    // Linked by hand to a beat gone from the scan: only the list's name match, never Downloads.
+    expect(prodMatch(lead, [], [flac], "/beats/gone.mp3")).toBeNull();
   });
 });

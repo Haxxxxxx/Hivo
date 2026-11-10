@@ -23,6 +23,8 @@ const COMMANDS: &[&str] = &[
     "pick_sample_folder",
     "remove_sample_folder",
     "scan_beats",
+    "scan_prod_files",
+    "move_prod_to_beats",
     "dig_beats",
     "dig_deeper",
     "reset_web_search",

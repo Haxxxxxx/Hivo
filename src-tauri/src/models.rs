@@ -186,6 +186,11 @@ pub struct Settings {
     /// never called by Hivo.
     #[serde(default)]
     pub converter_url_template: Option<String>,
+    /// Saved prods: also look in the Downloads folder for their file
+    /// (names only, prods.rs). Off by default: on macOS the first read
+    /// of Downloads asks the user.
+    #[serde(default)]
+    pub prod_match_downloads: bool,
 }
 
 fn default_caption_language() -> String {
@@ -215,6 +220,7 @@ impl Default for Settings {
             dig_send_audio: false,
             install_id: None,
             converter_url_template: None,
+            prod_match_downloads: false,
         }
     }
 }

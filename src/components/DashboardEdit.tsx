@@ -41,6 +41,7 @@ export const T_LAYOUT = dict(
         yourSound: "Your sound",
         collaborators: "Collaborators",
         songShape: "Song shape",
+        pace: "Pace",
       })[id],
     /** One line under the title saying what the block reads (tendency blocks only). */
     blockSubtitle: (id: DashboardBlockId): string =>
@@ -50,6 +51,7 @@ export const T_LAYOUT = dict(
         yourSound: "Plugins and sample folders, by the songs they're in",
         collaborators: "Credits on your songs",
         songShape: "Versions, time to a first mixdown, and when songs start",
+        pace: "Days in each stage, from Hivo's stage log, and what's running long",
       })[id as TendencyBlockId] ?? "",
   },
   {
@@ -87,6 +89,7 @@ export const T_LAYOUT = dict(
         yourSound: "Ton son",
         collaborators: "Collaborateurs",
         songShape: "Forme des sons",
+        pace: "Rythme",
       })[id],
     blockSubtitle: (id: DashboardBlockId): string =>
       ({
@@ -95,12 +98,13 @@ export const T_LAYOUT = dict(
         yourSound: "Plugins et dossiers de samples, par nombre de sons où ils sont",
         collaborators: "Les crédits de tes sons",
         songShape: "Versions, délai jusqu'au premier mixdown, et quand les sons démarrent",
+        pace: "Jours dans chaque étape, d'après le journal des étapes de Hivo, et ce qui traîne",
       })[id as TendencyBlockId] ?? "",
   },
 );
 
 /** The optional tendency blocks (src/lib/tendencies.ts): hidden by default. */
-export type TendencyBlockId = "tempoKey" | "workingHours" | "yourSound" | "collaborators" | "songShape";
+export type TendencyBlockId = "tempoKey" | "workingHours" | "yourSound" | "collaborators" | "songShape" | "pace";
 
 // ---- Grid ----
 

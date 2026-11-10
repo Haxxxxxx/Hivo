@@ -140,6 +140,8 @@ export interface Settings {
   /** The Digger's optional converter link: an https url with `{url}` where
    * the video address goes. Opened in the browser; Hivo never calls it. */
   converterUrlTemplate?: string;
+  /** Saved prods: also look for their file in Downloads (names only; off by default). */
+  prodMatchDownloads?: boolean;
 }
 
 export type RenderFormat = "wav" | "mp3" | "ogg";
@@ -698,6 +700,21 @@ export interface BeatMove {
 }
 
 /** The beats scan (src-tauri/src/beats.rs BeatScan). */
+/** A file that can confirm a saved prod beyond the beats list (src-tauri/src/prods.rs):
+ * an AIFF in a beats folder, or audio in Downloads when that's on. Names only. */
+export interface ProdFile {
+  path: string;
+  name: string;
+  place: "beats" | "downloads";
+}
+
+export interface ProdScan {
+  files: ProdFile[];
+  downloadsOn: boolean;
+  downloadsUnreadable: boolean;
+  capped: boolean;
+}
+
 export interface BeatScan {
   beats: BeatFile[];
   /** Beats found, including those past the cap. */

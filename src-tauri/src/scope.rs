@@ -37,7 +37,7 @@ pub struct Scope {
 
 /// `path` with symlinks and `..` resolved. A path that doesn't exist yet
 /// resolves through its nearest existing parent.
-fn resolve(path: &Path) -> Option<PathBuf> {
+pub(crate) fn resolve(path: &Path) -> Option<PathBuf> {
     if is_remote_or_device(&path.to_string_lossy()) || path.components().any(|c| matches!(c, Component::ParentDir)) {
         return None;
     }

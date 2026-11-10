@@ -2,7 +2,7 @@ import { create } from "zustand";
 import * as api from "../lib/tauri";
 import { canonicalUrl, deeperExclude, foundTitles, leadHash, likedTitles, restoreDig, searchesDone, toggleLiked, withFallbackQueries, type KeptDig, type Liked } from "../lib/digger";
 import { useAppStore } from "./useAppStore";
-import type { BeatFacts, BeatFile, DigResult, Lead, SavedLead, WebLink, YoutubeVideo } from "../types";
+import type { BeatFacts, BeatFile, DigResult, Lead, ProdScan, SavedLead, WebLink, YoutubeVideo } from "../types";
 import { errorReason, errorText } from "../lib/errors";
 
 // The Digger: raw beats from the beats folders, up to 5 picked to dig for
@@ -47,6 +47,13 @@ function withRound(list: RoundResults[], round: number, entry: RoundResults): Ro
 
 interface DiggerState {
   beats: BeatFile[];
+  /** Files that can confirm a saved prod beyond `beats` (AIFF in beats
+   * folders, Downloads when on): read after every beat scan. */
+  prodScan: ProdScan | null;
+  /** "Move to beats folder" for a prod file found in Downloads, then a rescan. */
+  moveProdToBeats: (path: string) => Promise<void>;
+  /** Why the last move failed, if it did. */
+  moveError: string | null;
   scanInfo: ScanInfo | null;
   /** Offline analysis per beat path: facts, null (couldn't be read), missing (not yet). */
   facts: Record<string, BeatFacts | null>;
@@ -140,6 +147,17 @@ let restored = false;
 
 export const useDigger = create<DiggerState>((set, get) => ({
   beats: [],
+  prodScan: null,
+  moveError: null,
+  moveProdToBeats: async (path) => {
+    set({ moveError: null });
+    try {
+      await api.moveProdToBeats(path);
+      await get().load();
+    } catch (e) {
+      set({ moveError: errorText(e) });
+    }
+  },
   scanInfo: null,
   facts: {},
   analysing: false,
@@ -211,6 +229,11 @@ export const useDigger = create<DiggerState>((set, get) => ({
       // beat missing from it may only be on an unplugged drive).
       useAppStore.getState().syncBeatNotes(beats, !scan.capped && !(scan.unreachable > 0));
       void get().analyseBeats();
+      // "In your prods" beyond the beats list; a failure only leaves it as it was.
+      void api
+        .scanProdFiles()
+        .then((prodScan) => set({ prodScan }))
+        .catch(() => {});
     } catch (e) {
       set({ error: errorText(e) });
     } finally {

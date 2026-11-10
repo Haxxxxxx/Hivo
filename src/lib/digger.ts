@@ -186,6 +186,25 @@ export function matchBeat<B extends { name: string; path?: string }>(lead: { tit
   );
 }
 
+/**
+ * Where a saved prod's file is (C5): a beat in the beats list (playable,
+ * linkable by hand) first, as `matchBeat`; else, by name only, another file
+ * that confirms it: an AIFF in a beats folder or a file in Downloads
+ * (`ProdFile`). A hand-made "not this beat" (`manual === null`) means none.
+ */
+export function prodMatch<B extends { name: string; path?: string }, F extends { name: string }>(
+  lead: { title: string },
+  beats: B[],
+  files: F[],
+  manual?: string | null,
+): { beat: B; file?: undefined } | { beat?: undefined; file: F } | null {
+  const beat = matchBeat(lead, beats, manual);
+  if (beat) return { beat };
+  if (manual !== undefined) return null;
+  const file = matchBeat(lead, files);
+  return file ? { file } : null;
+}
+
 /** One address per YouTube video (watch?v=, youtu.be/, /shorts/, m.,
  * extra parameters → `https://www.youtube.com/watch?v=<id>`), anything else
  * trimmed: what a lead is saved and hashed under, so one video is one lead. */

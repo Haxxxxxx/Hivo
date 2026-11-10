@@ -22,6 +22,7 @@ import type {
   BeatAnalysis,
   BeatFile,
   BeatScan,
+  ProdScan,
   PlatformLink,
   YoutubeStatus,
   YoutubeVideo,
@@ -75,6 +76,10 @@ export const removeSampleFolder = (folder: string): Promise<Settings> => invoke(
 /** The beats and what the scan didn't show (capped, unreadable formats). */
 export const scanBeatsFull = (): Promise<BeatScan> => invoke("scan_beats");
 export const scanBeats = (): Promise<BeatFile[]> => scanBeatsFull().then((s) => s.beats);
+/** Files that can confirm a saved prod beyond the beats list (AIFF in beats folders, Downloads when on). */
+export const scanProdFiles = (): Promise<ProdScan> => invoke("scan_prod_files");
+/** "Move to beats folder": a prod file from Downloads into the first beats folder. Answers its new path. */
+export const moveProdToBeats = (path: string): Promise<string> => invoke("move_prod_to_beats", { path });
 /** Tempo, key, loudness and length, offline (no AI key), cached per file in Rust; at most MAX_ANALYZE paths. */
 export const analyzeBeats = (paths: string[]): Promise<BeatAnalysis[]> => invoke("analyze_beats", { paths });
 /** Whether a YouTube Data API key is set (the key itself never comes back). */

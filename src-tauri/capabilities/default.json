@@ -31,6 +31,8 @@
     "allow-pick-sample-folder",
     "allow-remove-sample-folder",
     "allow-scan-beats",
+    "allow-scan-prod-files",
+    "allow-move-prod-to-beats",
     "allow-dig-beats",
     "allow-dig-deeper",
     "allow-reset-web-search",

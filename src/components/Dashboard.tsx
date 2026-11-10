@@ -621,6 +621,7 @@ function MyDashboard({ editing }: { editing: boolean }) {
       case "yourSound":
       case "collaborators":
       case "songShape":
+      case "pace":
         return <TendencyBlock id={id} variant={variantOf(layout, id)} control={variantSwitch(id, tendencyLooks(id))} />;
     }
   };

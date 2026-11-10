@@ -422,3 +422,59 @@ export function songShape(songs: ProjectInfo[], ws: Workspace, now = Date.now())
     starts: months,
   };
 }
+
+// ---- 6. Pace (NOVEMBER-PLAN C4) ----
+
+/** A song in its current stage much longer than usual for you. */
+export interface RunningLong {
+  path: string;
+  name: string;
+  stage: SongStatus;
+  days: number;
+  /** The median days in that stage, over your songs' finished stays. */
+  usualDays: number;
+}
+
+export interface Pace {
+  /** Median days per stage (pipeline order), from the stage log. */
+  stages: StageDays[];
+  /** The stage songs stay in longest (highest median), if any. */
+  slowest: SongStatus | null;
+  /** Songs past their stage's usual time: the longest first, at most `MAX_RUNNING_LONG`. */
+  runningLong: RunningLong[];
+  /** When the log starts (its first entry, any song), for the "collecting" line. */
+  sinceMs: number | null;
+}
+
+export const MAX_RUNNING_LONG = 5;
+/** "Running long" = at least this many days, and more than 1.5× the usual. */
+export const RUNNING_LONG_MIN_DAYS = 7;
+export const RUNNING_LONG_FACTOR = 1.5;
+
+/** How long your songs stay in each stage and where they stall, from the stage
+ * log only (Hivo's own record since 2026-10-27, never file dates). Promotion is
+ * the last stage, so a song there is never "running long". Personal: never
+ * shared, no release stats (guardrail 6). */
+export function pace(songs: ProjectInfo[], ws: Workspace, now = Date.now()): Pace {
+  const stages = stageDays(songs, ws);
+  const usual = new Map(stages.map((s) => [s.stage, s.medianDays]));
+  const slowest = stages.length ? stages.reduce((a, b) => (b.medianDays > a.medianDays ? b : a)).stage : null;
+  const last = STATUSES[STATUSES.length - 1].id;
+  let sinceMs: number | null = null;
+  const runningLong: RunningLong[] = [];
+  for (const p of songs) {
+    const meta = metaOf(ws, p);
+    const log = meta?.stageLog ?? [];
+    if (!log.length) continue;
+    sinceMs = sinceMs === null ? log[0].atMs : Math.min(sinceMs, log[0].atMs);
+    const entry = log[log.length - 1];
+    const stage = meta?.status ?? "creation";
+    if (entry.stage !== stage || stage === last) continue;
+    const u = usual.get(stage);
+    const days = Math.floor((now - entry.atMs) / DAY);
+    if (u === undefined || days < RUNNING_LONG_MIN_DAYS || days <= u * RUNNING_LONG_FACTOR) continue;
+    runningLong.push({ path: p.path, name: p.name, stage, days, usualDays: u });
+  }
+  runningLong.sort((a, b) => b.days - a.days || a.name.localeCompare(b.name));
+  return { stages, slowest, runningLong: runningLong.slice(0, MAX_RUNNING_LONG), sinceMs };
+}
