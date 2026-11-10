@@ -368,7 +368,10 @@ export default function App() {
     // banner; closing again quits without those changes.
     let warned = false;
     const off = getCurrentWindow().onCloseRequested(async (event) => {
-      if (warned) return;
+      // Closing again quits, but only while the save is still failing: once
+      // a retry worked, a later close flushes as usual (review 2026-11-10).
+      if (warned && useAppStore.getState().unsavedChanges !== null) return;
+      warned = false;
       if (await flushWorkspace()) return;
       warned = true;
       event.preventDefault();

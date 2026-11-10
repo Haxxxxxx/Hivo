@@ -360,6 +360,27 @@ impl Inbox {
         items.iter().map(InboxItem::bytes).sum()
     }
 
+    /// Over the byte quota with `need` more: drops the oldest filed sketches
+    /// (BandLab exports already copied into their own song folder, the big
+    /// ones), never `keep`. Memos stay: the drawer and the beat panels list
+    /// them from this index. Without it the quota only ever filled: "inbox
+    /// full" after a few dozen exports (review 2026-11-10).
+    fn free_copied(&self, items: &mut Vec<InboxItem>, keep: &str, need: u64) {
+        while Self::used_bytes(items) + need > MAX_INBOX_BYTES {
+            let Some(pos) = items
+                .iter()
+                .enumerate()
+                .filter(|(_, i)| i.id != keep && i.status == Status::Filed && i.filed_as.as_deref() == Some("song"))
+                .min_by_key(|(_, i)| i.filed_at.unwrap_or(i.updated_at))
+                .map(|(p, _)| p)
+            else {
+                return;
+            };
+            let gone = items.remove(pos);
+            let _ = fs::remove_dir_all(self.item_dir(&gone.id));
+        }
+    }
+
     /// Makes room for one more item: drops the oldest filed/dismissed ones.
     fn make_room(&self, items: &mut Vec<InboxItem>) {
         while items.len() >= MAX_ITEMS {
@@ -480,6 +501,7 @@ impl Inbox {
         let duration_ms = body.get("durationMs").and_then(Value::as_i64).map(|d| d.clamp(0, MAX_MEMO_MS));
         let id = format!("{device_id}.{item_id}");
         let mut items = lock(&self.items);
+        self.free_copied(&mut items, &id, size);
         let pos = match items.iter().position(|i| i.id == id) {
             Some(p) => {
                 if items[p].item_type != item_type || items[p].file_count != file_count {
@@ -1217,6 +1239,20 @@ mod tests {
         assert_eq!(start(&inbox, "one-more", "sketch", 0, 1, "a.wav", per).unwrap_err(), "inbox full");
         inbox.remove("dev.s0").unwrap();
         assert!(start(&inbox, "one-more", "sketch", 0, 1, "a.wav", per).is_ok());
+        // Full again; a filed sketch (copied into its song folder) makes
+        // room by itself, a filed memo-style link doesn't (review 2026-11-10).
+        {
+            let mut items = lock(&inbox.items);
+            for (id, how) in [("dev.s1", "link"), ("dev.s2", "song")] {
+                let it = items.iter_mut().find(|i| i.id == id).unwrap();
+                it.status = Status::Filed;
+                it.filed_as = Some(how.to_string());
+                it.filed_at = Some(1);
+            }
+        }
+        assert!(start(&inbox, "two-more", "sketch", 0, 1, "a.wav", per).is_ok());
+        let ids: Vec<String> = lock(&inbox.items).iter().map(|i| i.id.clone()).collect();
+        assert!(ids.contains(&"dev.s1".to_string()) && !ids.contains(&"dev.s2".to_string()));
     }
 
     #[test]

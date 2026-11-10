@@ -567,6 +567,10 @@ export interface Workspace {
    * in FL Studio"), kept a few days for the phone's `/v1/snapshot`
    * `renamed` list, so its pending note edits follow (src/lib/phoneSync.ts). */
   phoneRenames?: { kind: "song" | "beat"; from: string; to: string; at: number }[];
+  /** Records whose file went missing and had their one chance to follow a
+   * rename or move (lib/relink.ts): never relinked by themselves again.
+   * Dropped when the file is back or the record is gone. Local only. */
+  settledOrphans?: string[];
   /** Set only on generated sample data (src/lib/sampleData.ts): a workspace
    * carrying it is never written to disk. */
   sample?: true;

@@ -647,9 +647,19 @@ export const useCrewStore = create<CrewState>((set, get) => {
         applyStage(a);
         continue;
       }
+      // Moved again since the plan was made: the next push sends that move.
+      if (useAppStore.getState().workspace.songs[a.path]?.status !== a.stage) continue;
       const r = await moveStage(a.id, a.stage, a.base);
-      if (r.applied) applyStage({ kind: "settle", path: a.path, at: r.stage_updated_at, by: r.stage_updated_by });
-      else applyStage({ kind: "conflict", path: a.path, conflict: { mine: a.stage, theirs: r.stage, by: r.stage_updated_by, at: r.stage_updated_at } });
+      if (r.applied) {
+        if (useAppStore.getState().workspace.songs[a.path]?.status === a.stage) {
+          applyStage({ kind: "settle", path: a.path, at: r.stage_updated_at, by: r.stage_updated_by });
+        } else {
+          // Moved again while this one was on its way (review 2026-11-10):
+          // keep it pending, on the version the server now has, so the
+          // newer stage goes out next instead of being marked as synced.
+          own(() => useAppStore.getState().updateSong(a.path, { stageBaseAt: r.stage_updated_at }));
+        }
+      } else applyStage({ kind: "conflict", path: a.path, conflict: { mine: a.stage, theirs: r.stage, by: r.stage_updated_by, at: r.stage_updated_at } });
     }
 
     const remote = new Map(get().songs.filter((s) => s.owner_id === sc.userId && s.crew_id === sc.crewId).map((s) => [s.id, s]));

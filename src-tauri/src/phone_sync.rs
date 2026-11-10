@@ -985,10 +985,25 @@ impl Inner {
     /// "Confirm" on this computer (the codes match): the phone is stored with
     /// its key (a re-pair replaces the old key now) and its requests work.
     /// Err when it isn't waiting any more (timed out, refused, restarted).
+    #[cfg(test)]
     pub fn confirm_pair(&self, id: &str, now: i64) -> Result<(), String> {
+        self.confirm_pair_shown(id, None, now)
+    }
+
+    /// `confirm_pair` for the pairing whose code the user was shown: `shown`
+    /// is its key, read when the native dialog opened. If another pairing
+    /// took that id while the dialog was up (a new QR for the same phone,
+    /// scanned meanwhile), it isn't the one the user compared: refused, and
+    /// that newer pairing keeps waiting for its own confirmation
+    /// (review 2026-11-10).
+    pub fn confirm_pair_shown(&self, id: &str, shown: Option<&[u8; 32]>, now: i64) -> Result<(), String> {
         let c = {
             let mut confirms = lock(&self.confirms);
             confirms.retain(|_, c| !c.expired(now));
+            let waiting = confirms.get(id).ok_or_else(confirm_gone)?;
+            if shown.is_some_and(|k| k != &waiting.key) {
+                return Err(confirm_gone());
+            }
             confirms.remove(id).ok_or_else(confirm_gone)?
         };
         let mut store = lock(&self.store);
@@ -1896,17 +1911,18 @@ pub async fn phone_sync_confirm(app: AppHandle, device_id: String, accept: bool,
         inner.reject_pair(&device_id);
         return Ok(status_of(&inner, &app.package_info().version.to_string()));
     }
-    let code = {
+    let shown = {
         let mut confirms = lock(&inner.confirms);
         let now = now_ms();
         confirms.retain(|_, c| !c.expired(now));
-        confirms.get(&device_id).map(|c| c.code.clone())
+        confirms.get(&device_id).map(|c| (c.code.clone(), c.key))
     };
-    let Some(code) = code else {
+    let Some((code, key)) = shown else {
         return Err(confirm_gone());
     };
     if confirm(&app, Confirm::Code(code), lang.as_deref()).await {
-        inner.confirm_pair(&device_id, now_ms())?;
+        // Only the pairing whose code the dialog showed.
+        inner.confirm_pair_shown(&device_id, Some(&key), now_ms())?;
     }
     Ok(status_of(&inner, &app.package_info().version.to_string()))
 }
@@ -2733,6 +2749,22 @@ mod tests {
         let o = handle_sealed(&inner, &host, PAIR_PATH, Some(&id), &pair_request(&key, &id, &phone_pub, "again2", json!({})));
         assert!(answer(&key, &id, PAIR_PATH, Some("again2"), &o).unwrap()["body"].get("confirm").is_none());
         assert!(inner.confirm_pair(&id, now_ms()).is_err(), "only once");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn confirm_stores_only_the_pairing_whose_code_was_shown() {
+        // Review 2026-11-10: a new pairing for the same id while the dialog
+        // was up must not ride on the user's "It matches".
+        let (inner, dir) = temp_inner("shown");
+        let host = quiet();
+        let (id, key, ..) = paired_waiting(&inner, &host, None, 0x42, "Pixel");
+        let other = [7u8; 32];
+        assert!(inner.confirm_pair_shown(&id, Some(&other), now_ms()).is_err());
+        assert!(inner.device(&id).is_none(), "nothing stored");
+        assert_eq!(status_of(&inner, "0.7.0").confirming.len(), 1, "still waiting for its own confirmation");
+        inner.confirm_pair_shown(&id, Some(&key), now_ms()).unwrap();
+        assert!(inner.device(&id).is_some());
         let _ = fs::remove_dir_all(&dir);
     }
 

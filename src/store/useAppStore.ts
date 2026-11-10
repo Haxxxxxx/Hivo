@@ -7,7 +7,7 @@ import { ALBUM_COLORS, EMPTY_WORKSPACE, migrateWorkspace, newId, newerWorkspaceV
 import { logStageChanges } from "../lib/stageLog";
 import { addColumn, moveCard, moveColumn, removeColumn, renameColumn } from "../lib/pipeline";
 import type { DashboardLayout } from "../lib/dashboardLayout";
-import { applyRelinks, emptyScanMemory, isUnder, relinksAfterScan, rootRelinks, type Relink, type ScanMemory } from "../lib/relink";
+import { applyRelinks, emptyScanMemory, isUnder, nextSettledOrphans, relinksAfterScan, rootRelinks, type Relink, type ScanMemory } from "../lib/relink";
 import { setNote } from "../lib/notes";
 import { relinkBeatNotes } from "../lib/digger";
 import { addRenames } from "../lib/phoneSync";
@@ -464,6 +464,7 @@ const STORE_TEXT = dict(
       `Your settings file couldn't be read, so Hivo started from the default settings: link your folders again in Settings. The old file is kept as ${bad}.`,
     settingsSaveFailed: (e: string) => `Couldn't save that setting, it's back to what was saved: ${e}`,
     droppedEdits: "Your workspace loaded. The changes made while it couldn't be read were not kept.",
+    unreadableEdits: "Your workspace file can't be read, so your recent changes exist only in this window (Start fresh keeps them).",
     untitledAlbum: "Untitled album",
   },
   {
@@ -477,6 +478,7 @@ const STORE_TEXT = dict(
       `Ton fichier de réglages était illisible, Hivo a donc repris les réglages par défaut : relie à nouveau tes dossiers dans les Réglages. L'ancien fichier est gardé sous ${bad}.`,
     settingsSaveFailed: (e: string) => `Impossible d'enregistrer ce réglage, il est revenu à ce qui était enregistré : ${e}`,
     droppedEdits: "Ton espace de travail est chargé. Les modifications faites pendant qu'il était illisible n'ont pas été gardées.",
+    unreadableEdits: "Ton fichier d'espace de travail est illisible, donc tes dernières modifications n'existent que dans cette fenêtre (Repartir de zéro les garde).",
     untitledAlbum: "Album sans titre",
   },
 );
@@ -523,7 +525,12 @@ export const useAppStore = create<AppState>((set, get) => {
     set({ workspace: next });
     if (get().demoMode || next.sample) return;
     if (!get().workspaceWritable) {
-      if (get().workspaceIssue?.kind === "unreadable") editedWhileUnreadable = true;
+      if (get().workspaceIssue?.kind === "unreadable") {
+        editedWhileUnreadable = true;
+        // Only in memory: closing or installing an update warns first, like
+        // a failed save (review 2026-11-10).
+        if (!get().unsavedChanges) set({ unsavedChanges: tr(STORE_TEXT).unreadableEdits });
+      }
       return;
     }
     if (saveTimer) clearTimeout(saveTimer);
@@ -574,7 +581,7 @@ export const useAppStore = create<AppState>((set, get) => {
     // Edits made while the file couldn't be read existed only in memory.
     const dropped = editedWhileUnreadable;
     editedWhileUnreadable = false;
-    const droppedNote = dropped ? { actionError: tr(STORE_TEXT).droppedEdits } : {};
+    const droppedNote = dropped ? { actionError: tr(STORE_TEXT).droppedEdits, unsavedChanges: null } : {};
     if (!loaded.ok) {
       // Never save over a workspace we couldn't read — that would wipe the
       // user's albums and statuses. The strip offers restore / start fresh.
@@ -965,8 +972,11 @@ export const useAppStore = create<AppState>((set, get) => {
       if (get().demoMode) return;
       const folders = get().settings.watchedFolders;
       if (folders.length === 0) {
+        // A scan still running for a folder just unlinked must not write
+        // its songs back (review 2026-11-10): it's no longer the newest.
+        ++scanSeq;
         scanMemory = emptyScanMemory();
-        set({ projects: [], unreachable: [], skippedLinks: NO_LINKS });
+        set({ projects: [], unreachable: [], skippedLinks: NO_LINKS, scanning: false });
         return;
       }
       // Scans can overlap (window focus + adding a folder); only the newest
@@ -988,6 +998,8 @@ export const useAppStore = create<AppState>((set, get) => {
               followRelinks(after.relinks);
               set({ relinked: [...get().relinked, ...after.relinks] });
             }
+            const settled = nextSettledOrphans(get().workspace, projects, after.settle);
+            if (settled) mutateWorkspace((ws) => ({ ...ws, settledOrphans: settled.length ? settled : undefined }));
           }
           set({ projects, unreachable, skippedLinks: { count: skippedLinks ?? 0, examples: skippedLinkExamples ?? [] } });
         }

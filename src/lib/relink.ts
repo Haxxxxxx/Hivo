@@ -33,9 +33,11 @@ export interface ScanMemory {
    * listed the last time it was seen (null: unknown, e.g. it was already
    * missing at the first scan of this session). */
   missing: Map<string, Set<string> | null>;
+  /** Orphans that had their one chance this session and weren't taken. */
+  spent: Set<string>;
 }
 
-export const emptyScanMemory = (): ScanMemory => ({ previous: null, missing: new Map() });
+export const emptyScanMemory = (): ScanMemory => ({ previous: null, missing: new Map(), spent: new Set() });
 
 /** NFC and lowercased, `/` separators: a macOS path can be decomposed
  * ("E" + accent) where the workspace has it composed. */
@@ -126,22 +128,29 @@ export function findRelinks(
  * file that was there all along ("Envy old.flp" next to "Envy.flp") is
  * never a rename of it. Without that knowledge (missing since before the
  * first scan of the session), any file without a record of its own counts,
- * as `findRelinks` alone does. */
+ * as `findRelinks` alone does.
+ *
+ * One chance only: an orphan is due on the second scan it's missing from,
+ * and if nothing takes it then it's `settle`d (the store keeps it in
+ * `Workspace.settledOrphans`) and never moves by itself again. Otherwise a
+ * project deleted weeks ago would hand its stage, notes and crew share to
+ * whatever new project shows up later in its folder (review 2026-11-10). */
 export function relinksAfterScan(
   projects: ProjectInfo[],
   ws: Workspace,
   watched: string[],
   unreachable: string[],
   memory: ScanMemory,
-): { relinks: Relink[]; memory: ScanMemory } {
+): { relinks: Relink[]; memory: ScanMemory; settle: string[] } {
   const present = new Set(projects.map((p) => p.path));
+  const settled = new Set(ws.settledOrphans ?? []);
   const orphans = orphansOf(projects, ws, watched, unreachable);
   const missing = new Map<string, Set<string> | null>();
   const due: string[] = [];
   for (const path of orphans) {
+    if (settled.has(path) || memory.spent.has(path)) continue;
     if (memory.missing.has(path)) {
-      // Missing twice in a row (or more): it may move now.
-      missing.set(path, memory.missing.get(path) ?? null);
+      // Missing twice in a row: its one chance to move.
       due.push(path);
     } else {
       // Missing for the first time: wait for the next scan. What was
@@ -152,11 +161,27 @@ export function relinksAfterScan(
   const relinks = due.length
     ? findRelinks(projects, ws, watched, unreachable, {
         orphans: due,
-        allowed: (from, to) => !missing.get(from)?.has(to),
+        allowed: (from, to) => !memory.missing.get(from)?.has(to),
       })
     : [];
-  for (const r of relinks) missing.delete(r.from);
-  return { relinks, memory: { previous: present, missing } };
+  const moved = new Set(relinks.map((r) => r.from));
+  const settle = due.filter((p) => !moved.has(p));
+  // A spent orphan stays out of every later scan of this session, even
+  // before the store has saved it as settled.
+  const spent = new Set([...memory.spent].filter((p) => !present.has(p)));
+  for (const p of settle) spent.add(p);
+  return { relinks, memory: { previous: present, missing, spent }, settle };
+}
+
+/** `Workspace.settledOrphans` after a scan: the new ones added, and the ones
+ * whose file is back (or whose record is gone) dropped. Null when unchanged,
+ * so a scan doesn't write the workspace for nothing. */
+export function nextSettledOrphans(ws: Workspace, projects: ProjectInfo[], settle: string[]): string[] | null {
+  const present = new Set(projects.map((p) => p.path));
+  const before = ws.settledOrphans ?? [];
+  const kept = before.filter((p) => !present.has(p) && ws.songs[p] && Object.keys(ws.songs[p]).length > 0);
+  const next = [...new Set([...kept, ...settle])];
+  return next.length === before.length && next.every((p, i) => p === before[i]) ? null : next;
 }
 
 /** The folder part of a path as written (separators and case kept). */
