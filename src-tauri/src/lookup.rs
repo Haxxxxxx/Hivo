@@ -29,7 +29,7 @@ const DEEZER_BASE: &str = "https://api.deezer.com";
 const ITUNES_BASE: &str = "https://itunes.apple.com";
 const SPOTIFY_TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 const SPOTIFY_BASE: &str = "https://api.spotify.com/v1";
-const USER_AGENT: &str = concat!("Hivo/", env!("CARGO_PKG_VERSION"), " (https://github.com/Haxxxxxx/fl-studio-manager)");
+const USER_AGENT: &str = concat!("Hivo/", env!("CARGO_PKG_VERSION"), " (https://github.com/Haxxxxxx/Hivo)");
 /// Same as `MAX_LOOKUP_QUERY_CHARS` in src/lib/people.ts.
 pub const MAX_QUERY_CHARS: usize = 120;
 const MAX_CANDIDATES: usize = 8;
