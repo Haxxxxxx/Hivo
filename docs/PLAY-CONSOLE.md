@@ -143,6 +143,13 @@ and stop (keeping the take) when Hivo leaves the screen.
 
 ## 4. Each release (internal testing first)
 
+With the service account below set up, the release workflow uploads the AAB
+for you (last step of the `release` job): Play Console → **Test and release →
+Testing → Internal testing** shows a **draft** release named after the
+version, with the first line of the GitHub Release notes. Skip to step 4. If
+the step failed (its log says why: a missing declaration, a permission), or
+there's no service account yet, do steps 1-2 by hand.
+
 1. When the release run is done, download `Hivo-<version>-android.aab` from
    the GitHub Release draft.
 2. **Test and release → Testing → Internal testing → Create new release**,
@@ -153,6 +160,40 @@ and stop (keeping the take) when Hivo leaves the screen.
 4. **Review release → Start rollout to Internal testing.**
 5. On a phone: open the opt-in link, accept, install from Play. A phone that
    has the website APK installs over it (same key) without losing notes.
+
+### Automatic upload: the service account (once)
+
+The workflow talks to the Google Play Developer API as a **service account**
+(a robot Google account) that can only release Hi-Vo to testing tracks. Its
+key lives only in the GitHub `release` environment, read by one step on a
+GitHub-hosted machine (never the self-hosted Mac), and is never printed.
+
+1. **Google Cloud** (console.cloud.google.com), signed in with the account
+   that owns the Play developer account: pick or create a project (e.g.
+   `hivo-play`) → **APIs & Services → Library** → enable **Google Play
+   Android Developer API**.
+2. **IAM & Admin → Service accounts → Create service account**: name
+   `hivo-play-upload`, no project role (skip both optional steps). Open it →
+   **Keys → Add key → Create new key → JSON**: a `.json` file downloads.
+   (If key creation is refused, an organisation policy blocks it: create the
+   project outside the ClipHow organisation, under "No organisation".)
+3. **Play Console → Users and permissions → Invite new users**: the service
+   account's email (`hivo-play-upload@<project>.iam.gserviceaccount.com`).
+   **Account permissions**: none. **App permissions → Add app → Hi-Vo**:
+   tick **View app information and download bulk reports (read only)** and
+   **Release to testing tracks** only (not production). Invite → it's active
+   at once, no email to accept.
+4. **GitHub → the repo → Settings → Environments → `release` → Add
+   environment secret**: name `PLAY_SERVICE_ACCOUNT_JSON`, value = the whole
+   content of the `.json` file. Then delete the file from Downloads (or keep it
+   only in your password manager).
+5. Next tag: the run's last step says "Uploaded <version> … as a draft on the
+   internal track". To take the robot's access away: remove it in Play Console
+   (step 3) or delete its key in Google Cloud.
+
+What the API can't do: the policy forms (Data safety, foreground service,
+content rating, target audience) stay in Play Console's web UI, and a draft
+can't roll out while one of them is incomplete.
 
 ## 5. Going public (later, your call)
 
