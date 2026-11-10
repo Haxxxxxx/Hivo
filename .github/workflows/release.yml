@@ -462,3 +462,23 @@ jobs:
           '
           up "latest.json" "$RUNNER_TEMP/latest.json" application/json
           up "mobile-latest.json" "$RUNNER_TEMP/mobile-latest.json" application/json
+
+      # After everything above shipped, so a Play problem never holds up the
+      # desktop or the website: the signed AAB goes to Google Play as a DRAFT
+      # on internal testing (scripts/play-upload.mjs, no dependency). The
+      # owner still clicks "Review release → Start rollout" in Play Console.
+      # Tags only. Without the PLAY_SERVICE_ACCOUNT_JSON secret (environment
+      # `release`) the step says so and does nothing. Setup: docs/PLAY-CONSOLE.md.
+      - name: Upload the AAB to Google Play (draft, internal testing)
+        if: github.ref_type == 'tag'
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PLAY_SERVICE_ACCOUNT_JSON" ]; then
+            echo "::notice::PLAY_SERVICE_ACCOUNT_JSON isn't set: upload Hivo-$VERSION-android.aab to Play by hand."
+            exit 0
+          fi
+          AAB="$RUNNER_TEMP/android-signed/Hivo-$VERSION-android.aab" \
+          NOTES="$(cat "$RUNNER_TEMP/notes.txt" 2>/dev/null || true)" \
+          node scripts/play-upload.mjs

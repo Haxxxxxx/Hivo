@@ -101,10 +101,17 @@ fails** instead.
    test file with `npx tauri signer sign` and the new pair, then delete
    `k.key`. (Not tried here yet.) Empty password secret = no password.
 
-## Google Play (manual, by the user)
-The workflow never uploads to Play. After the run: download
-`Hivo-<ver>-android.aab` from the draft release and upload it in Play Console
-(internal testing first, then promote). The first upload creates the app
+## Google Play (draft uploaded by the workflow, rollout by the user)
+With the `PLAY_SERVICE_ACCOUNT_JSON` secret in the `release` environment, the
+`release` job's last step (tags only, after `latest/*` and both manifests)
+runs `scripts/play-upload.mjs`: the signed AAB goes to Play as a **draft** on
+internal testing (never a rollout, never production). The user then clicks
+"Review release → Start rollout" in Play Console. A failure of that step (a
+policy form incomplete, a permission) leaves everything else shipped; its log
+says why. Without the secret it prints a notice and the old manual way
+applies: download `Hivo-<ver>-android.aab` from the draft release and upload it
+in Play Console (internal testing first, then promote). Setup and the forms
+the API can't touch: `docs/PLAY-CONSOLE.md` §4. The first upload creates the app
 (`fr.hivo.mobile`) and enrolls it in Play App Signing; every later upload must
 be signed with the same upload key (the GitHub secret). Each upload needs a
 higher versionCode, which the version bump gives. Privacy policy URL for the
