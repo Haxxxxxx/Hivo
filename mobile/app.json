@@ -150,6 +150,8 @@
         {
           "android": {
             "usesCleartextTraffic": true,
+            "enableMinifyInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true,
             "extraProguardRules": "# QR scanning (ML Kit barcode, Google code scanner, expo-camera): the native decoder and Play services reach these by name, so R8 must not rename or strip them.\n-keep class com.google.mlkit.** { *; }\n-keep class com.google.photos.vision.barhopper.** { *; }\n-keep class com.google.android.libraries.barhopper.** { *; }\n-keep class com.google.android.gms.internal.mlkit_vision_barcode.** { *; }\n-keep class com.google.android.gms.internal.mlkit_vision_barcode_bundled.** { *; }\n-keep class com.google.android.gms.internal.mlkit_vision_common.** { *; }\n-keep class com.google.android.gms.internal.mlkit_code_scanner.** { *; }\n-keep class expo.modules.camera.** { *; }\n-keep class expo.modules.hivoshare.** { *; }\n"
           }
         }
