@@ -1,20 +1,20 @@
 # Hivo (formerly FL Manager): Roadmap and status
 
-> Status as of **27 October 2026** (v0.6.1 released; next steps in [NOVEMBER-PLAN.md](NOVEMBER-PLAN.md)). Hard rules for any work: [GUARDRAILS.md](GUARDRAILS.md). This replaces the original vision document: the vision and principles are kept, and every feature now says where it stands. Written to be read aloud or pasted into a chat.
+> Status as of **12 November 2026** (v0.8.0 released, on the website and in Google Play Production; next steps in [NOVEMBER-PLAN.md](NOVEMBER-PLAN.md)). Hard rules for any work: [GUARDRAILS.md](GUARDRAILS.md). This replaces the original vision document: the vision and principles are kept, and every feature now says where it stands. Written to be read aloud or pasted into a chat.
 
 ---
 
 ## 1. Where we are, in one minute
 
-- **What it is.** A desktop app (Mac and Windows) that watches the crew's music project folders and follows every song from the first session to release and promotion, with a web dashboard for the crew and an Android phone app for notes and lyrics.
-- **Releases.** **v0.6.1** is the latest (2026-10-25): Mac universal .dmg, Windows setup .exe and the Android APK, downloadable from the website. Installed apps **update themselves** (signed updates from the Supabase `releases` bucket, Settings → Check for updates); website APKs show an update banner. Builds run on the Mac (self-hosted GitHub runner) when a version tag is pushed.
-- **Release cadence (decided 2026-10-27):** no release per small fix. Fixes wait on `main` and ship together when a whole step is done; a patch release only for something that breaks installed apps with no workaround. Next release: **0.7.0**, with phase B step 4.
-- **Phases.** Phase 0, 1a, 1b, 1c and 1d are built (checklist in section 7). Two human items remain: the crew pitch (in progress, outside the repo) and the Windows test on a real PC (later; the Mac build is the reference for now, both builds come from the same code). The git history was scrubbed on 2026-10-25.
+- **What it is.** A desktop app (Mac and Windows) that watches the crew's music project folders and follows every song from the first session to release and promotion, with a web dashboard for the crew and an Android phone app for notes, lyrics, ideas and voice memos.
+- **Releases.** **v0.8.0** is the latest (2026-11-10): Mac universal .dmg, Windows setup .exe and the Android APK from the website, and the Android app on **Google Play (Production since 2026-11-12)**. Installed apps update themselves (signed updates from the Supabase `releases` bucket); website APKs show an update banner; Play installs update through Play. A version tag builds everything on the self-hosted Mac; the release job can also upload the AAB to Play as an internal-testing draft once the service account is set up (`docs/PLAY-CONSOLE.md` §4).
+- **Release cadence:** no release per small fix. Fixes wait on `main` and ship together when a step is done; a patch release only for something that breaks installed apps.
+- **Phases.** Phase 0, 1a, 1b, 1c and 1d are built (checklist in section 7). One human item remains: the crew pitch (in progress, outside the repo).
 - **What's next: [NOVEMBER-PLAN.md](NOVEMBER-PLAN.md).**
-  - **Part A** (crew verified end to end) and **part A2** (finish the brief) are done, except the two human items above.
-  - **Part B, the mobile companion:** steps 1-3 shipped in 0.6.0-0.6.1 (desktop notes, phone sync, the Android app; pairing works on a real phone). Step 4 is built (ships as 0.7.0): BandLab exports from the phone, sketch → FL, voice memos, ideas inbox, session view.
-  - **Part C, the backlog** (added 2026-10-27): delete a crew and owner actions on the website, stems, per-distributor export formats, the Pace tendency block, and the "In your prods" check for prods in other formats or folders.
-- **Ready but not released:** on `main` since 0.6.1, the QR scanner fix for Android 11+ (it now sees Google Play). Ships with 0.7.0.
+  - **Parts A, A2 and B** are done (the mobile companion shipped through 0.7.x).
+  - **Part C:** C1 (delete a crew, owner tools on the website), C4 (stage log and the Pace block) and C5 ("In your prods" in Downloads and AIFF) shipped. Left: **C2** (a guided stems export) and **C3** (per-distributor formats, waiting on the list of distributors the crew uses).
+  - **Review round 4** (`docs/REVIEW-2026-11.md`): the BREAKS items and the most useful leftovers are fixed; smaller ones are listed there.
+- **On `main`, not released yet:** resource shrinking for the phone app's release builds (Play's R8 recommendation, #223).
 
 ---
 
@@ -146,13 +146,13 @@
 ### In progress (see [NOVEMBER-PLAN.md](NOVEMBER-PLAN.md))
 
 - **The crew pitch (Phase 0).** Being written with Claude on the web, outside this repo: what problem it solves for the crew, what it looks like in six months, what you need from them, and the label questions to bring as questions, not answers.
-- **Google Play.** The app exists in the Play Console; next is app signing with your own key, an internal testing release with the AAB, and the App content forms.
-- **Phase B step 4** (built, ships as 0.7.0, waiting for your test): BandLab exports shared to Hivo on the phone, sketch → FL, voice memos, ideas inbox on both sides, the session view.
+- ✅ **Google Play.** Live in Production (0.8.0, 2026-11-12). Data safety and the foreground-service (microphone) form filled; Play's edge-to-edge warning comes from React Native/AndroidX (recheck at the next Expo upgrade).
+- ✅ **Phase B step 4** shipped in 0.7.0: BandLab exports shared to Hivo on the phone, sketch → FL, voice memos, ideas inbox on both sides, the session view.
 - ✅ **Launch Kit, the rest of audit §3** (A5-A6, B1-B13: readiness per release, undated releases, modal stack, drawer kept across views, demo strip), closed 2026-10-27.
 
 ### Later, on purpose
 
-- **The Windows installer on a real PC.** Cross-built on the Mac from the same code, not run on Windows yet. The Mac build is the reference for now; the test happens when a PC is at hand.
+- ✅ **The Windows installer on a real PC:** used on the owner's PC since 0.7.x; phone pairing there needed the Windows Firewall "Fix it" (0.7.1).
 
 ### Decisions waiting on you
 
@@ -160,11 +160,11 @@
 
 ### Backlog (part C of the November plan, added 2026-10-27)
 
-- **Deleting a crew** (today: remove everyone, then leave) and **owner actions on the website** (invite code, remove member, rename, columns).
-- **Exporting stems from the app.** Stems are detected and shown, not created.
-- **Distributor-specific export formats** (per-distributor templates instead of one universal sheet).
-- **The Pace tendency block.** Needs a log of stage changes first (when each song entered each stage).
-- **"In your prods" for every prod.** A saved prod is marked "In your prods" only when a WAV or MP3 with a matching name sits in a beats folder from Settings. It should also confirm prods in other audio formats and prods saved in another folder (Downloads, a converter's folder), and say where the file was found.
+- ✅ **Deleting a crew** and **owner actions on the website** (C1, 0.7.0).
+- **Exporting stems (C2).** FL's command line renders the master only, so the plan is a guided export: the drawer opens the project and shows FL's "Split mixer tracks" steps; Hivo then detects the stems.
+- **Distributor-specific export formats (C3).** Waiting on which distributors the crew uses.
+- ✅ **The Pace tendency block (C4, 0.8.0):** days per stage from the stage log, where songs stall, what's running long.
+- ✅ **"In your prods" for every prod (C5, 0.8.0):** AIFF in beats folders and, as an option, the Downloads folder, with "Move to beats folder".
 
 ### Thought about, not built
 
@@ -241,8 +241,8 @@ Every song is in exactly one stage: **Creation** (rough beat and lyrics), **Prod
 - [x] Signed in-app updates, website downloads
 - [x] Feedback form
 - [x] Android phone app: APK on the website, signed AAB for Google Play (0.6.0)
-- [ ] Google Play listing live (internal testing first; set up by hand in the Play Console)
-- [ ] Windows installer run on a real PC (later: the Mac build is the reference for now)
+- [x] Google Play listing live (0.8.0 in Production 2026-11-12, after open testing; Data safety and the foreground-service form filled)
+- [x] Windows installer run on a real PC (0.7.x on the owner's PC, 2026-11-09; phone pairing there needed the firewall fix, 0.7.1)
 
 **Mobile companion** (NOVEMBER-PLAN part B)
 - [x] Desktop notes on saved prods, beats and songs (step 1)
