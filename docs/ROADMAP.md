@@ -1,20 +1,20 @@
 # Hivo (formerly FL Manager): Roadmap and status
 
-> Status as of **12 November 2026** (v0.8.0 released, on the website and in Google Play Production; next steps in [NOVEMBER-PLAN.md](NOVEMBER-PLAN.md)). Hard rules for any work: [GUARDRAILS.md](GUARDRAILS.md). This replaces the original vision document: the vision and principles are kept, and every feature now says where it stands. Written to be read aloud or pasted into a chat.
+> Status as of **20 November 2026** (v0.8.1 released, on the website and in Google Play Production; next steps in [NOVEMBER-PLAN.md](NOVEMBER-PLAN.md)). Hard rules for any work: [GUARDRAILS.md](GUARDRAILS.md). This replaces the original vision document: the vision and principles are kept, and every feature now says where it stands. Written to be read aloud or pasted into a chat.
 
 ---
 
 ## 1. Where we are, in one minute
 
 - **What it is.** A desktop app (Mac and Windows) that watches the crew's music project folders and follows every song from the first session to release and promotion, with a web dashboard for the crew and an Android phone app for notes, lyrics, ideas and voice memos.
-- **Releases.** **v0.8.0** is the latest (2026-11-10): Mac universal .dmg, Windows setup .exe and the Android APK from the website, and the Android app on **Google Play (Production since 2026-11-12)**. Installed apps update themselves (signed updates from the Supabase `releases` bucket); website APKs show an update banner; Play installs update through Play. A version tag builds everything on the self-hosted Mac; the release job can also upload the AAB to Play as an internal-testing draft once the service account is set up (`docs/PLAY-CONSOLE.md` §4).
+- **Releases.** **v0.8.1** is the latest (2026-11-20, a maintenance release: dependency and security updates, plus the phone app's release-build shrinking): Mac universal .dmg, Windows setup .exe and the Android APK from the website, and the Android app on **Google Play (Production since 2026-11-12)**. Installed apps update themselves (signed updates from the Supabase `releases` bucket); website APKs show an update banner; Play installs update through Play. A version tag builds everything on the self-hosted Mac; the release job can also upload the AAB to Play as an internal-testing draft once the service account is set up (`docs/PLAY-CONSOLE.md` §4).
 - **Release cadence:** no release per small fix. Fixes wait on `main` and ship together when a step is done; a patch release only for something that breaks installed apps.
 - **Phases.** Phase 0, 1a, 1b, 1c and 1d are built (checklist in section 7). One human item remains: the crew pitch (in progress, outside the repo).
 - **What's next: [NOVEMBER-PLAN.md](NOVEMBER-PLAN.md).**
   - **Parts A, A2 and B** are done (the mobile companion shipped through 0.7.x).
   - **Part C:** C1 (delete a crew, owner tools on the website), C4 (stage log and the Pace block) and C5 ("In your prods" in Downloads and AIFF) shipped. Left: **C2** (a guided stems export) and **C3** (per-distributor formats, waiting on the list of distributors the crew uses).
   - **Review round 4** (`docs/REVIEW-2026-11.md`): the BREAKS items and the most useful leftovers are fixed; smaller ones are listed there.
-- **On `main`, not released yet:** resource shrinking for the phone app's release builds (Play's R8 recommendation, #223).
+- **On `main`, not released yet:** nothing. 0.8.1 shipped everything that was waiting. **Owner action:** the 0.8.1 AAB still has to be uploaded to Google Play by hand (the workflow only drafts internal-testing uploads).
 
 ---
 
@@ -26,16 +26,16 @@
   - web dashboard: Vite on Vercel;
   - phone app: Expo / React Native (Android), syncing with the desktop over the local Wi-Fi only;
   - crew backend: Supabase in the EU (Ireland).
-- **Tests** (as of 2026-10-27):
-  - 241 unit tests for the app logic;
-  - 193 Rust tests (scanning, files, audio, AI, Digger, leads, lookups, phone sync);
-  - 63 phone app tests (pairing, encryption, sync, notes, build plugins);
-  - 175 database tests covering crew rules, privacy, limits, stage versions, crew columns, the releases bucket and the feedback form.
+- **Tests** (as of 2026-11-20, measured on the 0.8.1 tag):
+  - 459 unit tests for the app logic;
+  - 331 Rust tests (scanning, files, audio, AI, Digger, leads, lookups, phone sync);
+  - 326 phone app tests (pairing, encryption, sync, notes, build plugins);
+  - 227 database tests covering crew rules, privacy, limits, stage versions, crew columns, the releases bucket and the feedback form.
   - Both builds are clean; CI runs all of it on every PR, plus npm and cargo audits.
-- **Pull requests:** 147 merged. Open: the BandLab sketch import (#143, draft), to be reworked as the desktop's receiving side in phase B step 4.
+- **Pull requests:** 220 merged, none open. The BandLab sketch import draft (#143) was closed: its desktop receiving side shipped in phase B step 4 (0.7.0).
 - **Live:**
   - crew website: https://www.hi-vo.fr, with `/download/mac`, `/download/windows`, `/download/android` and the privacy policy (`/en/privacy`, `/fr/privacy`);
-  - Google Play: app "Hi-Vo" (`fr.hivo.mobile`) created, not published yet (setup in progress);
+  - Google Play: app "Hi-Vo" (`fr.hivo.mobile`) live in **Production** since 2026-11-12; each new version is promoted by hand;
   - installers and update manifest: the public Supabase `releases` bucket, plus GitHub releases (public repo);
   - sign-in emails: sent through Brevo from the hi-vo.fr domain (Supabase custom SMTP);
   - Claude Design project "fl-Manager": holds the synced components, in the Hivo / System 02 look.
