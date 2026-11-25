@@ -38,6 +38,8 @@ const EN: Record<string, Msg> = {
   "settings.unknown": (p) => `Unknown setting: ${s(p, "name")}.`,
   "picker.failed": () => "The file picker didn't open. Try again.",
   "folder.notLocal": (p) => `Not a folder on this computer: ${s(p, "path")}`,
+  "folder.networkPath": (p) =>
+    `Hivo can't link a network path directly. Map the share to a drive letter (in Windows: right-click it, "Map network drive"), then link that drive: ${s(p, "path")}`,
   "folder.tooBroad": (p) =>
     `Pick the folder where your ${({ projects: "projects", beats: "beats", "samples or packs": "samples or packs", exports: "exports" } as Record<string, string>)[s(p, "what")] ?? s(p, "what")} are, not a whole drive, your home folder or a system folder: the app can read every file in it.`,
   "folder.notDetected": (p) => `Not a detected DAW folder: ${s(p, "path")}`,
@@ -304,6 +306,8 @@ const FR: Record<string, Msg> = {
   "settings.unknown": (p) => `Réglage inconnu${nb}: ${s(p, "name")}.`,
   "picker.failed": () => "Le sélecteur de fichiers ne s'est pas ouvert. Réessaie.",
   "folder.notLocal": (p) => `Ce n'est pas un dossier de cet ordi${nb}: ${s(p, "path")}`,
+  "folder.networkPath": (p) =>
+    `Hivo ne peut pas lier un chemin réseau directement. Associe le partage à une lettre de lecteur (sous Windows${nb}: clic droit, «${nb}Connecter un lecteur réseau${nb}»), puis lie ce lecteur${nb}: ${s(p, "path")}`,
   "folder.tooBroad": (p) =>
     `Choisis le dossier où sont ${({ projects: "tes projets", beats: "tes beats", "samples or packs": "tes samples ou packs", exports: "tes exports" } as Record<string, string>)[s(p, "what")] ?? s(p, "what")}, pas un disque entier, ton dossier perso ou un dossier système${nb}: l'app peut lire tous les fichiers qui s'y trouvent.`,
   "folder.notDetected": (p) => `Ce n'est pas un dossier de DAW détecté${nb}: ${s(p, "path")}`,
