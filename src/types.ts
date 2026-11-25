@@ -19,6 +19,15 @@ export interface StemsInfo {
 export type DawId = "fl-studio" | "ableton" | "reaper" | "studio-one" | "pro-tools" | "cubase" | "bitwig" | "bandlab";
 
 /** A DAW's default projects folder found on this computer (Settings → Auto-detect DAWs). */
+/** One row of the plugin folders section. */
+export interface PluginFolder {
+  path: string;
+  /** Plugins found inside (up to 9999). */
+  plugins: number;
+  /** Found on its own rather than added by the user: not removable. */
+  auto: boolean;
+}
+
 export interface DetectedFolder {
   daw: string;
   path: string;
@@ -131,6 +140,7 @@ export interface Settings {
   /** Sample libraries (packs, Splice…): the scanner finds samples stored
    * under another path in there by file name. Changed only through the Rust picker. */
   sampleFolders?: string[];
+  pluginFolders?: string[];
   /** The Digger sends a 30 s low-quality excerpt of each picked beat to Gemini (off by default). */
   digSendAudio?: boolean;
   /** ffmpeg for shorts; null = found automatically. */

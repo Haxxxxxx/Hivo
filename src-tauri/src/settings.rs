@@ -20,6 +20,12 @@ fn settings_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
 /// the webview has been told once (`take_settings_recovery`).
 static RECOVERED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+/// Folders denied in the asset scope during this run (unlinked or repointed
+/// away from). Tauri has no "un-allow", so one that gets linked again stays
+/// unreadable until the app restarts. Kept so the UI can say so instead of
+/// the folder silently staying blank.
+static FORBIDDEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 /// Reads settings.json. One that doesn't parse is moved aside to
 /// `settings.json.bad-<ms>` (kept for the user, never over an older one) and the defaults are used, so a
 /// corrupt file never blocks every save and picker. Returns where it went.
@@ -82,6 +88,7 @@ pub async fn unreachable_setting_folders(app: AppHandle) -> Result<Vec<String>, 
         .iter()
         .chain(saved.beat_folders.iter())
         .chain(saved.sample_folders.iter())
+        .chain(saved.plugin_folders.iter())
         .chain(saved.output_folder.iter())
         .cloned()
         .collect();
@@ -298,6 +305,33 @@ fn too_broad(folder: &Path, home: Option<&Path>) -> bool {
     home.starts_with(&real) || ["Library", "AppData"].iter().any(|d| real.starts_with(home.join(d)))
 }
 
+/// Breadth guard for plugin folders.
+///
+/// Deliberately NOT `too_broad`: that one also refuses anything under
+/// `~/Library` or `AppData`, which is right for the folders the webview can
+/// read every file of (watched, beats, samples, exports) but wrong here.
+/// Plugin folders are walked by Rust only and never enter the asset scope,
+/// and those two branches hold the standard per-user plugin locations —
+/// `~/Library/Audio/Plug-Ins` on macOS and
+/// `%LOCALAPPDATA%\Programs\Common\VST3` on Windows. Refusing them would
+/// reject exactly where most plugins are installed.
+///
+/// A whole drive, a volume root, the home folder (or anything above it) and
+/// a system folder at the top of a drive are still refused: walking those is
+/// slow and pointless.
+fn plugin_folder_too_broad(folder: &Path, home: Option<&Path>) -> bool {
+    let real = folder.canonicalize().unwrap_or_else(|_| folder.to_path_buf());
+    let Some(parent) = real.parent() else { return true };
+    if is_mount_point(&real, parent) {
+        return true;
+    }
+    if is_system_folder(folder) || is_system_folder(&real) {
+        return true;
+    }
+    let Some(home) = home.map(|h| h.canonicalize().unwrap_or_else(|_| h.to_path_buf())) else { return false };
+    home.starts_with(&real)
+}
+
 /// A system folder at the top of a drive (or under macOS's `/private`, where
 /// `/etc`, `/var` and `/tmp` really live).
 fn is_system_folder(path: &Path) -> bool {
@@ -351,6 +385,47 @@ fn forbid_unlinked(app: &AppHandle, folder: &str, saved: &Settings) {
     if gone_real != gone {
         let _ = assets.forbid_directory(&gone_real, true);
     }
+    if let Ok(mut seen) = FORBIDDEN.lock() {
+        for p in [&gone, &gone_real] {
+            let p = p.to_string_lossy().to_string();
+            if !seen.contains(&p) {
+                seen.push(p);
+            }
+        }
+    }
+}
+
+/// Which linked folders were denied earlier in this run, so they need a
+/// restart before the app can read them again. A denial covers the folder
+/// and everything under it, so an overlap either way counts.
+pub(crate) fn needing_restart(linked: &[String], forbidden: &[String]) -> Vec<String> {
+    linked
+        .iter()
+        .filter(|l| {
+            let l = Path::new(l.as_str());
+            forbidden.iter().any(|f| {
+                let f = Path::new(f.as_str());
+                l.starts_with(f) || f.starts_with(l)
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+/// Linked folders that are unreadable until Hivo restarts, because they were
+/// unlinked or repointed away from earlier in this run and Tauri cannot undo
+/// a denial. Only the folders the webview reads from are affected: sample and
+/// plugin folders are walked by Rust and never enter the asset scope.
+#[tauri::command]
+pub fn folders_needing_restart(app: AppHandle) -> Result<Vec<String>, String> {
+    let saved = load(&app)?;
+    let forbidden = FORBIDDEN.lock().map(|f| f.clone()).unwrap_or_default();
+    if forbidden.is_empty() {
+        return Ok(Vec::new());
+    }
+    let linked: Vec<String> =
+        saved.watched_folders.iter().chain(saved.beat_folders.iter()).chain(saved.output_folder.iter()).cloned().collect();
+    Ok(needing_restart(&linked, &forbidden))
 }
 
 /// Removes a beats folder (only ever shrinks what the app may touch).
@@ -385,6 +460,82 @@ pub fn remove_sample_folder(app: AppHandle, folder: String) -> Result<Settings, 
     saved.sample_folders.retain(|f| f != &folder);
     store(&app, &saved)?;
     Ok(saved)
+}
+
+/// Adds a plugin folder the user picks. Auto-detection covers the standard
+/// locations and whatever FL records; this is for the rest (an own VST drive,
+/// a shared library). Same refusal as the other pickers: a whole drive or the
+/// home folder would take ages to walk.
+#[tauri::command]
+pub async fn pick_plugin_folder(app: AppHandle) -> Result<Settings, String> {
+    let Some(folder) = pick(&app, true).await? else { return load(&app) };
+    if plugin_folder_too_broad(&folder, app.path().home_dir().ok().as_deref()) {
+        return Err(app_err(
+            "folder.tooBroad",
+            "Pick the folder your plugins are in, not a whole drive, your home folder or a system folder.".to_string(),
+        )
+        .with("what", "plugins")
+        .into());
+    }
+    let folder = usable_folder(&folder)?;
+    let mut saved = load(&app)?;
+    if !saved.plugin_folders.contains(&folder) {
+        saved.plugin_folders.push(folder);
+        store(&app, &saved)?;
+    }
+    Ok(saved)
+}
+
+/// Removes a plugin folder.
+#[tauri::command]
+pub fn remove_plugin_folder(app: AppHandle, folder: String) -> Result<Settings, String> {
+    let mut saved = load(&app)?;
+    saved.plugin_folders.retain(|f| f != &folder);
+    store(&app, &saved)?;
+    Ok(saved)
+}
+
+/// One row of the plugin folders section.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginFolder {
+    pub path: String,
+    /// Plugins found inside (up to 9999).
+    pub plugins: usize,
+    /// Found on its own (standard location, or recorded by FL) rather than
+    /// added by the user: shown, but not removable.
+    pub auto: bool,
+}
+
+/// The plugin folders in use, user-added first, each with what it holds.
+/// Read-only. The count is what tells the user a folder actually took.
+#[tauri::command]
+pub async fn plugin_folders(app: AppHandle) -> Result<Vec<PluginFolder>, String> {
+    let saved = load(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut out: Vec<PluginFolder> = Vec::new();
+        let mine: Vec<PathBuf> = saved.plugin_folders.iter().map(PathBuf::from).collect();
+        for dir in &mine {
+            out.push(PluginFolder {
+                plugins: crate::resolve::count_plugins(dir),
+                auto: false,
+                path: dir.to_string_lossy().to_string(),
+            });
+        }
+        for dir in crate::resolve::auto_plugin_dirs() {
+            if !dir.is_dir() || mine.iter().any(|m| m == &dir) {
+                continue;
+            }
+            let plugins = crate::resolve::count_plugins(&dir);
+            // An empty standard location is noise, not information.
+            if plugins > 0 {
+                out.push(PluginFolder { plugins, auto: true, path: dir.to_string_lossy().to_string() });
+            }
+        }
+        out
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -751,6 +902,52 @@ mod tests {
         fs::create_dir_all(dir).unwrap();
         fs::write(dir.join("song.flp"), b"x").unwrap();
         dir
+    }
+
+    /// The standard per-user plugin locations live under ~/Library (macOS)
+    /// and AppData (Windows). `too_broad` refuses both, which would reject
+    /// exactly where most plugins are installed — so plugin folders use
+    /// their own guard.
+    #[test]
+    fn the_usual_per_user_plugin_locations_can_be_added() {
+        let home = Path::new("/Users/me");
+        for p in ["/Users/me/Library/Audio/Plug-Ins/VST3", "/Users/me/AppData/Local/Programs/Common/VST3"] {
+            assert!(too_broad(Path::new(p), Some(home)), "{p}: precondition, the readable-folder guard refuses it");
+            assert!(!plugin_folder_too_broad(Path::new(p), Some(home)), "{p} must be addable as a plugin folder");
+        }
+    }
+
+    /// Still refused: walking these is slow and pointless.
+    #[test]
+    fn a_plugin_folder_is_never_a_drive_the_home_folder_or_a_system_folder() {
+        let home = Path::new("/Users/me");
+        for p in ["/", "/Users/me", "/Users", "/etc", "/Windows"] {
+            assert!(plugin_folder_too_broad(Path::new(p), Some(home)), "{p} must be refused");
+        }
+    }
+
+    /// Re-linking a folder that was unlinked this run leaves it unreadable
+    /// until restart (Tauri has no "un-allow"), so it must be reported.
+    #[test]
+    fn a_relinked_folder_is_reported_as_needing_a_restart() {
+        let linked = vec!["/music/Projects".to_string(), "/music/Beats".to_string()];
+        let forbidden = vec!["/music/Projects".to_string()];
+        assert_eq!(needing_restart(&linked, &forbidden), vec!["/music/Projects".to_string()]);
+    }
+
+    /// A denial covers everything under the folder, so a child counts too.
+    #[test]
+    fn a_folder_under_a_forbidden_one_also_needs_a_restart() {
+        let linked = vec!["/music/Projects/2026".to_string()];
+        assert_eq!(needing_restart(&linked, &["/music/Projects".to_string()]), linked);
+    }
+
+    /// Nothing to say when the folders are unrelated: the warning must not
+    /// cry wolf on every unlink.
+    #[test]
+    fn unrelated_folders_need_no_restart() {
+        let linked = vec!["/music/Beats".to_string()];
+        assert!(needing_restart(&linked, &["/music/Projects".to_string()]).is_empty());
     }
 
     /// A relocated FL user data folder keeps projects in `Projects`.

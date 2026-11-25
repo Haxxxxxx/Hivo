@@ -252,6 +252,8 @@ interface AppState {
   /** Sample libraries (rescans: sample statuses depend on them). */
   addSampleFolder: () => Promise<void>;
   removeSampleFolder: (folder: string) => Promise<void>;
+  addPluginFolder: () => Promise<void>;
+  removePluginFolder: (folder: string) => Promise<void>;
   pickOutputFolder: () => Promise<void>;
   pickFlStudio: () => Promise<void>;
   /** Fill in the FL Studio found on this machine; false if none was found
@@ -943,6 +945,12 @@ export const useAppStore = create<AppState>((set, get) => {
       const before = get().settings.sampleFolders?.length ?? 0;
       keepPaths(await api.pickSampleFolder());
       if ((get().settings.sampleFolders?.length ?? 0) !== before) await get().rescan();
+    },
+    addPluginFolder: async () => {
+      keepPaths(await api.pickPluginFolder());
+    },
+    removePluginFolder: async (folder) => {
+      keepPaths(await api.removePluginFolder(folder));
     },
     removeSampleFolder: async (folder) => {
       keepPaths(await api.removeSampleFolder(folder));
