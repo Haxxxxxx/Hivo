@@ -197,14 +197,28 @@ pub(crate) fn is_plugin_artifact(p: &Path) -> bool {
 /// How many plugins a folder holds, for the Settings section. Capped, and it
 /// never descends into a bundle (a .vst3 is one plugin, not its contents).
 pub(crate) fn count_plugins(dir: &Path) -> usize {
-    WalkDir::new(dir)
-        .max_depth(4)
-        .into_iter()
-        .filter_entry(|e| e.depth() == 0 || !is_plugin_artifact(e.path()))
-        .filter_map(|e| e.ok())
-        .filter(|e| is_plugin_artifact(e.path()))
-        .take(9999)
-        .count()
+    // Walked by hand, NOT with filter_entry: that drops the entry as well as
+    // its subtree, so excluding bundles there also excluded them from the
+    // count — it returned 0 for everything.
+    let mut walk = WalkDir::new(dir).max_depth(4).into_iter();
+    let mut found = 0usize;
+    while let Some(entry) = walk.next() {
+        let Ok(entry) = entry else { continue };
+        if entry.depth() == 0 || !is_plugin_artifact(entry.path()) {
+            continue;
+        }
+        found += 1;
+        // A bundle (.vst3/.component/.vst) is a folder: count it once, then
+        // skip what is inside it. Only ever after yielding a directory —
+        // calling this on a file would skip the rest of its parent.
+        if entry.file_type().is_dir() {
+            walk.skip_current_dir();
+        }
+        if found >= 9999 {
+            break;
+        }
+    }
+    found
 }
 
 /// The plugin folders found without the user naming them: the standard
@@ -233,9 +247,26 @@ fn plugin_dirs() -> Vec<PathBuf> {
     // plugins" alone, so a user who pointed FL at their own plugin folder
     // (recorded under HKCU, and under Shared\Plugins as VstDir64 on newer
     // versions) had none of their plugins found.
+    //
+    // Shared\Paths is filtered by value NAME: it also records FL's user data
+    // folder, which holds Projects. Treating that as a plugin folder walked
+    // the whole thing on every render and filled the installed-plugin index
+    // with project and sample names, so a plugin that is not installed could
+    // match one and be reported as installed. Everything under
+    // Shared\Plugins\FL Studio is a plugin folder by definition.
     #[cfg(target_os = "windows")]
-    for key in ["SOFTWARE\\Image-Line\\Shared\\Paths", "SOFTWARE\\Image-Line\\Shared\\Plugins\\FL Studio"] {
-        for value in crate::settings::fl_registry_values(key) {
+    {
+        for (name, value) in crate::settings::fl_registry_entries("SOFTWARE\\Image-Line\\Shared\\Paths") {
+            let lower = name.to_lowercase();
+            if !lower.contains("vst") && !lower.contains("plugin") {
+                continue;
+            }
+            let p = PathBuf::from(value);
+            if p.is_dir() {
+                dirs.push(p);
+            }
+        }
+        for value in crate::settings::fl_registry_values("SOFTWARE\\Image-Line\\Shared\\Plugins\\FL Studio") {
             let p = PathBuf::from(value);
             if p.is_dir() {
                 dirs.push(p);
@@ -516,6 +547,38 @@ impl Resolver {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn count_plugins_counts_files_and_bundles() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("flsm-plugcount-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // a plain plugin file
+        fs::write(dir.join("Serum.dll"), b"x").unwrap();
+        // a .vst3 bundle: a FOLDER with files inside, counts as ONE plugin
+        let bundle = dir.join("Pro-Q4.vst3");
+        fs::create_dir_all(bundle.join("Contents/x86_64-win")).unwrap();
+        fs::write(bundle.join("Contents/x86_64-win/Pro-Q4.vst3"), b"x").unwrap();
+        fs::write(dir.join("readme.txt"), b"x").unwrap();
+        let n = super::count_plugins(&dir);
+        let _ = fs::remove_dir_all(&dir);
+        // 2, not 3: the .vst3 INSIDE the bundle must not be counted again,
+        // and readme.txt is not a plugin.
+        assert_eq!(n, 2, "expected Serum.dll + the Pro-Q4.vst3 bundle");
+    }
+
+    #[test]
+    fn count_plugins_is_zero_for_a_folder_without_plugins() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("flsm-plugnone-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("Samples")).unwrap();
+        fs::write(dir.join("Samples/kick.wav"), b"x").unwrap();
+        let n = super::count_plugins(&dir);
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(n, 0, "a sample folder holds no plugins");
+    }
+
     use super::*;
     use std::fs;
 
