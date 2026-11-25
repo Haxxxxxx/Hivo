@@ -199,13 +199,19 @@ fn plugin_dirs() -> Vec<PathBuf> {
             dirs.push(Path::new(&pf).join("Steinberg").join("VstPlugins"));
         }
     }
-    // FL's own "VST plugins" search folder, set in its File settings.
+    // FL's own VST search folders, set in its File settings. Read from BOTH
+    // hives and across every recorded value: this used to read HKLM's "VST
+    // plugins" alone, so a user who pointed FL at their own plugin folder
+    // (recorded under HKCU, and under Shared\Plugins as VstDir64 on newer
+    // versions) had none of their plugins found.
     #[cfg(target_os = "windows")]
-    if let Ok(p) = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
-        .open_subkey("SOFTWARE\\Image-Line\\Shared\\Paths")
-        .and_then(|k| k.get_value::<String, _>("VST plugins"))
-    {
-        dirs.push(PathBuf::from(p));
+    for key in ["SOFTWARE\\Image-Line\\Shared\\Paths", "SOFTWARE\\Image-Line\\Shared\\Plugins\\FL Studio"] {
+        for value in crate::settings::fl_registry_values(key) {
+            let p = PathBuf::from(value);
+            if p.is_dir() {
+                dirs.push(p);
+            }
+        }
     }
     // Per-user installs (many installers default to these).
     #[cfg(target_os = "windows")]
