@@ -482,6 +482,72 @@ pub fn fl_paths(app: &AppHandle) -> (Option<String>, Option<PathBuf>) {
     (fl, user_data)
 }
 
+/// Every string value under one of FL Studio's registry keys, from BOTH hives.
+///
+/// HKEY_CURRENT_USER comes first and matters most: FL records the user's own
+/// install and folder choices there (actions.rs already reads HKCU for the
+/// default template). Reading only HKLM — which is what detection used to do —
+/// finds nothing for a per-user install or a relocated data folder, which is
+/// exactly the "auto-detect finds nothing at all" report.
+///
+/// Values are ENUMERATED rather than looked up by name: the names differ
+/// between FL versions ("Shared data" became "User data"), so guessing a name
+/// silently misses the folder.
+#[cfg(target_os = "windows")]
+pub(crate) fn fl_registry_values(subkey: &str) -> Vec<String> {
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    let mut out = Vec::new();
+    for hive in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+        let Ok(key) = winreg::RegKey::predef(hive).open_subkey(subkey) else { continue };
+        for name in key.enum_values().filter_map(|v| v.ok()).map(|(n, _)| n) {
+            if let Ok(v) = key.get_value::<String, _>(&name) {
+                if !v.trim().is_empty() {
+                    out.push(v);
+                }
+            }
+        }
+    }
+    out
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn fl_registry_values(_subkey: &str) -> Vec<String> {
+    Vec::new()
+}
+
+/// One registry path -> the project folders worth proposing for it.
+///
+/// A recorded path is usually FL's user data folder, whose projects live in
+/// `Projects`; some users save straight into the folder itself. `has_projects`
+/// is injected so the choice is testable off-Windows.
+pub(crate) fn project_dirs_for(root: &Path, has_projects: &dyn Fn(&Path) -> bool) -> Vec<PathBuf> {
+    if !root.is_dir() {
+        return Vec::new();
+    }
+    // Only propose a folder that actually holds projects: the same key also
+    // records VST and data folders, and offering those as "your projects"
+    // would be noise the user has to sift through.
+    [root.join("Projects"), root.to_path_buf()]
+        .into_iter()
+        .find(|c| c.is_dir() && has_projects(c))
+        .into_iter()
+        .collect()
+}
+
+/// Project folders FL itself records on this machine, de-duplicated and in
+/// registry order. Empty off Windows and when FL recorded nothing usable.
+fn fl_registry_project_folders() -> Vec<(&'static str, PathBuf)> {
+    let mut out: Vec<(&'static str, PathBuf)> = Vec::new();
+    for value in fl_registry_values("SOFTWARE\\Image-Line\\Shared\\Paths") {
+        for dir in project_dirs_for(Path::new(&value), &|d| count_projects(d) > 0) {
+            if !out.iter().any(|(_, p)| p == &dir) {
+                out.push(("FL Studio", dir));
+            }
+        }
+    }
+    out
+}
+
 /// Each DAW's usual projects folder, same names on macOS and Windows, under
 /// Documents unless noted.
 fn default_project_folders(docs: &Path, music: Option<&Path>) -> Vec<(&'static str, PathBuf)> {
@@ -512,9 +578,19 @@ fn existing_folders(docs: &Path, music: Option<&Path>) -> Vec<(&'static str, Pat
 }
 
 fn detected_folders(app: &AppHandle) -> Vec<(&'static str, PathBuf)> {
-    let Ok(docs) = app.path().document_dir() else { return Vec::new() };
-    let music = app.path().audio_dir().ok();
-    existing_folders(&docs, music.as_deref())
+    // The default layout first, then whatever FL itself recorded. The
+    // defaults alone are why a user who moved their folders saw nothing:
+    // every hardcoded candidate failed is_dir() and the list came back empty.
+    let mut out = match app.path().document_dir() {
+        Ok(docs) => existing_folders(&docs, app.path().audio_dir().ok().as_deref()),
+        Err(_) => Vec::new(),
+    };
+    for (daw, dir) in fl_registry_project_folders() {
+        if !out.iter().any(|(_, p)| p == &dir) {
+            out.push((daw, dir));
+        }
+    }
+    out
 }
 
 /// Projects of any DAW in a folder (a few levels deep), capped: it's a hint
@@ -573,21 +649,34 @@ pub fn detect_fl_studio() -> Option<String> {
     #[cfg(target_os = "windows")]
     {
         // FL's installer records the exact exe here, wherever it was installed
-        // (e.g. D:\Programmes\Image-Line\FL64.exe).
-        use winreg::enums::HKEY_LOCAL_MACHINE;
-        let from_registry = winreg::RegKey::predef(HKEY_LOCAL_MACHINE)
-            .open_subkey("SOFTWARE\\Image-Line\\Shared\\Paths")
-            .and_then(|k| k.get_value::<String, _>("FL Studio"))
-            .ok()
-            .filter(|p| std::path::Path::new(p).exists());
+        // (e.g. D:\Programmes\Image-Line\FL64.exe). HKCU is checked FIRST and
+        // was missing entirely: a per-user install records itself only there,
+        // so this returned None and the user saw "FL Studio not found" even
+        // with FL installed.
+        let from_registry = fl_registry_values("SOFTWARE\\Image-Line\\Shared\\Paths")
+            .into_iter()
+            .find(|p| {
+                let path = std::path::Path::new(p);
+                path.is_file()
+                    && path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_lowercase().starts_with("fl"))
+                        .unwrap_or(false)
+            });
         if from_registry.is_some() {
             return from_registry;
         }
 
-        let program_files =
-            std::env::var("ProgramFiles").unwrap_or_else(|_| "C:\\Program Files".to_string());
-        let base = std::path::Path::new(&program_files).join("Image-Line");
-        if let Ok(entries) = fs::read_dir(&base) {
+        // Both Program Files roots: a 32-bit install lands in the (x86) one,
+        // which this never looked at.
+        let roots: Vec<String> = ["ProgramFiles", "ProgramFiles(x86)"]
+            .iter()
+            .filter_map(|v| std::env::var(v).ok())
+            .collect();
+        let roots = if roots.is_empty() { vec!["C:\\Program Files".to_string()] } else { roots };
+        for program_files in roots {
+            let base = std::path::Path::new(&program_files).join("Image-Line");
+            let Ok(entries) = fs::read_dir(&base) else { continue };
             let mut versions: Vec<_> = entries
                 .filter_map(|e| e.ok())
                 .filter(|e| e.path().is_dir())
@@ -600,9 +689,13 @@ pub fn detect_fl_studio() -> Option<String> {
                 .collect();
             versions.sort_by_key(|e| e.file_name());
             for entry in versions.into_iter().rev() {
-                let exe = entry.path().join("FL64.exe");
-                if exe.exists() {
-                    return Some(exe.to_string_lossy().to_string());
+                // FL64.exe is the 64-bit build; a 32-bit install only ships
+                // FL.exe, which the old lookup ignored entirely.
+                for exe_name in ["FL64.exe", "FL.exe"] {
+                    let exe = entry.path().join(exe_name);
+                    if exe.exists() {
+                        return Some(exe.to_string_lossy().to_string());
+                    }
                 }
             }
         }
@@ -644,6 +737,70 @@ pub fn detect_fl_studio() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Same throwaway-dir convention as the other suites in this crate
+    /// (actions.rs, audio.rs): no new dev-dependency just for tests.
+    fn tmp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("flsm-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn with_project(dir: &Path) -> &Path {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join("song.flp"), b"x").unwrap();
+        dir
+    }
+
+    /// A relocated FL user data folder keeps projects in `Projects`.
+    #[test]
+    fn registry_folder_prefers_the_projects_subfolder() {
+        let root = tmp("regproj");
+        with_project(&root.join("Projects"));
+        let found = project_dirs_for(&root, &|d| d.join("song.flp").exists());
+        assert_eq!(found, vec![root.join("Projects")]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Some users save straight into the recorded folder.
+    #[test]
+    fn registry_folder_falls_back_to_the_folder_itself() {
+        let root = tmp("regroot");
+        with_project(&root);
+        let found = project_dirs_for(&root, &|d| d.join("song.flp").exists());
+        assert_eq!(found, vec![root.clone()]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The same registry key also records VST and data folders. Proposing
+    /// those as "your projects" would be noise, so a folder with no projects
+    /// is never offered.
+    #[test]
+    fn registry_folder_without_projects_is_not_proposed() {
+        let root = tmp("regvst");
+        fs::create_dir_all(root.join("VST3")).unwrap();
+        let found = project_dirs_for(&root, &|d| d.join("song.flp").exists());
+        assert!(found.is_empty(), "a plugin folder must not be proposed as a projects folder");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A stale registry entry (folder since deleted or on an unplugged drive)
+    /// must not crash or be proposed.
+    #[test]
+    fn registry_folder_that_no_longer_exists_is_ignored() {
+        let missing = std::env::temp_dir().join("flsm-does-not-exist-xyz");
+        let _ = fs::remove_dir_all(&missing);
+        assert!(project_dirs_for(&missing, &|_| true).is_empty());
+    }
+
+    /// Off Windows there is no registry, so detection must degrade to the
+    /// default folders rather than error.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn registry_values_are_empty_off_windows() {
+        assert!(fl_registry_values("SOFTWARE\\Image-Line\\Shared\\Paths").is_empty());
+    }
 
     #[test]
     fn saving_settings_never_changes_paths() {
