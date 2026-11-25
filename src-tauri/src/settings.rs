@@ -645,7 +645,7 @@ pub fn fl_paths(app: &AppHandle) -> (Option<String>, Option<PathBuf>) {
 /// between FL versions ("Shared data" became "User data"), so guessing a name
 /// silently misses the folder.
 #[cfg(target_os = "windows")]
-pub(crate) fn fl_registry_values(subkey: &str) -> Vec<String> {
+pub(crate) fn fl_registry_entries(subkey: &str) -> Vec<(String, String)> {
     use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
     let mut out = Vec::new();
     for hive in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
@@ -653,7 +653,7 @@ pub(crate) fn fl_registry_values(subkey: &str) -> Vec<String> {
         for name in key.enum_values().filter_map(|v| v.ok()).map(|(n, _)| n) {
             if let Ok(v) = key.get_value::<String, _>(&name) {
                 if !v.trim().is_empty() {
-                    out.push(v);
+                    out.push((name.clone(), v));
                 }
             }
         }
@@ -662,8 +662,13 @@ pub(crate) fn fl_registry_values(subkey: &str) -> Vec<String> {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub(crate) fn fl_registry_values(_subkey: &str) -> Vec<String> {
+pub(crate) fn fl_registry_entries(_subkey: &str) -> Vec<(String, String)> {
     Vec::new()
+}
+
+/// The values only, for the callers that do not care which setting it was.
+pub(crate) fn fl_registry_values(subkey: &str) -> Vec<String> {
+    fl_registry_entries(subkey).into_iter().map(|(_, v)| v).collect()
 }
 
 /// One registry path -> the project folders worth proposing for it.

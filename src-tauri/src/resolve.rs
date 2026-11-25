@@ -247,9 +247,26 @@ fn plugin_dirs() -> Vec<PathBuf> {
     // plugins" alone, so a user who pointed FL at their own plugin folder
     // (recorded under HKCU, and under Shared\Plugins as VstDir64 on newer
     // versions) had none of their plugins found.
+    //
+    // Shared\Paths is filtered by value NAME: it also records FL's user data
+    // folder, which holds Projects. Treating that as a plugin folder walked
+    // the whole thing on every render and filled the installed-plugin index
+    // with project and sample names, so a plugin that is not installed could
+    // match one and be reported as installed. Everything under
+    // Shared\Plugins\FL Studio is a plugin folder by definition.
     #[cfg(target_os = "windows")]
-    for key in ["SOFTWARE\\Image-Line\\Shared\\Paths", "SOFTWARE\\Image-Line\\Shared\\Plugins\\FL Studio"] {
-        for value in crate::settings::fl_registry_values(key) {
+    {
+        for (name, value) in crate::settings::fl_registry_entries("SOFTWARE\\Image-Line\\Shared\\Paths") {
+            let lower = name.to_lowercase();
+            if !lower.contains("vst") && !lower.contains("plugin") {
+                continue;
+            }
+            let p = PathBuf::from(value);
+            if p.is_dir() {
+                dirs.push(p);
+            }
+        }
+        for value in crate::settings::fl_registry_values("SOFTWARE\\Image-Line\\Shared\\Plugins\\FL Studio") {
             let p = PathBuf::from(value);
             if p.is_dir() {
                 dirs.push(p);
