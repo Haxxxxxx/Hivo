@@ -82,6 +82,7 @@ pub async fn unreachable_setting_folders(app: AppHandle) -> Result<Vec<String>, 
         .iter()
         .chain(saved.beat_folders.iter())
         .chain(saved.sample_folders.iter())
+        .chain(saved.plugin_folders.iter())
         .chain(saved.output_folder.iter())
         .cloned()
         .collect();
@@ -385,6 +386,74 @@ pub fn remove_sample_folder(app: AppHandle, folder: String) -> Result<Settings, 
     saved.sample_folders.retain(|f| f != &folder);
     store(&app, &saved)?;
     Ok(saved)
+}
+
+/// Adds a plugin folder the user picks. Auto-detection covers the standard
+/// locations and whatever FL records; this is for the rest (an own VST drive,
+/// a shared library). Same refusal as the other pickers: a whole drive or the
+/// home folder would take ages to walk.
+#[tauri::command]
+pub async fn pick_plugin_folder(app: AppHandle) -> Result<Settings, String> {
+    let Some(folder) = pick(&app, true).await? else { return load(&app) };
+    let folder = linkable_folder(&app, &folder, "plugins")?;
+    let mut saved = load(&app)?;
+    if !saved.plugin_folders.contains(&folder) {
+        saved.plugin_folders.push(folder);
+        store(&app, &saved)?;
+    }
+    Ok(saved)
+}
+
+/// Removes a plugin folder.
+#[tauri::command]
+pub fn remove_plugin_folder(app: AppHandle, folder: String) -> Result<Settings, String> {
+    let mut saved = load(&app)?;
+    saved.plugin_folders.retain(|f| f != &folder);
+    store(&app, &saved)?;
+    Ok(saved)
+}
+
+/// One row of the plugin folders section.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginFolder {
+    pub path: String,
+    /// Plugins found inside (up to 9999).
+    pub plugins: usize,
+    /// Found on its own (standard location, or recorded by FL) rather than
+    /// added by the user: shown, but not removable.
+    pub auto: bool,
+}
+
+/// The plugin folders in use, user-added first, each with what it holds.
+/// Read-only. The count is what tells the user a folder actually took.
+#[tauri::command]
+pub async fn plugin_folders(app: AppHandle) -> Result<Vec<PluginFolder>, String> {
+    let saved = load(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut out: Vec<PluginFolder> = Vec::new();
+        let mine: Vec<PathBuf> = saved.plugin_folders.iter().map(PathBuf::from).collect();
+        for dir in &mine {
+            out.push(PluginFolder {
+                plugins: crate::resolve::count_plugins(dir),
+                auto: false,
+                path: dir.to_string_lossy().to_string(),
+            });
+        }
+        for dir in crate::resolve::auto_plugin_dirs() {
+            if !dir.is_dir() || mine.iter().any(|m| m == &dir) {
+                continue;
+            }
+            let plugins = crate::resolve::count_plugins(&dir);
+            // An empty standard location is noise, not information.
+            if plugins > 0 {
+                out.push(PluginFolder { plugins, auto: true, path: dir.to_string_lossy().to_string() });
+            }
+        }
+        out
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -336,9 +336,14 @@ pub async fn render_projects(
     // libraries, this computer's FL folders), so they're staged too.
     let (fl, user_data) = crate::settings::fl_paths(&app);
     let sample_folders = scope.sample_folders().to_vec();
+    let plugin_folders = scope.plugin_folders().to_vec();
     let mapped_roots = scope.mapped_roots(user_data.as_deref());
     tauri::async_runtime::spawn_blocking(move || {
-        let mut resolver = crate::resolve::Resolver::new(fl).with_user_data(user_data).with_sample_folders(&sample_folders).with_mapped_roots(mapped_roots);
+        let mut resolver = crate::resolve::Resolver::new(fl)
+            .with_user_data(user_data)
+            .with_sample_folders(&sample_folders)
+            .with_plugin_folders(&plugin_folders)
+            .with_mapped_roots(mapped_roots);
         render_all(&app, project_paths, output_folder, &fl_studio_path, &format, output_names, &mut resolver)
     })
     .await

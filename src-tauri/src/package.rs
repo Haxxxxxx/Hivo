@@ -151,9 +151,14 @@ pub async fn package_preview(app: AppHandle, project_paths: Vec<String>) -> Resu
     let scope = crate::scope::Scope::load(&app)?;
     let (fl, user_data) = crate::settings::fl_paths(&app);
     let sample_folders = scope.sample_folders().to_vec();
+    let plugin_folders = scope.plugin_folders().to_vec();
     let mapped_roots = scope.mapped_roots(user_data.as_deref());
     tauri::async_runtime::spawn_blocking(move || {
-        let mut resolver = Resolver::new(fl).with_user_data(user_data).with_sample_folders(&sample_folders).with_mapped_roots(mapped_roots);
+        let mut resolver = Resolver::new(fl)
+            .with_user_data(user_data)
+            .with_sample_folders(&sample_folders)
+            .with_plugin_folders(&plugin_folders)
+            .with_mapped_roots(mapped_roots);
         project_paths
             .iter()
             .map(|p| {
@@ -291,9 +296,14 @@ pub async fn package_projects(
     }
     let (fl, user_data) = crate::settings::fl_paths(&app);
     let sample_folders = scope.sample_folders().to_vec();
+    let plugin_folders = scope.plugin_folders().to_vec();
     let mapped_roots = scope.mapped_roots(user_data.as_deref());
     tauri::async_runtime::spawn_blocking(move || {
-        let mut resolver = Resolver::new(fl).with_user_data(user_data).with_sample_folders(&sample_folders).with_mapped_roots(mapped_roots);
+        let mut resolver = Resolver::new(fl)
+            .with_user_data(user_data)
+            .with_sample_folders(&sample_folders)
+            .with_plugin_folders(&plugin_folders)
+            .with_mapped_roots(mapped_roots);
         let results: Vec<PackageResult> = project_paths
             .iter()
             .enumerate()

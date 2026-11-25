@@ -173,6 +173,12 @@ pub struct Settings {
     /// nothing in them is ever opened or listed in the UI.
     #[serde(default)]
     pub sample_folders: Vec<String>,
+    /// The user's own plugin folders (D:\\VST3, a shared library drive…).
+    /// Plugins are routinely installed outside FL's folders, so the standard
+    /// locations alone miss them. Only walked to tell an installed plugin
+    /// from a missing one: nothing in them is opened or listed in the UI.
+    #[serde(default)]
+    pub plugin_folders: Vec<String>,
     /// The Digger may send a short, low-quality excerpt of each picked beat
     /// to Gemini (off by default; disclosed in the UI).
     #[serde(default)]
@@ -217,6 +223,7 @@ impl Default for Settings {
             ui_language: default_ui_language(),
             beat_folders: Vec::new(),
             sample_folders: Vec::new(),
+            plugin_folders: Vec::new(),
             dig_send_audio: false,
             install_id: None,
             converter_url_template: None,

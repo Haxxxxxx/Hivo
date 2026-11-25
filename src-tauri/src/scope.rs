@@ -28,6 +28,8 @@ pub struct Scope {
     beat_roots: Vec<PathBuf>,
     /// Sample libraries, as saved: walked by the scanner's resolver only.
     sample_folders: Vec<PathBuf>,
+    /// The user's plugin folders, as saved: walked by the resolver only.
+    plugin_folders: Vec<PathBuf>,
     fl_studio: Option<String>,
     ffmpeg: Option<String>,
     pub render_format: String,
@@ -90,6 +92,7 @@ impl Scope {
             // (`Z:\Samples`) resolves to `\\?\UNC\nas\share\Samples`, which
             // the resolver would refuse to walk as a network path.
             sample_folders: s.sample_folders.iter().map(PathBuf::from).filter(|f| resolve(f).is_some()).collect(),
+            plugin_folders: s.plugin_folders.iter().map(PathBuf::from).filter(|f| resolve(f).is_some()).collect(),
             fl_studio: s.fl_studio_path.clone(),
             ffmpeg: s.ffmpeg_path.clone(),
             render_format: s.render_format.clone(),
@@ -198,6 +201,11 @@ impl Scope {
     /// The sample libraries, as saved (what the resolver walks).
     pub fn sample_folders(&self) -> &[PathBuf] {
         &self.sample_folders
+    }
+
+    /// The user's plugin folders, as saved (what the resolver walks).
+    pub fn plugin_folders(&self) -> &[PathBuf] {
+        &self.plugin_folders
     }
 
     /// The linked folders (projects, beats, sample libraries, the export

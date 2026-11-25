@@ -11,7 +11,7 @@ import { DetectedFolders } from "./DetectedFolders";
 import { canRenderInApp } from "../lib/daws";
 import { aiDisclosure } from "../lib/ai";
 import { converterTemplateFor } from "../lib/converters";
-import type { CaptionLang, RenderFormat, SpotifyStatus, YoutubeStatus } from "../types";
+import type { CaptionLang, PluginFolder, RenderFormat, SpotifyStatus, YoutubeStatus } from "../types";
 import { dict, tr } from "../i18n";
 import { StatusDot } from "../ui";
 import { errorText, errorTextOr } from "../lib/errors";
@@ -372,6 +372,8 @@ export function SettingsView() {
         </section>
 
         <SampleFoldersSection />
+
+        <PluginFoldersSection />
 
         <BeatFoldersSection />
 
@@ -1153,6 +1155,95 @@ function BeatFoldersSection() {
             <button onClick={() => run(remove(folder))} aria-label={t.remove(folder)} className="shrink-0 rounded p-1 text-engrave hover:bg-rule hover:text-red-300">
               <Trash2 size={14} />
             </button>
+          </div>
+        ))}
+        <button
+          onClick={() => run(add())}
+          className="flex items-center justify-center gap-2 rounded-md border border-dashed border-rule-strong py-2.5 text-sm text-engrave hover:border-orange-400/40 hover:text-orange-300"
+        >
+          <FolderPlus size={15} />
+          {t.add}
+        </button>
+      </div>
+      {error && <div className="mt-2 text-xs text-missing">{error}</div>}
+    </section>
+  );
+}
+
+const T_PLUGINS = dict(
+  {
+    title: "Plugin folders",
+    hint: "Where your plugins are installed. The standard locations and the folders FL records are found on their own; add the rest here (an own VST drive, a shared library). Used only to tell an installed plugin from a missing one on a project — nothing in these folders is listed or opened.",
+    add: "Add a plugin folder",
+    remove: (f: string) => `Remove ${f}`,
+    found: (n: number) => `${n} plugin${n === 1 ? "" : "s"}`,
+    none: "no plugins found",
+    auto: "found automatically",
+  },
+  {
+    title: "Dossiers de plugins",
+    hint: "Là où tes plugins sont installés. Les emplacements standards et les dossiers que FL enregistre sont trouvés tout seuls\u202f; ajoute le reste ici (un disque de VST à toi, une bibliothèque partagée). Sert seulement à distinguer un plugin installé d'un plugin manquant sur un projet — rien dans ces dossiers n'est listé ni ouvert.",
+    add: "Ajouter un dossier de plugins",
+    remove: (f: string) => `Retirer ${f}`,
+    found: (n: number) => `${n} plugin${n === 1 ? "" : "s"}`,
+    none: "aucun plugin trouvé",
+    auto: "trouvé automatiquement",
+  },
+);
+
+function PluginFoldersSection() {
+  const add = useAppStore((s) => s.addPluginFolder);
+  const remove = useAppStore((s) => s.removePluginFolder);
+  const saved = useAppStore((s) => s.settings.pluginFolders ?? NO_FOLDERS);
+  const [rows, setRows] = useState<PluginFolder[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const t = tr(T_PLUGINS);
+
+  // Re-counted whenever the saved list changes, so adding a folder shows its
+  // plugin count straight away — that count is the whole point of the
+  // section: it is how the user sees the folder actually took.
+  useEffect(() => {
+    let live = true;
+    void api
+      .pluginFolders()
+      .then((r) => live && setRows(r))
+      .catch((e) => live && setError(errorText(e)));
+    return () => {
+      live = false;
+    };
+  }, [saved]);
+
+  function run(action: Promise<void>) {
+    setError(null);
+    void action.catch((e) => setError(errorText(e)));
+  }
+
+  return (
+    <section id="plugins">
+      <h2 className="text-sm font-semibold text-cream">{t.title}</h2>
+      <p className="mt-1 text-xs text-engrave">{t.hint}</p>
+      <div className="mt-3 flex flex-col gap-2">
+        {(rows ?? []).map((row) => (
+          <div
+            key={row.path}
+            className="flex items-center justify-between gap-2 rounded-md border border-rule bg-raised px-3 py-2 text-sm text-body"
+          >
+            <span className="min-w-0 flex-1 truncate" title={row.path}>
+              {row.path}
+            </span>
+            <span className="shrink-0 text-xs text-engrave">
+              {row.plugins === 0 ? t.none : t.found(row.plugins)}
+              {row.auto ? ` · ${t.auto}` : ""}
+            </span>
+            {!row.auto && (
+              <button
+                onClick={() => run(remove(row.path))}
+                aria-label={t.remove(row.path)}
+                className="shrink-0 rounded p-1 text-engrave hover:bg-rule hover:text-red-300"
+              >
+                <Trash2 size={14} />
+              </button>
+            )}
           </div>
         ))}
         <button

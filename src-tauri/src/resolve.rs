@@ -184,6 +184,35 @@ fn rerooted(path: &str, user_data: Option<&Path>, factory_data: Option<&Path>) -
     out
 }
 
+/// A plugin artifact: a bundle folder (.vst3/.component/.vst) or a file
+/// (.dll/.clap). Bundles are folders full of files, so counting every entry
+/// would wildly overstate what is installed.
+pub(crate) fn is_plugin_artifact(p: &Path) -> bool {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| matches!(e.to_ascii_lowercase().as_str(), "vst3" | "dll" | "clap" | "component" | "vst"))
+        .unwrap_or(false)
+}
+
+/// How many plugins a folder holds, for the Settings section. Capped, and it
+/// never descends into a bundle (a .vst3 is one plugin, not its contents).
+pub(crate) fn count_plugins(dir: &Path) -> usize {
+    WalkDir::new(dir)
+        .max_depth(4)
+        .into_iter()
+        .filter_entry(|e| e.depth() == 0 || !is_plugin_artifact(e.path()))
+        .filter_map(|e| e.ok())
+        .filter(|e| is_plugin_artifact(e.path()))
+        .take(9999)
+        .count()
+}
+
+/// The plugin folders found without the user naming them: the standard
+/// locations for this OS, plus whatever FL records in the registry.
+pub(crate) fn auto_plugin_dirs() -> Vec<PathBuf> {
+    plugin_dirs()
+}
+
 fn plugin_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     for var in ["CommonProgramFiles", "CommonProgramFiles(x86)"] {
@@ -269,6 +298,20 @@ impl Resolver {
     /// in the order the folders were added). The index is reused across
     /// scans (a scan runs on every window focus) until the folder list or a
     /// folder's own mtime changes, or `LIBRARY_TTL` passes.
+    /// Also treat these folders as installed-plugin sources. The user's own
+    /// plugin folders: plugins are routinely kept outside FL's folders, and
+    /// without this they are reported missing on a project that uses them.
+    pub fn with_plugin_folders(mut self, folders: &[PathBuf]) -> Self {
+        for dir in folders {
+            for entry in WalkDir::new(dir).max_depth(4).into_iter().filter_map(|e| e.ok()) {
+                if let Some(stem) = lower_file_stem(entry.path()) {
+                    self.installed_plugins.insert(stem);
+                }
+            }
+        }
+        self
+    }
+
     pub fn with_sample_folders(mut self, folders: &[PathBuf]) -> Self {
         let key: Vec<(PathBuf, Option<SystemTime>)> = folders
             .iter()

@@ -4,6 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { currentLang } from "../i18n";
 import type {
   DetectedFolder,
+  PluginFolder,
   AiStatus,
   AudioAnalysis,
   CoverImage,
@@ -73,6 +74,10 @@ export const removeBeatFolder = (folder: string): Promise<Settings> => invoke("r
 /** Sample libraries: where moved packs are looked up by file name. */
 export const pickSampleFolder = (): Promise<Settings> => invoke("pick_sample_folder");
 export const removeSampleFolder = (folder: string): Promise<Settings> => invoke("remove_sample_folder", { folder });
+export const pickPluginFolder = (): Promise<Settings> => invoke("pick_plugin_folder");
+export const removePluginFolder = (folder: string): Promise<Settings> => invoke("remove_plugin_folder", { folder });
+/** The plugin folders in use (user-added first), each with what it holds. */
+export const pluginFolders = (): Promise<PluginFolder[]> => invoke("plugin_folders");
 /** The beats and what the scan didn't show (capped, unreadable formats). */
 export const scanBeatsFull = (): Promise<BeatScan> => invoke("scan_beats");
 export const scanBeats = (): Promise<BeatFile[]> => scanBeatsFull().then((s) => s.beats);
