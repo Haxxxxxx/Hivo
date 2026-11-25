@@ -70,6 +70,7 @@ pub fn run() {
             settings::pick_plugin_folder,
             settings::remove_plugin_folder,
             settings::plugin_folders,
+            settings::folders_needing_restart,
             beats::scan_beats,
             prods::scan_prod_files,
             prods::move_prod_to_beats,

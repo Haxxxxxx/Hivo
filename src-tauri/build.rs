@@ -25,6 +25,7 @@ const COMMANDS: &[&str] = &[
     "pick_plugin_folder",
     "remove_plugin_folder",
     "plugin_folders",
+    "folders_needing_restart",
     "scan_beats",
     "scan_prod_files",
     "move_prod_to_beats",

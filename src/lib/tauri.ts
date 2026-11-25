@@ -78,6 +78,8 @@ export const pickPluginFolder = (): Promise<Settings> => invoke("pick_plugin_fol
 export const removePluginFolder = (folder: string): Promise<Settings> => invoke("remove_plugin_folder", { folder });
 /** The plugin folders in use (user-added first), each with what it holds. */
 export const pluginFolders = (): Promise<PluginFolder[]> => invoke("plugin_folders");
+/** Linked folders unreadable until Hivo restarts (unlinked earlier this run). */
+export const foldersNeedingRestart = (): Promise<string[]> => invoke("folders_needing_restart");
 /** The beats and what the scan didn't show (capped, unreadable formats). */
 export const scanBeatsFull = (): Promise<BeatScan> => invoke("scan_beats");
 export const scanBeats = (): Promise<BeatFile[]> => scanBeatsFull().then((s) => s.beats);

@@ -34,6 +34,8 @@ const T = dict(
     projectFolders: "Project folders",
     projectFoldersHint:
       "Hivo scans these folders (recursively) for projects from FL Studio, Ableton Live, REAPER, Studio One, Pro Tools, Cubase and Bitwig.",
+    needsRestart:
+      "Restart Hivo for these folders to work again — they were unlinked earlier and stay unreadable until then:",
     removeFolder: (folder: string) => `Stop watching ${folder}`,
     addFolder: "Add project folder",
     detectTitle: "Auto-detect DAWs",
@@ -117,6 +119,8 @@ const T = dict(
     projectFolders: "Dossiers de projets",
     projectFoldersHint:
       "Hivo fouille ces dossiers (et leurs sous-dossiers) pour trouver les projets FL Studio, Ableton Live, REAPER, Studio One, Pro Tools, Cubase et Bitwig.",
+    needsRestart:
+      "Relance Hivo pour que ces dossiers refonctionnent\u202f: ils ont été retirés plus tôt et restent illisibles jusque-là\u202f:",
     removeFolder: (folder: string) => `Ne plus suivre ${folder}`,
     addFolder: "Ajouter un dossier de projets",
     detectTitle: "Détecter les DAW",
@@ -218,6 +222,7 @@ export function SettingsView() {
   const [flError, setFlError] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const unreachable = useUnreachableFolders(settings.watchedFolders, settings.outputFolder);
+  const needsRestart = useFoldersNeedingRestart(settings.watchedFolders.join("\n"));
   const [testState, setTestState] = useState<
     { status: "idle" } | { status: "running" } | { status: "done"; path: string } | { status: "error"; message: string }
   >({ status: "idle" });
@@ -369,6 +374,16 @@ export function SettingsView() {
             </button>
           </div>
           {folderError && <div className="mt-2 text-xs text-missing">{folderError}</div>}
+          {needsRestart.length > 0 && (
+            <div className="mt-2 text-xs text-missing">
+              {t.needsRestart}
+              <ul className="mt-1 list-disc pl-4">
+                {needsRestart.map((f) => (
+                  <li key={f}>{f}</li>
+                ))}
+              </ul>
+            </div>
+          )}
         </section>
 
         <SampleFoldersSection />
@@ -562,6 +577,23 @@ function ShortsSettings() {
 
 /** The saved folders (any of `folders`) that can't be reached right now,
  * asked from Rust each time the list changes. Empty in a browser tab. */
+// Linked folders that stay unreadable until a restart. Re-checked whenever
+// the linked list changes, which is exactly when one can start needing it.
+function useFoldersNeedingRestart(key: string): string[] {
+  const [stale, setStale] = useState<string[]>([]);
+  useEffect(() => {
+    let live = true;
+    api
+      .foldersNeedingRestart()
+      .then((list) => live && setStale(list))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [key]);
+  return stale;
+}
+
 function useUnreachableFolders(...folders: (string[] | string | null | undefined)[]): Set<string> {
   const key = folders.flat().filter(Boolean).join("\n");
   const [missing, setMissing] = useState<Set<string>>(() => new Set());

@@ -33,6 +33,7 @@
     "allow-pick-plugin-folder",
     "allow-remove-plugin-folder",
     "allow-plugin-folders",
+    "allow-folders-needing-restart",
     "allow-scan-beats",
     "allow-scan-prod-files",
     "allow-move-prod-to-beats",
