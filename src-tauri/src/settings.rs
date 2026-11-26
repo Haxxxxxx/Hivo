@@ -178,7 +178,18 @@ async fn pick(app: &AppHandle, folder: bool) -> Result<Option<PathBuf>, String> 
 
 fn usable_folder(path: &Path) -> Result<String, String> {
     let s = path.to_string_lossy().to_string();
-    if is_remote_or_device(&s) || !path.is_dir() {
+    // A network share is NOT a dead end: a folder on a mapped drive letter
+    // works everywhere (scope::mapped_roots exists for it, and a path stored
+    // as `Z:\Projects` passes the textual remote checks while read_dir
+    // works). Only the UNC form is refused, so say which route works instead
+    // of "not a folder on this computer", which for a mounted share is both
+    // wrong and useless.
+    if is_remote_or_device(&s) {
+        return Err(app_err("folder.networkPath", format!("network path, map it to a drive letter first: {s}"))
+            .with("path", s.as_str())
+            .into());
+    }
+    if !path.is_dir() {
         return Err(app_err("folder.notLocal", format!("not a folder on this computer: {s}")).with("path", s.as_str()).into());
     }
     Ok(s)
@@ -978,6 +989,16 @@ mod tests {
     fn unrelated_folders_need_no_restart() {
         let linked = vec!["/music/Beats".to_string()];
         assert!(needing_restart(&linked, &["/music/Projects".to_string()]).is_empty());
+    }
+
+    /// A share picked as `\\NAS\Music` is refused, but the mapped-drive
+    /// form of the same folder is not: that is the route the user is sent
+    /// to, so it must stay open.
+    #[test]
+    fn a_mapped_drive_is_not_treated_as_a_network_path() {
+        assert!(is_remote_or_device(r"\\NAS\Music\Projects"), "UNC is the refused form");
+        assert!(is_remote_or_device("//NAS/Music/Projects"), "forward slashes too");
+        assert!(!is_remote_or_device(r"Z:\Projects"), "a mapped drive must stay linkable");
     }
 
     /// People nest. A layout deeper than the display probe's old limit must
