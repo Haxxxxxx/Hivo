@@ -96,21 +96,21 @@ export function DetectedFolders({ compact = false }: { compact?: boolean }) {
           ))}
         </ul>
       )}
-      <div className="flex items-center gap-3">
-        <button onClick={() => void run("again", detectFolders)} disabled={busy !== null} className="flex items-center gap-1 text-xs text-engrave hover:text-cream">
-          <RefreshCw size={12} className={busy === "again" ? "motion-safe:animate-spin" : ""} /> {t.lookAgain}
+      <div className="flex flex-wrap items-center gap-2">
+        {/* `btn`, like the per-row Link button and every other action in the
+            app: these were text-engrave, the most muted token there is, and
+            read as a caption rather than something to click. */}
+        <button onClick={() => void run("again", detectFolders)} disabled={busy !== null} className={`${btn} text-xs`}>
+          <RefreshCw size={13} className={busy === "again" ? "motion-safe:animate-spin" : ""} /> {t.lookAgain}
         </button>
         {/* Detection only knows the usual places. Someone who keeps projects
             elsewhere needs a way out right here, not a pointer to another
-            section. Hidden in `compact`: the first-run screen already shows
-            its own primary "Link folder" button directly below this. */}
+            section — and on that screen this is their ONLY way forward, so it
+            gets the same weight as Link. Hidden in `compact`: the first-run
+            screen already shows its own primary "Link folder" button below. */}
         {!compact && (
-          <button
-            onClick={() => void run("manual", addWatchedFolder)}
-            disabled={busy !== null}
-            className="flex items-center gap-1 text-xs text-engrave hover:text-cream"
-          >
-            <FolderPlus size={12} /> {busy === "manual" ? t.linking : t.addManually}
+          <button onClick={() => void run("manual", addWatchedFolder)} disabled={busy !== null} className={`${btn} text-xs`}>
+            <FolderPlus size={13} /> {busy === "manual" ? t.linking : t.addManually}
           </button>
         )}
         {error && <span className="text-xs text-red-300">{error}</span>}
