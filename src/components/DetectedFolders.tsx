@@ -8,7 +8,7 @@ import { errorText } from "../lib/errors";
 const T = dict(
   {
     looking: "Looking for DAW folders…",
-    none: "No DAW's default projects folder was found on this computer. This only checks the usual default places: if you save your projects somewhere else, add that folder above.",
+    none: "No DAW's default projects folder was found on this computer. This only checks the usual default places: if you save your projects somewhere else, add that folder with the button below.",
     listLabel: "DAW folders found on this computer",
     empty: "No projects in it yet",
     projects: (n: number) => `${n >= 999 ? "999+" : n} project${plural(n, "", "s")}`,
@@ -16,11 +16,12 @@ const T = dict(
     linking: "Linking…",
     link: "Link",
     lookAgain: "Look again",
+    addManually: "Add a folder manually",
     failed: (e: string) => `Couldn't look for DAW folders: ${e}`,
   },
   {
     looking: "Recherche des dossiers de DAW…",
-    none: "Aucun dossier de projets par défaut de DAW trouvé sur cet ordi. Seuls les emplacements par défaut habituels sont vérifiés : si tu enregistres tes projets ailleurs, ajoute ce dossier au-dessus.",
+    none: "Aucun dossier de projets par défaut de DAW trouvé sur cet ordi. Seuls les emplacements par défaut habituels sont vérifiés : si tu enregistres tes projets ailleurs, ajoute-le avec le bouton ci-dessous.",
     listLabel: "Dossiers de DAW trouvés sur cet ordi",
     empty: "Pas encore de projet dedans",
     projects: (n: number) => `${n >= 999 ? "999+" : n} projet${plural(n, "", "s")}`,
@@ -28,6 +29,7 @@ const T = dict(
     linking: "Liaison…",
     link: "Relier",
     lookAgain: "Chercher encore",
+    addManually: "Ajouter un dossier à la main",
     failed: (e: string) => `Impossible de chercher les dossiers de DAW : ${e}`,
   },
 );
@@ -39,6 +41,7 @@ export function DetectedFolders({ compact = false }: { compact?: boolean }) {
   const detectFolders = useAppStore((s) => s.detectFolders);
   const detectError = useAppStore((s) => s.detectError);
   const linkDetected = useAppStore((s) => s.linkDetected);
+  const addWatchedFolder = useAppStore((s) => s.addWatchedFolder);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -93,10 +96,23 @@ export function DetectedFolders({ compact = false }: { compact?: boolean }) {
           ))}
         </ul>
       )}
-      <div className="flex items-center gap-3">
-        <button onClick={() => void run("again", detectFolders)} disabled={busy !== null} className="flex items-center gap-1 text-xs text-engrave hover:text-cream">
-          <RefreshCw size={12} className={busy === "again" ? "motion-safe:animate-spin" : ""} /> {t.lookAgain}
+      <div className="flex flex-wrap items-center gap-2">
+        {/* `btn`, like the per-row Link button and every other action in the
+            app: these were text-engrave, the most muted token there is, and
+            read as a caption rather than something to click. */}
+        <button onClick={() => void run("again", detectFolders)} disabled={busy !== null} className={`${btn} text-xs`}>
+          <RefreshCw size={13} className={busy === "again" ? "motion-safe:animate-spin" : ""} /> {t.lookAgain}
         </button>
+        {/* Detection only knows the usual places. Someone who keeps projects
+            elsewhere needs a way out right here, not a pointer to another
+            section — and on that screen this is their ONLY way forward, so it
+            gets the same weight as Link. Hidden in `compact`: the first-run
+            screen already shows its own primary "Link folder" button below. */}
+        {!compact && (
+          <button onClick={() => void run("manual", addWatchedFolder)} disabled={busy !== null} className={`${btn} text-xs`}>
+            <FolderPlus size={13} /> {busy === "manual" ? t.linking : t.addManually}
+          </button>
+        )}
         {error && <span className="text-xs text-red-300">{error}</span>}
       </div>
     </div>
