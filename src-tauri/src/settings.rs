@@ -706,7 +706,7 @@ pub(crate) fn project_dirs_for(root: &Path, has_projects: &dyn Fn(&Path) -> bool
 fn fl_registry_project_folders() -> Vec<(&'static str, PathBuf)> {
     let mut out: Vec<(&'static str, PathBuf)> = Vec::new();
     for value in fl_registry_values("SOFTWARE\\Image-Line\\Shared\\Paths") {
-        for dir in project_dirs_for(Path::new(&value), &|d| count_projects(d) > 0) {
+        for dir in project_dirs_for(Path::new(&value), &has_any_project) {
             if !out.iter().any(|(_, p)| p == &dir) {
                 out.push(("FL Studio", dir));
             }
@@ -760,12 +760,37 @@ fn detected_folders(app: &AppHandle) -> Vec<(&'static str, PathBuf)> {
     out
 }
 
-/// Projects of any DAW in a folder (a few levels deep), capped: it's a hint
-/// for the user, not a scan. Skips DAW content libraries (Ableton's demo
-/// Sets are not your projects), like the scanner does.
+/// How deep the project probes look. The scanner walks a linked folder to
+/// ANY depth; these probes are bounded because they run over folders that
+/// may hold no projects at all. 4 was too shallow and silently hid a real
+/// layout — `Projects/2026/Artist/Album/Song/song.flp` is five levels.
+const PROJECT_PROBE_DEPTH: usize = 8;
+
+/// Whether a folder holds any project at all, stopping at the first one.
+///
+/// Separate from `count_projects` on purpose: this one gates whether a
+/// folder is OFFERED, so missing a deep layout means the user is never shown
+/// it, while the count is only a hint next to a folder already on screen.
+/// `any()` short-circuits, so the case that matters costs almost nothing.
+fn has_any_project(dir: &Path) -> bool {
+    walkdir::WalkDir::new(dir)
+        .max_depth(PROJECT_PROBE_DEPTH)
+        .into_iter()
+        .filter_entry(|e| {
+            e.depth() == 0
+                || !e.file_type().is_dir()
+                || !crate::daws::LIBRARY_DIRS.contains(&e.file_name().to_string_lossy().to_lowercase().as_str())
+        })
+        .filter_map(|e| e.ok())
+        .any(|e| e.file_type().is_file() && crate::daws::Daw::of_project(e.path()).is_some())
+}
+
+/// Projects of any DAW in a folder, capped: it's a hint for the user, not a
+/// scan. Skips DAW content libraries (Ableton's demo Sets are not your
+/// projects), like the scanner does.
 fn count_projects(dir: &Path) -> usize {
     walkdir::WalkDir::new(dir)
-        .max_depth(4)
+        .max_depth(PROJECT_PROBE_DEPTH)
         .into_iter()
         .filter_entry(|e| {
             e.depth() == 0
@@ -974,6 +999,27 @@ mod tests {
         assert!(is_remote_or_device(r"\\NAS\Music\Projects"), "UNC is the refused form");
         assert!(is_remote_or_device("//NAS/Music/Projects"), "forward slashes too");
         assert!(!is_remote_or_device(r"Z:\Projects"), "a mapped drive must stay linkable");
+    }
+
+    /// People nest. A layout deeper than the display probe's old limit must
+    /// still be offered — the scanner walks a linked folder to any depth, so
+    /// skipping it here hid a folder that would have worked fine.
+    #[test]
+    fn a_deeply_nested_projects_folder_is_still_offered() {
+        let root = tmp("regdeep");
+        with_project(&root.join("Projects/2026/Artist/Album/Song"));
+        assert!(has_any_project(&root.join("Projects")), "five levels down must count");
+        assert_eq!(project_dirs_for(&root, &has_any_project), vec![root.join("Projects")]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A DAW content library is still not "your projects".
+    #[test]
+    fn a_daw_content_library_is_not_a_projects_folder() {
+        let root = tmp("reglib");
+        with_project(&root.join("Factory Packs/Demo"));
+        assert!(!has_any_project(&root), "factory packs are not the user's projects");
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// A relocated FL user data folder keeps projects in `Projects`.
