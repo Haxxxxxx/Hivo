@@ -25,7 +25,7 @@ import { useAppStore, type RenderJob } from "../store/useAppStore";
 import { isUnder } from "../lib/relink";
 import { formatBytes, formatDateTime, trashName } from "../lib/format";
 import { audioSrc, backupsOnRiskyVolumes, openExternal, openInFlStudio, revealInFileManager } from "../lib/tauri";
-import { KEYS, albumsOf, backupsBytes, formatBpm, lastSaveMs, missingPlugins, renderFreshness } from "../lib/songs";
+import { KEYS, albumsOf, backupsBytes, formatBpm, lastSaveMs, missingPlugins, renderFreshness, tagsInUse } from "../lib/songs";
 import type { ProjectInfo } from "../types";
 import { detectKey } from "../lib/people";
 import { SongCredits, SongPitches } from "./SongPeople";
@@ -366,12 +366,9 @@ export function ProjectDrawer() {
   /** Backups to clean up that sit on a drive with no Recycle Bin: waiting for an explicit OK. */
   const [permanent, setPermanent] = useState<{ project: string; paths: string[]; risky: number } | null>(null);
 
-  const allTags = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const meta of Object.values(workspace.songs))
-      for (const t of meta.tags ?? []) counts.set(t, (counts.get(t) ?? 0) + 1);
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t);
-  }, [workspace.songs]);
+  // Shared with the library's bulk tag control, so both offer the same
+  // vocabulary and a tag typed here shows up there straight away.
+  const allTags = useMemo(() => tagsInUse(workspace.songs), [workspace.songs]);
   const inboxItems = usePhoneInbox((s) => s.items);
   const unreachable = useAppStore((s) => s.unreachable);
 

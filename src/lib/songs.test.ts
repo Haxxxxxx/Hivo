@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { hasProblems, lastSaveMs, renderFreshness } from "./songs";
-import type { ProjectInfo } from "../types";
+import { hasProblems, lastSaveMs, renderFreshness, tagsInUse, tagsOnAny, withTag } from "./songs";
+import type { ProjectInfo, SongMeta } from "../types";
 
 const DAY = 86_400_000;
 
@@ -63,5 +63,35 @@ describe("hasProblems", () => {
     expect(hasProblems(project({ samples: [{ path: "D:\\kick.wav", status: "relocated" }] }))).toBe(false);
     expect(hasProblems(project({ samples: [{ path: "D:\\kick.wav", status: "missing" }] }))).toBe(true);
     expect(hasProblems(project({ readError: "not an FL Studio project" }))).toBe(true);
+  });
+});
+
+describe("tag helpers", () => {
+  const songs = {
+    a: { tags: ["rap", "drill"] },
+    b: { tags: ["rap"] },
+    c: {},
+  } as unknown as Record<string, SongMeta>;
+
+  it("ranks tags by how often they are used", () => {
+    expect(tagsInUse(songs)).toEqual(["rap", "drill"]);
+  });
+
+  it("offers every tag on at least one selected song, alphabetically", () => {
+    expect(tagsOnAny(songs, ["a", "c"])).toEqual(["drill", "rap"]);
+    expect(tagsOnAny(songs, ["c"])).toEqual([]);
+  });
+
+  it("returns null when there is nothing to change", () => {
+    // A no-op must not rewrite the song's metadata.
+    expect(withTag(["rap"], "rap", true)).toBeNull();
+    expect(withTag(["rap"], "drill", false)).toBeNull();
+    expect(withTag(undefined, "rap", false)).toBeNull();
+  });
+
+  it("adds and removes", () => {
+    expect(withTag(["rap"], "drill", true)).toEqual(["rap", "drill"]);
+    expect(withTag(["rap", "drill"], "rap", false)).toEqual(["drill"]);
+    expect(withTag(undefined, "rap", true)).toEqual(["rap"]);
   });
 });
