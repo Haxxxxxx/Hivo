@@ -1,4 +1,4 @@
-import type { Album, ProjectInfo, RenderFreshness, SongStatus, Workspace } from "../types";
+import type { Album, ProjectInfo, RenderFreshness, SongMeta, SongStatus, Workspace } from "../types";
 import { dict, tr } from "../i18n";
 
 // The song lifecycle from docs/ROADMAP.md: every track is in exactly one
@@ -186,4 +186,32 @@ export const KEYS = [...NOTES, ...NOTES.map((n) => `${n}m`)];
 
 export function newId(): string {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+}
+
+/** Every tag used anywhere in the workspace, most used first.
+ *
+ * Shared by the song drawer (suggestions) and the library's bulk tag
+ * control, so both offer the same vocabulary and a tag typed once in the
+ * drawer shows up in the library straight away. */
+export function tagsInUse(songs: Record<string, SongMeta>): string[] {
+  const counts = new Map<string, number>();
+  for (const meta of Object.values(songs)) for (const t of meta.tags ?? []) counts.set(t, (counts.get(t) ?? 0) + 1);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([t]) => t);
+}
+
+/** Tags carried by at least one of `paths` — what a bulk "remove" can offer.
+ * Alphabetical: this is a menu, not a ranking. */
+export function tagsOnAny(songs: Record<string, SongMeta>, paths: string[]): string[] {
+  const seen = new Set<string>();
+  for (const path of paths) for (const t of songs[path]?.tags ?? []) seen.add(t);
+  return [...seen].sort((a, b) => a.localeCompare(b));
+}
+
+/** `tags` with `tag` added or removed, unchanged when there is nothing to do
+ * (so a no-op bulk edit doesn't rewrite every song's metadata). */
+export function withTag(tags: string[] | undefined, tag: string, add: boolean): string[] | null {
+  const current = tags ?? [];
+  const has = current.includes(tag);
+  if (add === has) return null;
+  return add ? [...current, tag] : current.filter((t) => t !== tag);
 }

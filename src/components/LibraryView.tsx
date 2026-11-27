@@ -41,6 +41,9 @@ import {
   missingPlugins,
   missingSamples,
   songLabel,
+  tagsInUse,
+  tagsOnAny,
+  withTag,
 } from "../lib/songs";
 import type { ProjectInfo, SongStatus } from "../types";
 import { ConfirmButton, StatusDot, StatusSelect, btn, btnPrimary } from "./ui";
@@ -66,6 +69,7 @@ const T = dict(
     all: "All",
     selected: (n: number) => `${n} selected`,
     setStatus: "Set status",
+    tags: "Tags",
     addToRelease: "Add to release",
     crew: "Crew",
     shareWith: (crew: string | null) => `Share with ${crew}`,
@@ -136,6 +140,7 @@ const T = dict(
     all: "Tous",
     selected: (n: number) => `${n} sélectionné${plural(n, "", "s")}`,
     setStatus: "Changer l'étape",
+    tags: "Tags",
     addToRelease: "Ajouter à une sortie",
     crew: "Crew",
     shareWith: (crew: string | null) => `Partager avec ${crew}`,
@@ -361,6 +366,15 @@ export function LibraryView() {
   // can hide some, and they must not be changed (or rendered) unseen.
   const selectedPaths = useMemo(() => filtered.filter((p) => selected.has(p.path)).map((p) => p.path), [filtered, selected]);
   const hiddenSelected = selected.size - selectedPaths.length;
+  // Every tag in the workspace can be added; only tags actually present on
+  // the selection can be removed, so the menu never offers a no-op.
+  const tagOptions = useMemo(
+    () => [
+      ...tagsInUse(workspace.songs).map((tag) => ({ value: `add:${tag}`, label: `+ ${tag}` })),
+      ...tagsOnAny(workspace.songs, selectedPaths).map((tag) => ({ value: `del:${tag}`, label: `\u2212 ${tag}` })),
+    ],
+    [workspace.songs, selectedPaths],
+  );
   const unreachable = useAppStore((s) => s.unreachable);
   const skippedLinks = useAppStore((s) => s.skippedLinks);
   const repointFolder = useAppStore((s) => s.repointFolder);
@@ -487,6 +501,25 @@ export function LibraryView() {
             options={[{ value: "", label: UNSORTED.label }, ...STATUSES.map((s) => ({ value: s.id, label: s.label }))]}
             onPick={(v) => setStatus(selectedPaths, (v || undefined) as SongStatus | undefined)}
           />
+          {/* Tags were only editable one song at a time, in the drawer.
+              `+` adds to every selected song, `−` removes it from the ones
+              that carry it. withTag() returns null when a song needs no
+              change, so a bulk edit never rewrites metadata it didn't touch. */}
+          {tagOptions.length > 0 && (
+            <BulkSelect
+              label={t.tags}
+              options={tagOptions}
+              onPick={(v) => {
+                const add = v.startsWith("add:");
+                const tag = v.slice(4);
+                if (!tag) return;
+                for (const path of selectedPaths) {
+                  const next = withTag(workspace.songs[path]?.tags, tag, add);
+                  if (next) updateSong(path, { tags: next });
+                }
+              }}
+            />
+          )}
           {workspace.albums.length > 0 && (
             <BulkSelect
               label={t.addToRelease}
