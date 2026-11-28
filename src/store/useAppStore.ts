@@ -5,7 +5,7 @@ import * as updater from "../lib/updater";
 import { generateSampleProjects, generateSampleWorkspace } from "../lib/sampleData";
 import { ALBUM_COLORS, EMPTY_WORKSPACE, migrateWorkspace, newId, newerWorkspaceVersion } from "../lib/songs";
 import { logStageChanges } from "../lib/stageLog";
-import { addColumn, moveCard, moveColumn, removeColumn, renameColumn } from "../lib/pipeline";
+import { addColumn, moveCard, moveColumn, recolorColumn, removeColumn, renameColumn } from "../lib/pipeline";
 import type { DashboardLayout } from "../lib/dashboardLayout";
 import { applyRelinks, emptyScanMemory, isUnder, nextSettledOrphans, relinksAfterScan, rootRelinks, type Relink, type ScanMemory } from "../lib/relink";
 import { setNote } from "../lib/notes";
@@ -331,6 +331,8 @@ interface AppState {
   renamePipelineColumn: (id: string, name: string) => void;
   addPipelineColumn: (name: string, stage: SongStatus | null) => void;
   removePipelineColumn: (id: string) => void;
+  /** null clears it, back to the stage's own colour. */
+  recolorPipelineColumn: (id: string, color: string | null) => void;
   movePipelineColumn: (id: string, toIndex: number) => void;
   /** `songs` = the songs on the board (for the column's current order). */
   movePipelineCard: (songs: ProjectInfo[], path: string, columnId: string, beforePath: string | null) => void;
@@ -1293,6 +1295,7 @@ export const useAppStore = create<AppState>((set, get) => {
 
     renamePipelineColumn: (id, name) => mutateWorkspace((ws) => renameColumn(ws, id, name)),
     addPipelineColumn: (name, stage) => mutateWorkspace((ws) => addColumn(ws, name, stage)),
+    recolorPipelineColumn: (id, color) => mutateWorkspace((ws) => recolorColumn(ws, id, color)),
     removePipelineColumn: (id) => mutateWorkspace((ws) => removeColumn(ws, id)),
     movePipelineColumn: (id, toIndex) => mutateWorkspace((ws) => moveColumn(ws, id, toIndex)),
     movePipelineCard: (songs, path, columnId, beforePath) => mutateWorkspace((ws) => moveCard(ws, songs, path, columnId, beforePath)),
