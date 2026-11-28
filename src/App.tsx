@@ -7,6 +7,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Sidebar } from "./components/Sidebar";
 import { Dashboard } from "./components/Dashboard";
 import { LibraryView } from "./components/LibraryView";
+import { DuplicatesView } from "./components/DuplicatesView";
 import { PipelineView } from "./components/PipelineView";
 import { AlbumsView } from "./components/AlbumsView";
 import { PeopleView } from "./components/PeopleView";
@@ -416,6 +417,7 @@ export default function App() {
         <LocationNotice />
         {view === "dashboard" && <Dashboard />}
         {view === "library" && <LibraryView />}
+        {view === "duplicates" && <DuplicatesView />}
         {view === "pipeline" && <PipelineView />}
         {view === "albums" && <AlbumsView />}
         {view === "people" && <PeopleView />}
