@@ -322,7 +322,50 @@ impl Resolver {
     /// a `Projects` folder (only if it exists).
     pub fn with_user_data(mut self, user_data: Option<PathBuf>) -> Self {
         self.user_data = user_data.filter(|p| p.is_dir());
+        if let Some(ud) = self.user_data.clone() {
+            self.index_fl_plugin_database(&ud);
+        }
         self
+    }
+
+    /// FL's own plugin database — what the user means by "linked to FL".
+    ///
+    /// Scanning folders can only ever guess: the index is built from file
+    /// STEMS, while a project records the plugin's DISPLAY NAME, and the two
+    /// routinely disagree (`FabFilter Pro-Q 3.vst3` is `Pro-Q 3` in a
+    /// project, `Serum_x64.dll` is `Serum`). So a plugin sitting right there
+    /// on the disk was still reported as not owned whenever its stored path
+    /// had gone stale — a reinstall, a move, a project from another machine.
+    ///
+    /// FL writes one `.fst` per plugin it has scanned, named with that same
+    /// display name, under `Presets/Plugin database/Installed`. Reading it
+    /// settles the question instead of guessing at it.
+    ///
+    /// Files only: the folders in that tree are categories and vendors
+    /// ("Effects", "VST3", "FabFilter"), and indexing those names would
+    /// report a plugin as installed because a vendor folder matched.
+    fn index_fl_plugin_database(&mut self, user_data: &Path) {
+        for root in [
+            user_data.join("Presets").join("Plugin database").join("Installed"),
+            // Older layouts keep it one level up.
+            user_data.join("Plugin database").join("Installed"),
+        ] {
+            for entry in WalkDir::new(root).max_depth(6).into_iter().filter_map(|e| e.ok()) {
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let is_fst = entry
+                    .path()
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("fst"));
+                if !is_fst {
+                    continue;
+                }
+                if let Some(stem) = lower_file_stem(entry.path()) {
+                    self.installed_plugins.insert(stem);
+                }
+            }
+        }
     }
 
     /// Indexes the user's sample libraries by file name (first match wins,
@@ -449,9 +492,18 @@ impl Resolver {
     fn locate(&mut self, raw: &str, project: &Path) -> (String, SampleStatus, Option<PathBuf>) {
         // Shown as stored (what FL displays); looked up with native separators.
         let path = self.expand(raw, project);
-        if is_remote_or_device(&path) {
-            return (path, SampleStatus::Missing, None);
-        }
+        // A stored path on a share is never PROBED: on Windows that hands
+        // the user's credentials to whatever host the project names.
+        //
+        // It used to end the search outright, which was the wrong call. A
+        // project written on a studio NAS records every sample under
+        // `\\nas\...`, so someone who has since copied those samples to
+        // this machine, or pointed Hivo at the folder holding them, saw the
+        // whole track reported missing anyway. The lookups below are all
+        // local — this computer's FL folders, the song's own folder, the
+        // sample libraries — so run them. Only the remote path itself is
+        // off limits.
+        let remote = is_remote_or_device(&path);
         let folder = project.parent().unwrap_or(project).to_path_buf();
         // A relative path is relative to the project's folder, not to
         // wherever the app happens to run from.
@@ -459,7 +511,7 @@ impl Resolver {
             p if is_project_relative(&p) => folder.join(p).to_string_lossy().to_string(),
             p => p,
         };
-        if self.exists(&on_disk) {
+        if !remote && self.exists(&on_disk) {
             return (path, SampleStatus::Ok, Some(PathBuf::from(on_disk)));
         }
         // Saved on another computer: the same file under this one's FL folders.
@@ -547,6 +599,74 @@ impl Resolver {
 
 #[cfg(test)]
 mod tests {
+    use super::Resolver;
+    use crate::flp_metadata::RawPlugin;
+
+    fn plug(name: &str) -> RawPlugin {
+        RawPlugin { name: name.into(), vendor: None, path: Some("Z:\\gone\\Whatever_x64.dll".into()) }
+    }
+
+    /// A project written on a studio NAS records every sample under
+    /// `\\\\nas\\...`. Copying those samples to this machine used to change
+    /// nothing: the share path ended the search before the local lookups ran.
+    #[test]
+    fn a_nas_sample_is_still_found_once_it_is_on_this_machine() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("flsm-nas-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("vox take 3.wav"), b"").unwrap();
+        let project = dir.join("Song.flp");
+
+        let mut r = Resolver::new(None);
+        let out = r.samples(&[r"\\nas\share\stems\Vox Take 3.wav".into()], &project);
+        assert_eq!(out[0].status, crate::models::SampleStatus::Relocated);
+        // Shown as the project stores it, whatever was found.
+        assert!(out[0].path.contains("nas"));
+
+        let out = r.samples(&[r"\\nas\share\stems\Never Had It.wav".into()], &project);
+        assert_eq!(
+            out[0].status,
+            crate::models::SampleStatus::Missing,
+            "nothing local to find, and the share is not probed"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The user's complaint: a plugin that IS on the PC and known to FL was
+    /// reported as not owned, because the folder scan compares file stems
+    /// against the display name a project records, and those disagree.
+    #[test]
+    fn fl_plugin_database_settles_ownership_by_display_name() {
+        use std::fs;
+        let ud = std::env::temp_dir().join(format!("flsm-plugdb-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&ud);
+        let installed = ud.join("Presets").join("Plugin database").join("Installed");
+        let vendor = installed.join("Effects").join("VST3").join("FabFilter");
+        fs::create_dir_all(&vendor).unwrap();
+        // FL names the .fst exactly as the project names the plugin, even
+        // though the file on disk is "FabFilter Pro-Q 3.vst3".
+        fs::write(vendor.join("Pro-Q 3.fst"), b"").unwrap();
+
+        let mut r = Resolver::new(None).with_user_data(Some(ud.clone()));
+        let out = r.plugins(&[plug("Pro-Q 3")]);
+        assert_eq!(out[0].installed, Some(true), "a plugin FL has scanned is owned");
+
+        // The tree's folders are categories and vendors. Indexing those
+        // names would call any plugin named after its vendor installed.
+        let out = r.plugins(&[plug("FabFilter"), plug("VST3"), plug("Effects")]);
+        assert!(
+            out.iter().all(|p| p.installed == Some(false)),
+            "vendor and category folders are not plugins"
+        );
+
+        let out = r.plugins(&[plug("Serum")]);
+        assert_eq!(out[0].installed, Some(false), "a plugin FL never scanned stays unowned");
+
+        let _ = fs::remove_dir_all(&ud);
+    }
+
     #[test]
     fn count_plugins_counts_files_and_bundles() {
         use std::fs;

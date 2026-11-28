@@ -57,6 +57,8 @@ const DEFAULT_SETTINGS: Settings = {
 export type View =
   | "dashboard"
   | "library"
+  // Songs saved several times over the same material (DuplicatesView).
+  | "duplicates"
   | "pipeline"
   | "albums"
   | "people"

@@ -932,12 +932,20 @@ pub async fn scan_projects(app: AppHandle) -> Result<ScanResult, String> {
     }
     let (fl, user_data) = crate::settings::fl_paths(&app);
     let sample_folders = scope.sample_folders().to_vec();
+    let plugin_folders = scope.plugin_folders().to_vec();
     let cache_file = app.path().app_config_dir().ok().map(|d| d.join(READ_CACHE_FILE));
     let (scanned, unreachable) = tauri::async_runtime::spawn_blocking(move || {
         if let Some(file) = &cache_file {
             READ_CACHE_LOADED.call_once(|| daws::load_read_cache(file));
         }
-        let resolver = Resolver::new(fl).with_user_data(user_data).with_sample_folders(&sample_folders);
+        // The user's own plugin folders count here too. Without them the
+        // scan judged every plugin by the standard locations alone, so a
+        // plugin kept elsewhere — the whole reason that setting exists —
+        // was reported as not installed in the library and the song details.
+        let resolver = Resolver::new(fl)
+            .with_user_data(user_data)
+            .with_sample_folders(&sample_folders)
+            .with_plugin_folders(&plugin_folders);
         let scanned = scan_with(&folders, output_folder.as_deref(), resolver);
         if remember_if_newest(seq, &scanned.projects) {
             if let Some(file) = &cache_file {
