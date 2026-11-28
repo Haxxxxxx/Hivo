@@ -24,7 +24,7 @@ import {
 import { useAppStore, type RenderJob } from "../store/useAppStore";
 import { isUnder } from "../lib/relink";
 import { formatBytes, formatDateTime, trashName } from "../lib/format";
-import { audioSrc, backupsOnRiskyVolumes, openExternal, openInFlStudio, pathsOnRiskyVolumes, revealInFileManager } from "../lib/tauri";
+import { audioSrc, backupsOnRiskyVolumes, openExternal, openInFlStudio, pathsOnRiskyVolumes, revealInFileManager, type KeptFolder } from "../lib/tauri";
 import { KEYS, albumsOf, backupsBytes, formatBpm, lastSaveMs, missingPlugins, renderFreshness } from "../lib/songs";
 import { boardOfSong, columnColor, columnOf, resolveBoards, resolvePipeline } from "../lib/pipeline";
 import type { ProjectInfo } from "../types";
@@ -132,6 +132,9 @@ const T = dict(
     deleteWhat: (name: string) => `Moves ${name} and its backups to ${name === "" ? "the Trash" : trashName()}. Mixdowns you have exported are left where they are.`,
     deleteConfirm: (name: string) => `Delete ${name}?`,
     deleteDone: "Song deleted",
+    deleteKept: (n: number, what: string) => `Its folder still holds ${n} file${n === 1 ? "" : "s"} — ${what}. Nothing of that was deleted.`,
+    deleteFolder: "Delete the folder and everything in it",
+    folderGone: "Folder deleted",
     deleteRisky: "This song is on a removable or network drive, where there is no Recycle Bin, so it would be ",
     keepThem: "Keep them",
     keepsRecent: (n: number) => `Keeps the ${n} most recent.`,
@@ -255,6 +258,9 @@ const T = dict(
     deleteWhat: (name: string) => `Envoie ${name} et ses sauvegardes vers ${name === "" ? "la corbeille" : trashName()}. Les mixdowns que tu as exportés restent où ils sont.`,
     deleteConfirm: (name: string) => `Supprimer ${name} ?`,
     deleteDone: "Son supprimé",
+    deleteKept: (n: number, what: string) => `Son dossier contient encore ${n} fichier${n === 1 ? "" : "s"} — ${what}. Rien de tout ça n'a été supprimé.`,
+    deleteFolder: "Supprimer le dossier et tout ce qu'il contient",
+    folderGone: "Dossier supprimé",
     deleteRisky: "Ce son est sur un disque amovible ou réseau, sans corbeille : il serait donc ",
     keepThem: "Les garder",
     keepsRecent: (n: number) => `Garde les ${n} plus récentes.`,
@@ -877,14 +883,24 @@ function DeleteSong({
   demoMode: boolean;
 }) {
   const deleteProjects = useAppStore((s) => s.deleteProjects);
+  const deleteSongFolders = useAppStore((s) => s.deleteSongFolders);
   const openDetail = useAppStore((s) => s.openDetail);
+  const [kept, setKept] = useState<KeptFolder | null>(null);
   const t = tr(T);
   const name = project.name;
 
   const go = (allowPermanent: boolean) =>
     run(
       async () => {
-        await deleteProjects([project.path], allowPermanent);
+        const r = await deleteProjects([project.path], allowPermanent);
+        // A song folder usually holds more than the project file: the
+        // takes recorded into it, the mixdown bounced out of it. Those are
+        // reported and left alone — deleting someone's vocal takes as a
+        // side effect of deleting a .flp is not a thing to do quietly.
+        if (r.kept[0]) {
+          setKept(r.kept[0]);
+          return "";
+        }
         // Nothing left to show: the panel would sit on a missing song.
         openDetail(null);
         return "";
@@ -913,6 +929,39 @@ function DeleteSong({
         className={`${btn} text-xs text-red-300 hover:bg-red-500/10`}
       />
       <p className="mt-1.5 text-[11px] text-engrave">{t.deleteWhat(name)}</p>
+      {kept && (
+        <div className="mt-2 rounded-md border border-amber-400/30 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-100/90">
+          {t.deleteKept(kept.files, kept.examples.join(", "))}
+          <div className="mt-2 flex gap-2">
+            <ConfirmButton
+              label={t.deleteFolder}
+              confirmLabel={t.deleteFolder}
+              onConfirm={async () => {
+                const folder = kept.path;
+                setKept(null);
+                await run(
+                  async () => {
+                    await deleteSongFolders([folder]);
+                    openDetail(null);
+                    return "";
+                  },
+                  () => t.folderGone,
+                );
+              }}
+              className="rounded border border-red-400/40 px-2 py-1 text-red-200 hover:bg-red-500/10"
+            />
+            <button
+              onClick={() => {
+                setKept(null);
+                openDetail(null);
+              }}
+              className="rounded border border-rule-strong px-2 py-1 text-body hover:bg-raised"
+            >
+              {t.keepThem}
+            </button>
+          </div>
+        </div>
+      )}
       {risky && (
         <div className="mt-2 rounded-md border border-red-400/30 bg-red-500/[0.06] px-3 py-2 text-xs text-red-200/90">
           {t.deleteRisky}

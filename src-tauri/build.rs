@@ -62,6 +62,7 @@ const COMMANDS: &[&str] = &[
     "restore_backup",
     "trash_backups",
     "trash_projects",
+    "trash_song_folders",
     "continue_sketch",
     "open_session_window",
     "backups_on_risky_volumes",

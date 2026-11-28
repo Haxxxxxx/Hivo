@@ -360,7 +360,9 @@ interface AppState {
   /** `songs` = the songs on the board (for the column's current order). */
   /** Sends songs to the Trash with their backups, forgets their
    * workspace entries, and rescans. Returns how many went. */
-  deleteProjects: (paths: string[], allowPermanent?: boolean) => Promise<number>;
+  deleteProjects: (paths: string[], allowPermanent?: boolean) => Promise<api.DeleteOutcome>;
+  /** Clean up song folders a delete left standing, with their contents. */
+  deleteSongFolders: (folders: string[]) => Promise<number>;
   /** A song's own card colour (null clears it). */
   recolorSong: (path: string, color: string | null) => void;
   movePipelineCard: (songs: ProjectInfo[], path: string, columnId: string, beforePath: string | null) => void;
@@ -1337,7 +1339,7 @@ export const useAppStore = create<AppState>((set, get) => {
     movePipelineColumn: (id, toIndex) => mutateWorkspace((ws) => moveColumn(ws, id, toIndex)),
     deleteProjects: async (paths, allowPermanent = false) => {
       if (get().demoMode) throw new Error(tr(STORE_ERRORS).sample);
-      const count = await api.trashProjects(paths, allowPermanent);
+      const outcome = await api.trashProjects(paths, allowPermanent);
       // The files are gone: drop what the workspace still says about them,
       // or a deleted song keeps its tags, stage and pipeline forever.
       mutateWorkspace((ws) => {
@@ -1346,7 +1348,13 @@ export const useAppStore = create<AppState>((set, get) => {
         return { ...ws, songs };
       });
       await scanOrReport();
-      return count;
+      return outcome;
+    },
+    deleteSongFolders: async (folders) => {
+      if (get().demoMode) throw new Error(tr(STORE_ERRORS).sample);
+      const n = await api.trashSongFolders(folders);
+      await scanOrReport();
+      return n;
     },
     recolorSong: (path, color) => mutateWorkspace((ws) => recolorSong(ws, path, color)),
     movePipelineCard: (songs, path, columnId, beforePath) => mutateWorkspace((ws) => moveCard(ws, songs, path, columnId, beforePath)),

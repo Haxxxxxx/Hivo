@@ -72,20 +72,35 @@ export function commonAbove(libraryCount: number): number {
   return Math.max(3, Math.ceil(libraryCount / 4));
 }
 
-/** Two songs that are the same FILE, saved in two places.
+/** Keys that make two songs the same project saved twice.
  *
- * `Ocean/Ocean.flp`, `Ocean copy/Ocean.flp`, `Ocean copy 2/Ocean.flp` is
- * the shape this catches, and nothing about samples can: those projects
- * have none at all, so there is no overlap to find. Same file name, same
- * byte count — for a format that stores its whole arrangement inline, that
- * is a copy and not a coincidence.
+ * Two shapes, and neither can be caught by samples: a folder copy
+ * (`Ocean/Ocean.flp`, `Ocean copy/Ocean.flp`) and Hivo's own Duplicate
+ * (`Ocean/Ocean v2.flp` — SAME folder, NEW name). The projects involved
+ * often have no samples at all, so there is no overlap to find.
  *
- * Empty files are excluded: a zero-byte project matches every other
- * zero-byte project and means nothing. */
-export function fileKey(song: ProjectInfo): string | null {
-  if (!song.sizeBytes) return null;
-  const name = song.path.split(/[\\/]/).pop() ?? song.name;
-  return `${fold(name)}:${song.sizeBytes}`;
+ * A copy is the same SIZE, with the same content inside, and either the
+ * same file name or the same folder. Both halves are needed. Size and
+ * content alone grouped two unrelated projects that happened to weigh the
+ * same and both use nothing but FL's stock drums — the same mistake that
+ * made this screen wrong in the first place, arriving by another door. So
+ * stock content is excluded here too, and what is left has to be joined
+ * by a name or a folder before it counts as a copy.
+ *
+ * Returns both keys; songs sharing EITHER are copies. Empty files get
+ * none: a zero-byte project matches every other zero-byte project. */
+export function fileKeys(song: ProjectInfo): string[] {
+  if (!song.sizeBytes) return [];
+  const samples = song.samples
+    .filter((x) => !isStockSample(x.path))
+    .map((x) => sampleKey(x.path))
+    .sort();
+  const plugins = song.plugins.map((x) => fold(x.name)).sort();
+  const content = JSON.stringify([song.sizeBytes, song.tempoBpm ?? null, samples, plugins]);
+  const parts = song.path.split(/[\\/]/);
+  const name = fold(parts.pop() ?? song.name);
+  const folder = fold(parts.join("/"));
+  return [`n:${content}:${name}`, `f:${content}:${folder}`];
 }
 
 export interface DuplicateMember {
@@ -145,16 +160,20 @@ export function duplicateGroups(
 
   const byFile = new Map<string, string[]>();
   for (const song of songs) {
-    const f = fileKey(song);
-    if (!f) continue;
-    const list = byFile.get(f) ?? [];
-    list.push(song.path);
-    byFile.set(f, list);
+    for (const f of fileKeys(song)) {
+      const list = byFile.get(f) ?? [];
+      list.push(song.path);
+      byFile.set(f, list);
+    }
   }
   const copies = new Set<string>();
+  const copyOf = new Map<string, string>();
   for (const list of byFile.values()) {
     if (list.length < 2) continue;
-    for (const p of list) copies.add(p);
+    for (const p of list) {
+      copies.add(p);
+      copyOf.set(p, list[0]);
+    }
     for (let i = 1; i < list.length; i++) union(list[0], list[i]);
   }
 
@@ -181,8 +200,8 @@ export function duplicateGroups(
     if (members.length < 2) continue;
     const sets = members.map((m) => keys.get(m.path)!);
     const shared = [...sets[0]].filter((k) => sets.every((s) => s.has(k))).sort();
-    const files = new Set(members.map(fileKey));
-    const sameFile = files.size === 1 && !files.has(null);
+    const roots = new Set(members.map((m) => copyOf.get(m.path)));
+    const sameFile = members.every((m) => copies.has(m.path)) && roots.size === 1;
     // Either signal justifies the group; neither, and it was only held
     // together by a chain that no longer means anything.
     if (shared.length < minShared && !sameFile) continue;

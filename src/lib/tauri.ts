@@ -246,8 +246,29 @@ export async function backupsOnRiskyVolumes(paths: string[]): Promise<string[]> 
  * them. Renders are left alone. Refuses anything the last scan didn't list
  * as a project, and refuses a drive without a Recycle Bin unless
  * `allowPermanent` (the user was told and said so). */
-export async function trashProjects(paths: string[], allowPermanent = false): Promise<number> {
+export async function trashProjects(paths: string[], allowPermanent = false): Promise<DeleteOutcome> {
   return invoke("trash_projects", { paths, allowPermanent });
+}
+
+/** A song folder still standing after its song was deleted, and what is
+ * still in it — usually the takes recorded into it and the mixdown
+ * bounced out of it. */
+export interface KeptFolder {
+  path: string;
+  files: number;
+  examples: string[];
+}
+
+export interface DeleteOutcome {
+  deleted: number;
+  kept: KeptFolder[];
+}
+
+/** Sends song folders left behind by a delete to the Recycle Bin, with
+ * whatever is still in them. Refuses any folder that still holds a
+ * project file, so it can only ever clean up after a delete. */
+export async function trashSongFolders(folders: string[]): Promise<number> {
+  return invoke("trash_song_folders", { folders });
 }
 
 /** The paths on a removable or network drive, where deleting is permanent. */

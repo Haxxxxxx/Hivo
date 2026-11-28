@@ -162,9 +162,22 @@ describe("copies with nothing in them", () => {
     expect(duplicateGroups([empty("a"), empty("b")])).toEqual([]);
   });
 
-  it("does not group same-sized files with different names", () => {
-    const a = { ...song("A", []), sizeBytes: 4096 } as ProjectInfo;
-    const b = { ...song("B", []), sizeBytes: 4096 } as ProjectInfo;
+  it("finds a copy made inside Hivo, which renames the file", () => {
+    // Hivo's own Duplicate writes Ocean/Ocean v2.flp — SAME folder, NEW
+    // name. Keying a copy on its file name missed every copy made in the
+    // app, which is the likeliest way one gets made.
+    const base = { ...song("Ocean", []), path: "/p/Ocean/Ocean.flp", sizeBytes: 48_219 } as ProjectInfo;
+    const copy = { ...base, path: "/p/Ocean/Ocean v2.flp", name: "Ocean v2" } as ProjectInfo;
+    const groups = duplicateGroups([base, copy]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].sameFile).toBe(true);
+  });
+
+  it("does not call two different projects a copy because they weigh the same", () => {
+    // Same byte count is not enough on its own: what is inside has to
+    // match too, or an unrelated pair of small projects would group.
+    const a = { ...song("A", ["/s/kick.wav"]), sizeBytes: 4096 } as ProjectInfo;
+    const b = { ...song("B", ["/s/vox.wav"]), sizeBytes: 4096 } as ProjectInfo;
     expect(duplicateGroups([a, b])).toEqual([]);
   });
 });

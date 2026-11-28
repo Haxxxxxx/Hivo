@@ -84,6 +84,8 @@ const T = dict(
     deleteN: (n: number) => `Delete ${n}`,
     deleteConfirmN: (n: number) => `Move ${n} song${plural(n, "", "s")} and their backups to the Trash?`,
     deletedN: (n: number) => `${n} song${plural(n, "", "s")} deleted`,
+    keptN: (n: number) => `${n} folder${plural(n, "", "s")} still hold${plural(n, "s", "")} recordings or mixdowns`,
+    deleteFolders: "Delete those folders too",
     packageTitle: "Zip each selected song with its samples",
     packageN: (n: number) => `Package ${n}`,
     rendering: "Rendering…",
@@ -161,6 +163,8 @@ const T = dict(
     deleteN: (n: number) => `Supprimer ${n}`,
     deleteConfirmN: (n: number) => `Envoyer ${n} son${plural(n, "", "s")} et leurs sauvegardes à la corbeille ?`,
     deletedN: (n: number) => `${n} son${plural(n, "", "s")} supprimé${plural(n, "", "s")}`,
+    keptN: (n: number) => `${n} dossier${plural(n, "", "s")} contien${plural(n, "t", "nent")} encore des enregistrements ou des mixdowns`,
+    deleteFolders: "Supprimer aussi ces dossiers",
     packageTitle: "Zipper chaque son sélectionné avec ses samples",
     packageN: (n: number) => `Pack zip (${n})`,
     rendering: "Rendu en cours…",
@@ -262,6 +266,8 @@ export function LibraryView() {
   const moveSongToPipelineBoard = useAppStore((s) => s.moveSongToPipelineBoard);
   const deleteProjects = useAppStore((s) => s.deleteProjects);
   const [deleted, setDeleted] = useState<string | null>(null);
+  const [kept, setKept] = useState<string[]>([]);
+  const deleteSongFolders = useAppStore((s) => s.deleteSongFolders);
   const rescan = useAppStore((s) => s.rescan);
   const startRender = useAppStore((s) => s.startRender);
   const rendering = useAppStore((s) => s.rendering);
@@ -579,10 +585,13 @@ export function LibraryView() {
             confirmLabel={t.deleteConfirmN(selectedPaths.length)}
             onConfirm={async () => {
               try {
-                const n = await deleteProjects(selectedPaths);
+                const r = await deleteProjects(selectedPaths);
                 clearSelection();
                 setError(null);
-                setDeleted(t.deletedN(n));
+                setDeleted(t.deletedN(r.deleted));
+                // Reported, never taken quietly: these hold the takes
+                // recorded into the song and the mixdown bounced out of it.
+                setKept(r.kept.map((k) => k.path));
               } catch (e) {
                 setError(errorText(e));
               }
@@ -593,6 +602,24 @@ export function LibraryView() {
             <span role="status" className="text-xs text-engrave">
               {deleted}
             </span>
+          )}
+          {kept.length > 0 && (
+            <>
+              <span className="text-xs text-amber-300">{t.keptN(kept.length)}</span>
+              <ConfirmButton
+                label={t.deleteFolders}
+                confirmLabel={t.deleteFolders}
+                onConfirm={async () => {
+                  try {
+                    await deleteSongFolders(kept);
+                    setKept([]);
+                  } catch (e) {
+                    setError(errorText(e));
+                  }
+                }}
+                className={`${btn} py-1 text-xs text-red-300 hover:bg-red-500/10`}
+              />
+            </>
           )}
           <button
             onClick={() => startPackage(selectedPaths).catch((e) => setError(errorText(e)))}

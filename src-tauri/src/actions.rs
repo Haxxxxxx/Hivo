@@ -428,6 +428,41 @@ fn may_trash_project(path: &Path, listed: impl Fn(&Path) -> bool) -> bool {
         && fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
 }
 
+/// A song folder left standing after its song was deleted, and what is
+/// still in it, so the user can decide about it instead of finding it
+/// later in FL's project list.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeptFolder {
+    pub path: String,
+    pub files: u32,
+    /// A few names, to say what KIND of thing is still there.
+    pub examples: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteOutcome {
+    pub deleted: u32,
+    pub kept: Vec<KeptFolder>,
+}
+
+/// What is still in `dir`, ignoring the operating system's own litter.
+fn real_files(dir: &Path, out: &mut Vec<String>, count: &mut u32) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else { continue };
+        if kind.is_dir() {
+            real_files(&entry.path(), out, count);
+        } else if !is_litter(&entry.file_name().to_string_lossy()) {
+            *count += 1;
+            if out.len() < 4 {
+                out.push(entry.file_name().to_string_lossy().to_string());
+            }
+        }
+    }
+}
+
 /// Files that are not worth keeping a folder alive for.
 fn is_litter(name: &str) -> bool {
     matches!(name.to_ascii_lowercase().as_str(), ".ds_store" | "thumbs.db" | "desktop.ini")
@@ -472,7 +507,7 @@ fn folder_holds_nothing(dir: &Path) -> bool {
 /// cleanup applies. Deleting on a drive with no Recycle Bin needs
 /// `allow_permanent`, which the UI only sends once the user has been told.
 #[tauri::command]
-pub async fn trash_projects(app: tauri::AppHandle, paths: Vec<String>, allow_permanent: Option<bool>) -> Result<u32, String> {
+pub async fn trash_projects(app: tauri::AppHandle, paths: Vec<String>, allow_permanent: Option<bool>) -> Result<DeleteOutcome, String> {
     let scope = crate::scope::Scope::load(&app)?;
     let linked = |p: &Path| scope.known_file(&p.to_string_lossy()).is_ok();
     if let Some(p) = paths.iter().find(|p| !may_trash_project(Path::new(p), |x| crate::scanner::is_listed_project(x) && linked(x))) {
@@ -514,7 +549,7 @@ pub async fn trash_projects(app: tauri::AppHandle, paths: Vec<String>, allow_per
     }
 
     let count = paths.len() as u32;
-    tauri::async_runtime::spawn_blocking(move || {
+    let kept = tauri::async_runtime::spawn_blocking(move || {
         #[allow(unused_mut)]
         let mut ctx = trash::TrashContext::default();
         #[cfg(target_os = "macos")]
@@ -525,15 +560,90 @@ pub async fn trash_projects(app: tauri::AppHandle, paths: Vec<String>, allow_per
         ctx.delete_all(&all)?;
         // Checked AFTER the files are gone, so the question is what the
         // folder holds now and not what it held a moment ago.
-        let empty: Vec<&PathBuf> = folders.iter().filter(|d| folder_holds_nothing(d)).collect();
+        let (empty, busy): (Vec<&PathBuf>, Vec<&PathBuf>) = folders.iter().partition(|d| folder_holds_nothing(d));
         if !empty.is_empty() {
             ctx.delete_all(&empty)?;
         }
-        Ok::<(), trash::Error>(())
+        // The rest are REPORTED, never quietly taken. A song folder often
+        // still holds the takes recorded into it and the mixdown bounced
+        // out of it; deleting someone's vocal takes as a side effect of
+        // deleting a project file is not a thing to do without asking.
+        let kept = busy
+            .into_iter()
+            .map(|d| {
+                let (mut examples, mut files) = (Vec::new(), 0);
+                real_files(d, &mut examples, &mut files);
+                KeptFolder { path: d.to_string_lossy().to_string(), files, examples }
+            })
+            .collect::<Vec<_>>();
+        Ok::<Vec<KeptFolder>, trash::Error>(kept)
     })
     .await
     .map_err(|e| app_err("project.trash", format!("delete failed: {e}")))?
     .map_err(|e| app_err("project.trash", format!("could not move the song to the Recycle Bin: {e}")))?;
+    Ok(DeleteOutcome { deleted: count, kept })
+}
+
+/// Send a song folder left behind by a delete to the Recycle Bin, with
+/// whatever is still in it.
+///
+/// Only a folder that no longer holds a project file: the song must
+/// already be gone, so this can clean up after a delete and can never be
+/// pointed at a folder whose project is still there. It must sit inside a
+/// linked root and not BE one — a linked root is the user's Projects
+/// folder, not a song. Recoverable, like everything else here.
+#[tauri::command]
+pub async fn trash_song_folders(app: tauri::AppHandle, folders: Vec<String>) -> Result<u32, String> {
+    let scope = crate::scope::Scope::load(&app)?;
+    let roots = scope.folders().to_vec();
+    for f in &folders {
+        let dir = Path::new(f);
+        let inside = roots.iter().any(|r| dir.starts_with(r) && dir != r.as_path());
+        let name_ok = dir
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .is_some_and(|n| !n.chars().any(|c| c == '"' || c == '\\' || c.is_control()));
+        let holds_project = {
+            let mut found = false;
+            let mut stack = vec![dir.to_path_buf()];
+            while let Some(d) = stack.pop() {
+                let Ok(entries) = fs::read_dir(&d) else { continue };
+                for e in entries.flatten() {
+                    let Ok(k) = e.file_type() else { continue };
+                    if k.is_dir() {
+                        stack.push(e.path());
+                    } else if Daw::of_project(&e.path()).is_some() {
+                        found = true;
+                    }
+                }
+            }
+            found
+        };
+        if !inside
+            || !name_ok
+            || dir.components().any(|c| matches!(c, std::path::Component::ParentDir))
+            || !fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir())
+            || holds_project
+        {
+            return Err(app_err("project.folderNotEmpty", format!("refusing to delete {f}"))
+                .with("path", f.as_str())
+                .into());
+        }
+    }
+    let count = folders.len() as u32;
+    tauri::async_runtime::spawn_blocking(move || {
+        #[allow(unused_mut)]
+        let mut ctx = trash::TrashContext::default();
+        #[cfg(target_os = "macos")]
+        {
+            use trash::macos::{DeleteMethod, TrashContextExtMacos};
+            ctx.set_delete_method(DeleteMethod::NsFileManager);
+        }
+        ctx.delete_all(&folders)
+    })
+    .await
+    .map_err(|e| app_err("project.trash", format!("delete failed: {e}")))?
+    .map_err(|e| app_err("project.trash", format!("could not move the folder to the Recycle Bin: {e}")))?;
     Ok(count)
 }
 
@@ -666,6 +776,29 @@ mod tests {
         let v2 = duplicate(created.clone(), "Envy v2".into()).unwrap();
         assert_eq!(fs::read(&v2).unwrap(), b"my work");
         assert!(duplicate(created, "Envy v2".into()).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// What a delete leaves behind is reported, not taken. The counting
+    /// is what the user is shown before deciding, so it has to be right
+    /// about what counts as a real file.
+    #[test]
+    fn leftovers_are_counted_without_the_os_litter() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("flsm-leftovers-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("Audio")).unwrap();
+        fs::write(dir.join("Ocean.mp3"), b"mix").unwrap();
+        fs::write(dir.join(".DS_Store"), b"x").unwrap();
+        fs::write(dir.join("Audio").join("take 1.wav"), b"a").unwrap();
+        fs::write(dir.join("Audio").join("take 2.wav"), b"a").unwrap();
+
+        let (mut examples, mut count) = (Vec::new(), 0);
+        real_files(&dir, &mut examples, &mut count);
+        assert_eq!(count, 3, "the mixdown and both takes, never the .DS_Store");
+        assert!(examples.iter().any(|e| e == "Ocean.mp3"));
+        assert!(!examples.iter().any(|e| e == ".DS_Store"));
+
         let _ = fs::remove_dir_all(&dir);
     }
 
