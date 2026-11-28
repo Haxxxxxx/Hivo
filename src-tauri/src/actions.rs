@@ -779,6 +779,37 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// Proves a delete is RECOVERABLE: the file really lands in the
+    /// Recycle Bin, not in nothing. Ignored by default because it writes
+    /// to the machine's real Trash; run it with `--ignored` when the
+    /// delete path changes.
+    #[test]
+    #[ignore = "touches the real Trash"]
+    fn a_trashed_file_can_be_found_in_the_trash() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("flsm-trashcheck-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let name = format!("hivo-trash-check-{}.txt", std::process::id());
+        let file = dir.join(&name);
+        fs::write(&file, b"recoverable").unwrap();
+
+        #[allow(unused_mut)]
+        let mut ctx = trash::TrashContext::default();
+        #[cfg(target_os = "macos")]
+        {
+            use trash::macos::{DeleteMethod, TrashContextExtMacos};
+            ctx.set_delete_method(DeleteMethod::NsFileManager);
+        }
+        ctx.delete_all(&[&file]).expect("delete_all");
+
+        assert!(!file.exists(), "the file left its folder");
+        let home = std::env::var("HOME").unwrap();
+        let landed = Path::new(&home).join(".Trash").join(&name);
+        assert!(landed.exists(), "it is in the Trash and can be put back");
+        let _ = fs::remove_file(&landed);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// What a delete leaves behind is reported, not taken. The counting
     /// is what the user is shown before deciding, so it has to be right
     /// about what counts as a real file.
