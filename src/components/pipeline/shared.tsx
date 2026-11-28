@@ -1,4 +1,4 @@
-import { useRef, useState, type DragEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent } from "react";
 import { useSource, type PipelineItem, type PipelineSource } from "./source";
 import { ArrowLeft, ArrowRight, ArrowRightLeft, ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from "lucide-react";
 import { usePipelineView, type PipelineViewKind } from "../../store/usePipelineView";
@@ -96,7 +96,7 @@ export const T_PIPELINE = dict(
     moveMenu: (title: string) => `Move ${title}`,
     moveTo: "Move to…",
     toPipeline: "To pipeline",
-    dropOnPipeline: (name: string) => `Drop a song here to move it to ${name}`,
+    dropOnPipeline: (name: string) => `Hold a song here to open ${name}, or drop it to send it straight there`,
     moveUp: "Move up",
     moveDown: "Move down",
     toColumn: "To the column",
@@ -181,7 +181,7 @@ export const T_PIPELINE = dict(
     moveMenu: (title: string) => `Déplacer ${title}`,
     moveTo: "Déplacer vers…",
     toPipeline: "Vers le pipeline",
-    dropOnPipeline: (name: string) => `Dépose un son ici pour l'envoyer vers ${name}`,
+    dropOnPipeline: (name: string) => `Garde un son ici pour ouvrir ${name}, ou dépose-le pour l'y envoyer directement`,
     moveUp: "Monter",
     moveDown: "Descendre",
     toColumn: "Vers la colonne",
@@ -224,6 +224,11 @@ export function CardTitle({ item, className = "" }: { item: PipelineItem; classN
 
 /** Marks a board option, so it cannot collide with a cardMoves id. */
 const BOARD_OPT = "board:";
+
+/** How long a card must rest on another pipeline's tab before it opens.
+ * Long enough that crossing a tab on the way somewhere else does not
+ * swap the board out mid-drag. */
+const SPRING_MS = 600;
 
 /** The keyboard way to move a card (dragging is mouse only): a native menu
  * with up / down in its column and every other column, like the column
@@ -594,6 +599,16 @@ export function BoardSwitcher({ boards, moveToBoard }: { boards?: PipelineSource
   // its tab is the only thing standing in for it.
   const [dropOn, setDropOn] = useState<string | null>(null);
   const cancelled = useRef(false);
+  // Spring-loaded tabs, like a folder in Finder: hold a card over another
+  // pipeline's tab and it opens, so you can put the song in the column you
+  // want rather than wherever its stage lands it. Deliberately slow — an
+  // accidental pass over a tab must not swap the board out from under you.
+  const spring = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stopSpring = () => {
+    if (spring.current) clearTimeout(spring.current);
+    spring.current = null;
+  };
+  useEffect(() => stopSpring, []);
   const t = tr(T_PIPELINE);
   if (!boards || boards.list.length === 0) return null;
   const current = boards.list.find((b) => b.id === boards.active) ?? boards.list[0];
@@ -646,10 +661,22 @@ export function BoardSwitcher({ boards, moveToBoard }: { boards?: PipelineSource
                 e.preventDefault();
                 e.dataTransfer.dropEffect = "move";
                 setDropOn(b.id);
+                // Armed once per hover, not on every dragover event.
+                if (!spring.current) {
+                  spring.current = setTimeout(() => {
+                    spring.current = null;
+                    setDropOn(null);
+                    boards.setActive(b.id);
+                  }, SPRING_MS);
+                }
               }}
-              onDragLeave={() => setDropOn((on) => (on === b.id ? null : on))}
+              onDragLeave={() => {
+                stopSpring();
+                setDropOn((on) => (on === b.id ? null : on));
+              }}
               onDrop={(e) => {
                 e.preventDefault();
+                stopSpring();
                 setDropOn(null);
                 const key = e.dataTransfer.getData(SONG_TYPE);
                 if (moveToBoard && key && b.id !== boards.active) moveToBoard(key, b.id);

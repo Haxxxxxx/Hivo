@@ -423,6 +423,30 @@ export function moveColumn(ws: Workspace, id: string, toIndex: number): Workspac
  * changes only if the column is on another stage: reordering within a stage
  * is never sent to the crew. `songs` = the songs on the board, to know the
  * column's current order. */
+/** Drop a song onto a column of a pipeline it is NOT on yet: it joins
+ * that pipeline and lands in that column, in one step.
+ *
+ * `moveCard` alone refuses — it only knows the songs on the board it was
+ * given, and a song arriving from elsewhere is not among them. Hovering
+ * another pipeline's tab mid-drag opens it, so the card you are still
+ * holding belongs to the board you just left; without this, dropping it
+ * did nothing at all.
+ *
+ * One workspace write, not two: moving the song and placing it must not be
+ * separable, or a failure between them leaves it on the new pipeline in
+ * whatever column its stage happens to pick. */
+export function moveCardFromBoard(
+  ws: Workspace,
+  songs: ProjectInfo[],
+  path: string,
+  toColumnId: string,
+  beforePath: string | null = null,
+  now = Date.now(),
+): Workspace {
+  const joined = moveSongToBoard(ws, path, activeBoard(ws).id);
+  return moveCard(joined, songs, path, toColumnId, beforePath, now);
+}
+
 export function moveCard(
   ws: Workspace,
   songs: ProjectInfo[],

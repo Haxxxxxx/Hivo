@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProjectInfo, SongMeta, Workspace } from "../types";
-import { activeBoard, addBoard, addColumn, boardOfSong, canRemoveColumn, cardMoves, COLUMN_COLORS, columnColor, columnOf, columnTint, DEFAULT_BOARD_ID, defaultPipeline, filterSongs, flatRows, groupSongs, moveCard, moveColumn, moveSongToBoard, pipelineEmptyState, recolorColumn, removeBoard, removeColumn, renameBoard, renameColumn, resolveBoards, resolvePipeline, setActiveBoard, sortRows, stageColor } from "./pipeline";
+import { activeBoard, addBoard, addColumn, boardOfSong, canRemoveColumn, cardMoves, COLUMN_COLORS, columnColor, columnOf, columnTint, DEFAULT_BOARD_ID, defaultPipeline, filterSongs, flatRows, groupSongs, moveCard, moveCardFromBoard, moveColumn, moveSongToBoard, pipelineEmptyState, recolorColumn, removeBoard, removeColumn, renameBoard, renameColumn, resolveBoards, resolvePipeline, setActiveBoard, sortRows, stageColor } from "./pipeline";
 
 const NOW = Date.UTC(2026, 9, 14);
 const song = (name: string, daysAgo = 1, bpm: number | null = null) =>
@@ -264,6 +264,23 @@ describe("separate pipelines", () => {
     const holding = groupSongs([song], x).filter((g) => g.songs.length > 0);
     expect(holding).toHaveLength(1);
     expect(holding[0].column.stage).toBe("production");
+  });
+
+  it("drops a song from another pipeline into the column it was dropped on", () => {
+    // The spring-loaded tab opens the other pipeline mid-drag, so the card
+    // still in hand belongs to the board just left. moveCard alone refuses
+    // it — it only knows the songs it was given — and the drop did nothing.
+    let x = addBoard(w({ songs: { "/p/A.flp": { status: "creation" } } }), "Beats", "beats");
+    x = setActiveBoard(x, "beats");
+    const song = { path: "/p/A.flp", name: "A" } as unknown as ProjectInfo;
+    const prep = resolvePipeline(x).columns.find((c) => c.stage === "prep")!;
+
+    // moveCard on its own: the song is not on this board, so nothing moves.
+    expect(moveCard(x, [], "/p/A.flp", prep.id)).toBe(x);
+
+    const after = moveCardFromBoard(x, [song], "/p/A.flp", prep.id);
+    expect(after.songs["/p/A.flp"].pipeline).toBe("beats");
+    expect(columnOf(after.songs["/p/A.flp"], resolvePipeline(after)).id).toBe(prep.id);
   });
 
   it("keeps the last pipeline, and rehomes songs when one goes", () => {

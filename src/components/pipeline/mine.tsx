@@ -45,6 +45,7 @@ export function useMineSource(): PipelineSource {
   const recolor = useAppStore((s) => s.recolorPipelineColumn);
   const moveColumn = useAppStore((s) => s.movePipelineColumn);
   const moveCard = useAppStore((s) => s.movePipelineCard);
+  const moveCardFromBoard = useAppStore((s) => s.movePipelineCardFromBoard);
   const setActiveBoardAction = useAppStore((s) => s.setActivePipelineBoard);
   const addBoardAction = useAppStore((s) => s.addPipelineBoard);
   const renameBoardAction = useAppStore((s) => s.renamePipelineBoard);
@@ -94,8 +95,16 @@ export function useMineSource(): PipelineSource {
       moveColumn,
       // This pipeline's full song list, so hidden (filtered) songs keep
       // their order and a move never reorders another board.
-      moveCard: (key, columnId, beforeKey) => moveCard(onThisBoard, key, columnId, beforeKey),
+      moveCard: (key, columnId, beforeKey) => {
+        // A song already here moves within this pipeline. One still on the
+        // pipeline you dragged it from — the tab sprang open mid-drag —
+        // joins this one and lands where you dropped it. Its own row has
+        // to be in the list, or the placement has nothing to order it in.
+        if (onThisBoard.some((s) => s.path === key)) return moveCard(onThisBoard, key, columnId, beforeKey);
+        const song = songs.find((s) => s.path === key);
+        if (song) moveCardFromBoard([...onThisBoard, song], key, columnId, beforeKey);
+      },
       newSong: () => openNewProject({ status: "creation" }),
     } satisfies PipelineSource;
-  }, [songs, workspace, query, detailPath, openDetail, openNewProject, rename, add, remove, moveColumn, moveCard, setActiveBoardAction, addBoardAction, renameBoardAction, removeBoardAction, moveSongToBoardAction, recolor]);
+  }, [songs, workspace, query, detailPath, openDetail, openNewProject, rename, add, remove, moveColumn, moveCard, setActiveBoardAction, addBoardAction, renameBoardAction, removeBoardAction, moveSongToBoardAction, moveCardFromBoard, recolor]);
 }

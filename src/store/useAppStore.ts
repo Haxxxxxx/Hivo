@@ -10,6 +10,7 @@ import {
   addBoard,
   addColumn,
   moveCard,
+  moveCardFromBoard,
   moveColumn,
   moveSongToBoard,
   recolorColumn,
@@ -357,6 +358,8 @@ interface AppState {
   movePipelineColumn: (id: string, toIndex: number) => void;
   /** `songs` = the songs on the board (for the column's current order). */
   movePipelineCard: (songs: ProjectInfo[], path: string, columnId: string, beforePath: string | null) => void;
+  /** Same, for a song arriving from another pipeline (spring-loaded tabs). */
+  movePipelineCardFromBoard: (songs: ProjectInfo[], path: string, columnId: string, beforePath: string | null) => void;
 
   // Dashboard layout (the "Me" dashboard's blocks: order, hidden, looks, widths)
   setDashboardLayout: (layout: DashboardLayout) => void;
@@ -1327,6 +1330,8 @@ export const useAppStore = create<AppState>((set, get) => {
     removePipelineColumn: (id) => mutateWorkspace((ws) => removeColumn(ws, id)),
     movePipelineColumn: (id, toIndex) => mutateWorkspace((ws) => moveColumn(ws, id, toIndex)),
     movePipelineCard: (songs, path, columnId, beforePath) => mutateWorkspace((ws) => moveCard(ws, songs, path, columnId, beforePath)),
+    movePipelineCardFromBoard: (songs, path, columnId, beforePath) =>
+      mutateWorkspace((ws) => moveCardFromBoard(ws, songs, path, columnId, beforePath)),
 
     setDashboardLayout: (layout) => mutateWorkspace((ws) => ({ ...ws, dashboard: layout })),
     resetDashboardLayout: () =>
