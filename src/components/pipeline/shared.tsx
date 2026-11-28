@@ -604,9 +604,10 @@ export function AddColumn({ compact = false }: { compact?: boolean }) {
  *
  * Only where `boards` is provided — the crew board has one shared set of
  * columns on the server, so it has no pipelines to switch between. */
-export function BoardSwitcher() {
-  const source = useSource();
-  const boards = source.boards;
+export function BoardSwitcher({ boards }: { boards?: PipelineSource["boards"] }) {
+  // Takes `boards` as a prop, NOT useSource(): this renders in the page
+  // header, which is outside PipelineSourceProvider. Reading the context
+  // here threw and took the whole app down to a black screen.
   const t = tr(T_PIPELINE);
   if (!boards || boards.list.length === 0) return null;
   const current = boards.list.find((b) => b.id === boards.active) ?? boards.list[0];

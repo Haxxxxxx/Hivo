@@ -42,6 +42,7 @@ import {
   missingSamples,
   songLabel,
 } from "../lib/songs";
+import { resolveBoards } from "../lib/pipeline";
 import type { ProjectInfo, SongStatus } from "../types";
 import { ConfirmButton, StatusDot, StatusSelect, btn, btnPrimary } from "./ui";
 import { Chip, MixdownBadge, Toggle } from "../ui";
@@ -66,6 +67,7 @@ const T = dict(
     all: "All",
     selected: (n: number) => `${n} selected`,
     setStatus: "Set status",
+    pipeline: "Pipeline",
     addToRelease: "Add to release",
     crew: "Crew",
     shareWith: (crew: string | null) => `Share with ${crew}`,
@@ -136,6 +138,7 @@ const T = dict(
     all: "Tous",
     selected: (n: number) => `${n} sélectionné${plural(n, "", "s")}`,
     setStatus: "Changer l'étape",
+    pipeline: "Pipeline",
     addToRelease: "Ajouter à une sortie",
     crew: "Crew",
     shareWith: (crew: string | null) => `Partager avec ${crew}`,
@@ -244,6 +247,7 @@ export function LibraryView() {
   const toggleSelected = useAppStore((s) => s.toggleSelected);
   const selectAll = useAppStore((s) => s.selectAll);
   const clearSelection = useAppStore((s) => s.clearSelection);
+  const moveSongToPipelineBoard = useAppStore((s) => s.moveSongToPipelineBoard);
   const rescan = useAppStore((s) => s.rescan);
   const startRender = useAppStore((s) => s.startRender);
   const rendering = useAppStore((s) => s.rendering);
@@ -361,6 +365,7 @@ export function LibraryView() {
   // can hide some, and they must not be changed (or rendered) unseen.
   const selectedPaths = useMemo(() => filtered.filter((p) => selected.has(p.path)).map((p) => p.path), [filtered, selected]);
   const hiddenSelected = selected.size - selectedPaths.length;
+  const boards = useMemo(() => resolveBoards(workspace).boards, [workspace]);
   const unreachable = useAppStore((s) => s.unreachable);
   const skippedLinks = useAppStore((s) => s.skippedLinks);
   const repointFolder = useAppStore((s) => s.repointFolder);
@@ -487,6 +492,19 @@ export function LibraryView() {
             options={[{ value: "", label: UNSORTED.label }, ...STATUSES.map((s) => ({ value: s.id, label: s.label }))]}
             onPick={(v) => setStatus(selectedPaths, (v || undefined) as SongStatus | undefined)}
           />
+          {/* Only with somewhere to move to. This is how a new pipeline gets
+              filled: making one and then moving songs in one at a time
+              would be nobody's idea of a good evening. */}
+          {boards.length > 1 && (
+            <BulkSelect
+              label={t.pipeline}
+              options={boards.map((b) => ({ value: b.id, label: b.name }))}
+              onPick={(id) => {
+                for (const path of selectedPaths) moveSongToPipelineBoard(path, id);
+                clearSelection();
+              }}
+            />
+          )}
           {workspace.albums.length > 0 && (
             <BulkSelect
               label={t.addToRelease}
