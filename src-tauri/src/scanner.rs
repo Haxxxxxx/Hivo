@@ -1031,14 +1031,47 @@ pub(crate) fn unreachable_roots(linked: &[String]) -> Vec<String> {
 /// so the webview can never point it at a real project.
 static LISTED_BACKUPS: std::sync::Mutex<Option<HashSet<PathBuf>>> = std::sync::Mutex::new(None);
 
+/// Projects the last scan listed. Deleting a song only ever touches paths
+/// from this set, so the webview cannot point it at an arbitrary file.
+static LISTED_PROJECTS: std::sync::Mutex<Option<HashSet<PathBuf>>> = std::sync::Mutex::new(None);
+
+/// Which backups the last scan tied to which project, so deleting a song
+/// can take its backups with it without the caller naming them.
+static BACKUPS_BY_PROJECT: std::sync::Mutex<Option<HashMap<PathBuf, Vec<PathBuf>>>> = std::sync::Mutex::new(None);
+
 fn remember_scan(projects: &[ProjectInfo]) {
     let listed: HashSet<PathBuf> = projects.iter().flat_map(|p| p.backups.iter().map(|b| PathBuf::from(&b.path))).collect();
     *LISTED_BACKUPS.lock().unwrap_or_else(|e| e.into_inner()) = Some(listed);
     let scanned: HashSet<PathBuf> = projects.iter().map(|p| PathBuf::from(&p.path)).collect();
+    *LISTED_PROJECTS.lock().unwrap_or_else(|e| e.into_inner()) = Some(scanned.clone());
+    let by_project: HashMap<PathBuf, Vec<PathBuf>> = projects
+        .iter()
+        .map(|p| (PathBuf::from(&p.path), p.backups.iter().map(|b| PathBuf::from(&b.path)).collect()))
+        .collect();
+    *BACKUPS_BY_PROJECT.lock().unwrap_or_else(|e| e.into_inner()) = Some(by_project);
     daws::prune_read_cache(&scanned);
     if let Some(cache) = RESOLVED_SAMPLES.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         cache.retain(|p, _| scanned.contains(p));
     }
+}
+
+/// The backups the last scan tied to this project.
+pub fn backups_of(project: &Path) -> Vec<PathBuf> {
+    BACKUPS_BY_PROJECT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|m| m.get(project).cloned())
+        .unwrap_or_default()
+}
+
+/// Whether the last scan listed `path` as a project of its own.
+pub fn is_listed_project(path: &Path) -> bool {
+    LISTED_PROJECTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|set| set.contains(path))
 }
 
 /// Whether the last scan listed `path` as some project's backup.

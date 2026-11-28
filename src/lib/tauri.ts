@@ -242,6 +242,19 @@ export async function backupsOnRiskyVolumes(paths: string[]): Promise<string[]> 
   return invoke("backups_on_risky_volumes", { paths });
 }
 
+/** Moves songs to the Recycle Bin / Trash, with the backups belonging to
+ * them. Renders are left alone. Refuses anything the last scan didn't list
+ * as a project, and refuses a drive without a Recycle Bin unless
+ * `allowPermanent` (the user was told and said so). */
+export async function trashProjects(paths: string[], allowPermanent = false): Promise<number> {
+  return invoke("trash_projects", { paths, allowPermanent });
+}
+
+/** The paths on a removable or network drive, where deleting is permanent. */
+export async function pathsOnRiskyVolumes(paths: string[]): Promise<string[]> {
+  return invoke("paths_on_risky_volumes", { paths });
+}
+
 /** What each package would hold. Nothing is written. */
 export async function packagePreview(projectPaths: string[]): Promise<PackagePlan[]> {
   return invoke("package_preview", { projectPaths });

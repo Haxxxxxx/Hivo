@@ -24,7 +24,7 @@ import {
 import { useAppStore, type RenderJob } from "../store/useAppStore";
 import { isUnder } from "../lib/relink";
 import { formatBytes, formatDateTime, trashName } from "../lib/format";
-import { audioSrc, backupsOnRiskyVolumes, openExternal, openInFlStudio, revealInFileManager } from "../lib/tauri";
+import { audioSrc, backupsOnRiskyVolumes, openExternal, openInFlStudio, pathsOnRiskyVolumes, revealInFileManager } from "../lib/tauri";
 import { KEYS, albumsOf, backupsBytes, formatBpm, lastSaveMs, missingPlugins, renderFreshness } from "../lib/songs";
 import { boardOfSong, columnColor, columnOf, resolveBoards, resolvePipeline } from "../lib/pipeline";
 import type { ProjectInfo } from "../types";
@@ -128,6 +128,11 @@ const T = dict(
     deletedPermanently: "deleted permanently",
     deleted: (n: number) => `Deleted ${n} backups`,
     deletePermanently: "Delete permanently",
+    deleteSong: "Delete this song",
+    deleteWhat: (name: string) => `Moves ${name} and its backups to ${name === "" ? "the Trash" : trashName()}. Mixdowns you have exported are left where they are.`,
+    deleteConfirm: (name: string) => `Delete ${name}?`,
+    deleteDone: "Song deleted",
+    deleteRisky: "This song is on a removable or network drive, where there is no Recycle Bin, so it would be ",
     keepThem: "Keep them",
     keepsRecent: (n: number) => `Keeps the ${n} most recent.`,
     plugins: (n: number) => `Plugins · ${n}`,
@@ -246,6 +251,11 @@ const T = dict(
     deletedPermanently: "supprimées définitivement",
     deleted: (n: number) => `${n} sauvegardes supprimées`,
     deletePermanently: "Supprimer définitivement",
+    deleteSong: "Supprimer ce son",
+    deleteWhat: (name: string) => `Envoie ${name} et ses sauvegardes vers ${name === "" ? "la corbeille" : trashName()}. Les mixdowns que tu as exportés restent où ils sont.`,
+    deleteConfirm: (name: string) => `Supprimer ${name} ?`,
+    deleteDone: "Son supprimé",
+    deleteRisky: "Ce son est sur un disque amovible ou réseau, sans corbeille : il serait donc ",
     keepThem: "Les garder",
     keepsRecent: (n: number) => `Garde les ${n} plus récentes.`,
     plugins: (n: number) => `Plugins · ${n}`,
@@ -368,6 +378,9 @@ export function ProjectDrawer() {
   const [showAllBackups, setShowAllBackups] = useState(false);
   /** Backups to clean up that sit on a drive with no Recycle Bin: waiting for an explicit OK. */
   const [permanent, setPermanent] = useState<{ project: string; paths: string[]; risky: number } | null>(null);
+  // Separate from the backup cleanup's own prompt: the two must never
+  // share a confirmation, or an OK meant for old backups deletes a song.
+  const [deleteRisky, setDeleteRisky] = useState<string | null>(null);
 
   const allTags = useMemo(() => {
     const counts = new Map<string, number>();
@@ -823,8 +836,104 @@ export function ProjectDrawer() {
             )}
           </Section>
         )}
+
+        <DeleteSong
+          project={project}
+          risky={deleteRisky === project.path}
+          setRisky={setDeleteRisky}
+          run={run}
+          demoMode={demoMode}
+        />
       </div>
     </aside>
+  );
+}
+
+/** Delete a song: the last thing in the panel, and the only control here
+ * that destroys work.
+ *
+ * It goes to the Recycle Bin rather than away, the way backup cleanup
+ * does, so a misclick costs a trip to the Trash and not a track. Its
+ * backups go with it — they outlive nothing once the project is gone —
+ * and exported mixdowns stay, because deleting a finished export is not
+ * what anyone means by deleting a project. The button says so before it
+ * is pressed, rather than afterwards.
+ *
+ * On a drive with no Recycle Bin the delete is refused outright by the
+ * Rust side and the user gets a second, explicit prompt naming the
+ * consequence. That prompt is its own state: sharing one with the backup
+ * cleanup would let an OK meant for old backups land on a song. */
+function DeleteSong({
+  project,
+  risky,
+  setRisky,
+  run,
+  demoMode,
+}: {
+  project: ProjectInfo;
+  risky: boolean;
+  setRisky: (path: string | null) => void;
+  run: (action: () => Promise<string | number>, ok: (r: string | number) => string) => Promise<void>;
+  demoMode: boolean;
+}) {
+  const deleteProjects = useAppStore((s) => s.deleteProjects);
+  const openDetail = useAppStore((s) => s.openDetail);
+  const t = tr(T);
+  const name = project.name;
+
+  const go = (allowPermanent: boolean) =>
+    run(
+      async () => {
+        await deleteProjects([project.path], allowPermanent);
+        // Nothing left to show: the panel would sit on a missing song.
+        openDetail(null);
+        return "";
+      },
+      () => t.deleteDone,
+    );
+
+  return (
+    <div className="mt-6 border-t border-rule pt-4">
+      <ConfirmButton
+        disabled={demoMode}
+        label={
+          <>
+            <Trash2 size={13} /> {t.deleteSong}
+          </>
+        }
+        confirmLabel={t.deleteConfirm(name)}
+        onConfirm={async () => {
+          const onRisky = await pathsOnRiskyVolumes([project.path]);
+          if (onRisky.length > 0) {
+            setRisky(project.path);
+            return;
+          }
+          await go(false);
+        }}
+        className={`${btn} text-xs text-red-300 hover:bg-red-500/10`}
+      />
+      <p className="mt-1.5 text-[11px] text-engrave">{t.deleteWhat(name)}</p>
+      {risky && (
+        <div className="mt-2 rounded-md border border-red-400/30 bg-red-500/[0.06] px-3 py-2 text-xs text-red-200/90">
+          {t.deleteRisky}
+          <b className="font-semibold">{t.deletedPermanently}</b>.
+          <div className="mt-2 flex gap-2">
+            <button
+              onClick={() => {
+                setRisky(null);
+                void go(true);
+              }}
+              className="rounded border border-red-400/40 px-2 py-1 text-red-200 hover:bg-red-500/10"
+            >
+              {t.deletePermanently}
+            </button>
+            <button onClick={() => setRisky(null)} className="rounded border border-rule-strong px-2 py-1 text-body hover:bg-raised">
+              {t.keepThem}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

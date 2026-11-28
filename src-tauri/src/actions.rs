@@ -386,11 +386,18 @@ pub fn may_delete_permanently(_path: &Path) -> bool {
     false
 }
 
-/// The backups among `paths` whose deletion may be permanent (removable or
-/// network drive), so the UI can say so before anything is deleted.
+/// The paths whose deletion may be permanent (removable or network drive),
+/// so the UI can say so before anything is deleted.
+#[tauri::command]
+pub fn paths_on_risky_volumes(paths: Vec<String>) -> Vec<String> {
+    paths.into_iter().filter(|p| may_delete_permanently(Path::new(p))).collect()
+}
+
+/// Kept for the backup cleanup's own call site; the rule is the volume's,
+/// not the file's, so there is one implementation.
 #[tauri::command]
 pub fn backups_on_risky_volumes(paths: Vec<String>) -> Vec<String> {
-    paths.into_iter().filter(|p| may_delete_permanently(Path::new(p))).collect()
+    paths_on_risky_volumes(paths)
 }
 
 /// Every path must be a listed backup; ones on a drive without a Recycle Bin
@@ -405,6 +412,74 @@ fn check_cleanup(paths: &[String], allow_permanent: bool, listed: impl Fn(&Path)
         }
     }
     Ok(())
+}
+
+/// Whether deleting a song may touch `path`: the same name and symlink
+/// rules the backup cleanup uses, against the set of projects the last
+/// scan listed instead of the set of backups.
+fn may_trash_project(path: &Path, listed: impl Fn(&Path) -> bool) -> bool {
+    let name_ok = path
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .is_some_and(|n| !n.chars().any(|c| c == '"' || c == '\\' || c.is_control()));
+    name_ok
+        && !path.components().any(|c| matches!(c, std::path::Component::ParentDir))
+        && listed(path)
+        && fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
+}
+
+/// Send songs to the Recycle Bin / Trash (recoverable), with the backups
+/// that belong to them — a backup outlives nothing once its project is
+/// gone. Renders are left alone on purpose: an exported mixdown is a
+/// finished thing that stands on its own, and deleting one is not what
+/// "delete the project" means to anybody.
+///
+/// Every path must be a project the last scan listed, inside a folder
+/// still linked now, with the same name and symlink rules the backup
+/// cleanup applies. Deleting on a drive with no Recycle Bin needs
+/// `allow_permanent`, which the UI only sends once the user has been told.
+#[tauri::command]
+pub async fn trash_projects(app: tauri::AppHandle, paths: Vec<String>, allow_permanent: Option<bool>) -> Result<u32, String> {
+    let scope = crate::scope::Scope::load(&app)?;
+    let linked = |p: &Path| scope.known_file(&p.to_string_lossy()).is_ok();
+    if let Some(p) = paths.iter().find(|p| !may_trash_project(Path::new(p), |x| crate::scanner::is_listed_project(x) && linked(x))) {
+        return Err(app_err("project.notListed", format!("refusing to delete a file that is not a listed project: {p}"))
+            .with("path", p.as_str())
+            .into());
+    }
+    // Its backups go too, but only ones the scan tied to a project being
+    // deleted — never a path the caller supplied.
+    let mut all: Vec<String> = paths.clone();
+    for p in &paths {
+        for b in crate::scanner::backups_of(Path::new(p)) {
+            let b = b.to_string_lossy().to_string();
+            if may_trash(Path::new(&b), |x| crate::scanner::is_listed_backup(x) && linked(x)) {
+                all.push(b);
+            }
+        }
+    }
+    if !allow_permanent.unwrap_or(false) {
+        if let Some(p) = all.iter().find(|p| may_delete_permanently(Path::new(p))) {
+            return Err(app_err("project.permanent", format!("{p} is on a removable or network drive, where it would be deleted permanently"))
+                .with("path", p.as_str())
+                .into());
+        }
+    }
+    let count = paths.len() as u32;
+    tauri::async_runtime::spawn_blocking(move || {
+        #[allow(unused_mut)]
+        let mut ctx = trash::TrashContext::default();
+        #[cfg(target_os = "macos")]
+        {
+            use trash::macos::{DeleteMethod, TrashContextExtMacos};
+            ctx.set_delete_method(DeleteMethod::NsFileManager);
+        }
+        ctx.delete_all(&all)
+    })
+    .await
+    .map_err(|e| app_err("project.trash", format!("delete failed: {e}")))?
+    .map_err(|e| app_err("project.trash", format!("could not move the song to the Recycle Bin: {e}")))?;
+    Ok(count)
 }
 
 /// Send backups to the Recycle Bin / Trash (recoverable). Refuses anything
@@ -536,6 +611,45 @@ mod tests {
         let v2 = duplicate(created.clone(), "Envy v2".into()).unwrap();
         assert_eq!(fs::read(&v2).unwrap(), b"my work");
         assert!(duplicate(created, "Envy v2".into()).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Deleting a song is the one thing here that destroys work, so the
+    /// guard is pinned rather than trusted: only a file the last scan
+    /// listed as a project, named safely, and a real file on disk.
+    #[test]
+    fn deleting_a_song_refuses_anything_the_scan_did_not_list() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("flsm-delguard-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let song = dir.join("Envy.flp");
+        fs::write(&song, b"x").unwrap();
+        let listed = |p: &std::path::Path| p == song;
+
+        assert!(may_trash_project(&song, listed), "a listed project is deletable");
+
+        // Not listed by the scan: the webview cannot name its own target.
+        let stranger = dir.join("Secret.flp");
+        fs::write(&stranger, b"x").unwrap();
+        assert!(!may_trash_project(&stranger, listed));
+
+        // Listed but gone, and a directory that shares the name.
+        assert!(!may_trash_project(&dir.join("Missing.flp"), |_| true));
+        let folder = dir.join("Folder.flp");
+        fs::create_dir_all(&folder).unwrap();
+        assert!(!may_trash_project(&folder, |_| true));
+
+        // Names that break out of a quoted string. The files are real, so
+        // it is the NAME rule refusing them and not a missing file.
+        for bad in [r#"a"b.flp"#, r"a\b.flp"] {
+            let odd = dir.join(bad);
+            if fs::write(&odd, b"x").is_ok() {
+                assert!(!may_trash_project(&odd, |_| true), "{bad}");
+            }
+        }
+        assert!(!may_trash_project(&dir.join("..").join("Envy.flp"), |_| true));
+
         let _ = fs::remove_dir_all(&dir);
     }
 

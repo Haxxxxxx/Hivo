@@ -19,6 +19,7 @@ import {
   Search,
   Square,
   Star,
+  Trash2,
   X,
 } from "lucide-react";
 import { useAppStore, type SortKey, type StatusFilter } from "../store/useAppStore";
@@ -80,6 +81,9 @@ const T = dict(
     archive: "Archive",
     archiveSelected: "Archive selected",
     unarchiveSelected: "Unarchive selected",
+    deleteN: (n: number) => `Delete ${n}`,
+    deleteConfirmN: (n: number) => `Move ${n} song${plural(n, "", "s")} and their backups to the Trash?`,
+    deletedN: (n: number) => `${n} song${plural(n, "", "s")} deleted`,
     packageTitle: "Zip each selected song with its samples",
     packageN: (n: number) => `Package ${n}`,
     rendering: "Rendering…",
@@ -154,6 +158,9 @@ const T = dict(
     archive: "Archiver",
     archiveSelected: "Archiver la sélection",
     unarchiveSelected: "Désarchiver la sélection",
+    deleteN: (n: number) => `Supprimer ${n}`,
+    deleteConfirmN: (n: number) => `Envoyer ${n} son${plural(n, "", "s")} et leurs sauvegardes à la corbeille ?`,
+    deletedN: (n: number) => `${n} son${plural(n, "", "s")} supprimé${plural(n, "", "s")}`,
     packageTitle: "Zipper chaque son sélectionné avec ses samples",
     packageN: (n: number) => `Pack zip (${n})`,
     rendering: "Rendu en cours…",
@@ -253,6 +260,8 @@ export function LibraryView() {
   const selectAll = useAppStore((s) => s.selectAll);
   const clearSelection = useAppStore((s) => s.clearSelection);
   const moveSongToPipelineBoard = useAppStore((s) => s.moveSongToPipelineBoard);
+  const deleteProjects = useAppStore((s) => s.deleteProjects);
+  const [deleted, setDeleted] = useState<string | null>(null);
   const rescan = useAppStore((s) => s.rescan);
   const startRender = useAppStore((s) => s.startRender);
   const rendering = useAppStore((s) => s.rendering);
@@ -554,6 +563,37 @@ export function LibraryView() {
               clearSelection();
             }}
           />
+          {/* Last of the bulk actions and set apart, because it is the one
+              that destroys work. Songs go to the Recycle Bin with their
+              backups; exported mixdowns stay. A drive without a Recycle
+              Bin is refused by the Rust side and has to be confirmed from
+              the song's own panel, where the consequence can be spelled
+              out for one named song rather than a count. */}
+          <ConfirmButton
+            disabled={demoMode || selectedPaths.length === 0}
+            label={
+              <>
+                <Trash2 size={13} /> {t.deleteN(selectedPaths.length)}
+              </>
+            }
+            confirmLabel={t.deleteConfirmN(selectedPaths.length)}
+            onConfirm={async () => {
+              try {
+                const n = await deleteProjects(selectedPaths);
+                clearSelection();
+                setError(null);
+                setDeleted(t.deletedN(n));
+              } catch (e) {
+                setError(errorText(e));
+              }
+            }}
+            className={`${btn} py-1 text-xs text-red-300 hover:bg-red-500/10`}
+          />
+          {deleted && (
+            <span role="status" className="text-xs text-engrave">
+              {deleted}
+            </span>
+          )}
           <button
             onClick={() => startPackage(selectedPaths).catch((e) => setError(errorText(e)))}
             disabled={packaging || demoMode || selectedPaths.length === 0}

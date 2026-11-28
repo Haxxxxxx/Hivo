@@ -358,6 +358,9 @@ interface AppState {
   recolorPipelineColumn: (id: string, color: string | null) => void;
   movePipelineColumn: (id: string, toIndex: number) => void;
   /** `songs` = the songs on the board (for the column's current order). */
+  /** Sends songs to the Trash with their backups, forgets their
+   * workspace entries, and rescans. Returns how many went. */
+  deleteProjects: (paths: string[], allowPermanent?: boolean) => Promise<number>;
   /** A song's own card colour (null clears it). */
   recolorSong: (path: string, color: string | null) => void;
   movePipelineCard: (songs: ProjectInfo[], path: string, columnId: string, beforePath: string | null) => void;
@@ -1332,6 +1335,19 @@ export const useAppStore = create<AppState>((set, get) => {
     recolorPipelineColumn: (id, color) => mutateWorkspace((ws) => recolorColumn(ws, id, color)),
     removePipelineColumn: (id) => mutateWorkspace((ws) => removeColumn(ws, id)),
     movePipelineColumn: (id, toIndex) => mutateWorkspace((ws) => moveColumn(ws, id, toIndex)),
+    deleteProjects: async (paths, allowPermanent = false) => {
+      if (get().demoMode) throw new Error(tr(STORE_ERRORS).sample);
+      const count = await api.trashProjects(paths, allowPermanent);
+      // The files are gone: drop what the workspace still says about them,
+      // or a deleted song keeps its tags, stage and pipeline forever.
+      mutateWorkspace((ws) => {
+        const songs = { ...ws.songs };
+        for (const p of paths) delete songs[p];
+        return { ...ws, songs };
+      });
+      await scanOrReport();
+      return count;
+    },
     recolorSong: (path, color) => mutateWorkspace((ws) => recolorSong(ws, path, color)),
     movePipelineCard: (songs, path, columnId, beforePath) => mutateWorkspace((ws) => moveCard(ws, songs, path, columnId, beforePath)),
     movePipelineCardFromBoard: (songs, path, columnId, beforePath) =>
