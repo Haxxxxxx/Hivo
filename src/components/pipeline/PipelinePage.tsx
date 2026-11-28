@@ -4,7 +4,7 @@ import { usePipelineView, type PipelineViewKind } from "../../store/usePipelineV
 import { PipelineBoard } from "./PipelineBoard";
 import { PipelineList } from "./PipelineList";
 import { PipelineTable } from "./PipelineTable";
-import { BoardSwitcher, T_PIPELINE } from "./shared";
+import { BoardSwitcher, CardLegend, T_PIPELINE } from "./shared";
 import { PipelineSourceProvider, type PipelineSource } from "./source";
 import { tr } from "../../i18n";
 
@@ -45,6 +45,7 @@ export function PipelinePage({ title, sub, source, empty }: { title: string; sub
             </button>
           )}
         </label>
+        <CardLegend />
         <BoardSwitcher boards={source.boards} moveToBoard={source.moveToBoard} />
         <div className="flex rounded-md border border-rule p-0.5 text-xs" role="tablist" aria-label={t.viewLabel}>
           {VIEWS.map(({ id, icon: Icon }) => (

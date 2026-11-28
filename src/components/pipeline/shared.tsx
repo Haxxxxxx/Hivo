@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState, type DragEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { useSource, type PipelineItem, type PipelineSource } from "./source";
-import { ArrowLeft, ArrowRight, ArrowRightLeft, ChevronDown, ChevronRight, Palette, Pencil, Plus, Trash2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, ArrowRightLeft, ChevronDown, ChevronRight, HelpCircle, Palette, Pencil, Plus, Trash2, X } from "lucide-react";
 import { usePipelineView, type PipelineViewKind } from "../../store/usePipelineView";
-import { cardMoves, columnColor, columnTint, COLUMN_COLORS, dropTakesSong, stageLabel, STAGE_ORDER, NAME_MAX } from "../../lib/pipeline";
+import { cardMoves, columnColor, columnTint, COLUMN_COLORS, dropTakesSong, stageColor, stageLabel, STAGE_ORDER, NAME_MAX } from "../../lib/pipeline";
 import type { PipelineColumn, SongStatus } from "../../types";
 import { ConfirmButton, StatusDot } from "../ui";
+import { mixdownStates } from "../../ui/music";
 import { dict, plural, tr } from "../../i18n";
 
 /** Every word of the pipeline pages (board, list, table, yours and the crew's). */
@@ -98,6 +99,16 @@ export const T_PIPELINE = dict(
     toPipeline: "To pipeline",
     colorOfCard: (name: string) => `Colour of ${name}`,
     noColour: "No colour",
+    legend: "Key",
+    keyTitle: "What the marks on a card mean",
+    keyConflict: "Moved by the crew",
+    keyConflictWhy: "Someone moved this song on the crew board",
+    keyCardColour: "Your colour",
+    keyCardColourWhy: "A colour you gave the card. It means whatever you want it to",
+    keyRelease: "Release",
+    keyReleaseWhy: "One square per release the song is on",
+    keyStage: "Stage",
+    keyStageWhy: "The column's own colour, at the top of each column",
     dropOnPipeline: (name: string) => `Hold a song here to open ${name}, or drop it to send it straight there`,
     moveUp: "Move up",
     moveDown: "Move down",
@@ -185,6 +196,16 @@ export const T_PIPELINE = dict(
     toPipeline: "Vers le pipeline",
     colorOfCard: (name: string) => `Couleur de ${name}`,
     noColour: "Sans couleur",
+    legend: "Légende",
+    keyTitle: "Ce que veulent dire les marques sur une carte",
+    keyConflict: "Déplacé par le crew",
+    keyConflictWhy: "Quelqu'un a déplacé ce son sur le tableau du crew",
+    keyCardColour: "Ta couleur",
+    keyCardColourWhy: "Une couleur que tu as donnée à la carte. Elle veut dire ce que tu veux",
+    keyRelease: "Sortie",
+    keyReleaseWhy: "Un carré par sortie sur laquelle le son figure",
+    keyStage: "Étape",
+    keyStageWhy: "La couleur de la colonne, en haut de chacune",
     dropOnPipeline: (name: string) => `Garde un son ici pour ouvrir ${name}, ou dépose-le pour l'y envoyer directement`,
     moveUp: "Monter",
     moveDown: "Descendre",
@@ -248,6 +269,7 @@ export function CardColor({ item }: { item: PipelineItem }) {
       <button
         onClick={() => setOpen((v) => !v)}
         aria-label={t.colorOfCard(item.title)}
+        title={t.colorOfCard(item.title)}
         aria-expanded={open}
         className={`flex items-center rounded p-0.5 hover:bg-rule ${
           item.color ? "" : "opacity-40 group-hover/card:opacity-100 group-focus-within/card:opacity-100"
@@ -285,6 +307,65 @@ export function CardColor({ item }: { item: PipelineItem }) {
           >
             {t.noColour}
           </button>
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** What the marks on a card mean.
+ *
+ * Four different dots can sit on one card and none of them says what it
+ * is. Spelling each one out ON the card would cost exactly the density
+ * that makes a board worth scanning, so the key lives in the header
+ * instead and the cards stay terse — every mark also names itself on
+ * hover, for when only one of them is in question.
+ *
+ * It renders the real markers and reads the real colours rather than
+ * restating them, so a key that no longer matches the board is not
+ * something that can quietly happen. */
+export function CardLegend() {
+  const [open, setOpen] = useState(false);
+  const t = tr(T_PIPELINE);
+  const rows: { mark: ReactNode; label: string; why: string }[] = [
+    ...mixdownStates().map((m) => ({ mark: <StatusDot color={m.color} />, label: m.label, why: m.title })),
+    { mark: <ConflictDot on />, label: t.keyConflict, why: t.keyConflictWhy },
+    { mark: <StatusDot color={COLUMN_COLORS[5]} />, label: t.keyCardColour, why: t.keyCardColourWhy },
+    {
+      mark: <span className="h-2.5 w-2.5 shrink-0 rounded-sm bg-engrave" aria-hidden />,
+      label: t.keyRelease,
+      why: t.keyReleaseWhy,
+    },
+    { mark: <StatusDot color={stageColor("production")} />, label: t.keyStage, why: t.keyStageWhy },
+  ];
+
+  return (
+    <span className="relative flex shrink-0 items-center">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-label={t.keyTitle}
+        title={t.keyTitle}
+        className={`flex items-center gap-1.5 rounded-md border border-rule px-2 py-1 text-xs ${
+          open ? "bg-rule-strong text-cream" : "text-engrave hover:text-cream"
+        }`}
+      >
+        <HelpCircle size={12} aria-hidden /> {t.legend}
+      </button>
+      {open && (
+        <span
+          className="absolute right-0 top-8 z-30 flex w-80 flex-col gap-2 rounded-md border border-rule-strong bg-raised p-3 shadow-lg"
+          onMouseLeave={() => setOpen(false)}
+        >
+          {rows.map((r) => (
+            <span key={r.label} className="flex items-start gap-2 text-xs">
+              <span className="mt-1 flex w-3 shrink-0 justify-center">{r.mark}</span>
+              <span className="min-w-0">
+                <span className="text-cream">{r.label}</span>
+                <span className="text-engrave"> — {r.why}</span>
+              </span>
+            </span>
+          ))}
         </span>
       )}
     </span>

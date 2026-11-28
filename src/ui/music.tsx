@@ -116,6 +116,18 @@ function labelled<R extends object>(label: () => string, rest: R): R & { label: 
 /** Whether the newest mixdown is current, outdated, or missing: an LED and
  * a word. `short` uses one word (under a Mixdown column header); `compact`
  * keeps just the LED (the word moves to the tooltip). */
+/** The mixdown states for a legend: the same colours and the same words
+ * the badge itself uses, read from one place so a key on screen cannot
+ * drift from the dots it is explaining. */
+export function mixdownStates(): { color: string; label: string; title: string }[] {
+  const t = tr(T);
+  return (Object.keys(MIX_STATE) as (keyof typeof MIX_STATE)[]).map((k) => ({
+    color: MIX_STATE[k].color,
+    label: t[`${MIX_STATE[k].key}Label`],
+    title: t[`${MIX_STATE[k].key}Title`],
+  }));
+}
+
 export function MixdownBadge({ project, compact = false, short = false }: { project: ProjectInfo; compact?: boolean; short?: boolean }) {
   const f = renderFreshness(project);
   const m = MIX_STATE[f === "fresh" ? "fresh" : f === "none" ? "none" : "stale"];
