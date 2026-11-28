@@ -1,7 +1,7 @@
 import { createContext, useContext, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, ArrowRightLeft, ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from "lucide-react";
 import { usePipelineView, type PipelineScope, type PipelineViewKind } from "../../store/usePipelineView";
-import { cardMoves, stageColor, stageLabel, STAGE_ORDER, NAME_MAX } from "../../lib/pipeline";
+import { cardMoves, columnColor, COLUMN_COLORS, stageLabel, STAGE_ORDER, NAME_MAX } from "../../lib/pipeline";
 import type { PipelineColumn, SongStatus } from "../../types";
 import { ConfirmButton, StatusDot } from "../ui";
 import { dict, plural, tr } from "../../i18n";
@@ -54,6 +54,9 @@ export const T_PIPELINE = dict(
     moveRight: "Move right",
     moveLater: (name: string) => `Move ${name} later`,
     rename: "Rename",
+    color: "Colour",
+    colorOf: (name: string) => `Colour of ${name}`,
+    stageColour: "Stage colour",
     renameColumn: (name: string) => `Rename ${name}`,
     removeHint: (stage: string) => `Remove (songs move to the other ${stage} column)`,
     keepOne: "Every stage keeps one column. Rename it, or collapse it.",
@@ -132,6 +135,9 @@ export const T_PIPELINE = dict(
     moveRight: "Déplacer à droite",
     moveLater: (name: string) => `Reculer ${name}`,
     rename: "Renommer",
+    color: "Couleur",
+    colorOf: (name: string) => `Couleur de ${name}`,
+    stageColour: "Couleur de l'étape",
     renameColumn: (name: string) => `Renommer ${name}`,
     removeHint: (stage: string) => `Supprimer (les sons passent dans l'autre colonne ${stage})`,
     keepOne: "Chaque étape garde au moins une colonne. Renomme-la ou replie-la.",
@@ -208,6 +214,9 @@ export interface PipelineSource {
   rename: (columnId: string, name: string) => void;
   add: (name: string, stage: SongStatus | null) => void;
   remove: (columnId: string) => void;
+  /** Absent where columns aren't the user's to colour (the crew board:
+   * its columns live on the server and have no colour yet). */
+  recolor?: (columnId: string, color: string | null) => void;
   moveColumn: (columnId: string, toIndex: number) => void;
   /** Put a song in a column, before another (or at the end). */
   moveCard: (key: string, columnId: string, beforeKey: string | null) => void;
@@ -435,7 +444,7 @@ export function ColumnHeader({
         >
           {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
         </button>
-        <StatusDot color={stageColor(column.stage)} />
+        <ColumnColor column={column} />
         {editing ? (
           <input
             autoFocus
@@ -609,5 +618,60 @@ export function SourceError() {
         </button>
       )}
     </div>
+  );
+}
+
+/** The column's dot, and — on your own pipeline — a palette behind it.
+ *
+ * The dot stays a dot: the stage NAME is always rendered next to it, so a
+ * recoloured column never makes colour the only carrier of meaning. The
+ * palette deliberately excludes the stage ramp, so a custom colour cannot
+ * impersonate a lifecycle stage the crew reads. */
+function ColumnColor({ column }: { column: PipelineColumn }) {
+  const source = useSource();
+  const [open, setOpen] = useState(false);
+  const t = tr(T_PIPELINE);
+  const recolor = source.editable ? source.recolor : undefined;
+
+  if (!recolor) return <StatusDot color={columnColor(column)} />;
+  return (
+    <span className="relative flex shrink-0 items-center">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-label={t.colorOf(column.name)}
+        aria-expanded={open}
+        className="flex items-center rounded p-0.5 hover:bg-rule"
+      >
+        <StatusDot color={columnColor(column)} />
+      </button>
+      {open && (
+        <span
+          className="absolute left-0 top-5 z-20 flex flex-wrap items-center gap-1 rounded border border-rule-strong bg-raised p-1.5 shadow-lg"
+          onMouseLeave={() => setOpen(false)}
+        >
+          {COLUMN_COLORS.map((c) => (
+            <button
+              key={c}
+              onClick={() => {
+                recolor(column.id, c);
+                setOpen(false);
+              }}
+              aria-label={c}
+              style={{ background: c }}
+              className={`h-4 w-4 rounded-full ${column.color === c ? "ring-2 ring-cream" : ""}`}
+            />
+          ))}
+          <button
+            onClick={() => {
+              recolor(column.id, null);
+              setOpen(false);
+            }}
+            className="rounded border border-dashed border-rule-strong px-1.5 py-0.5 text-[10px] text-engrave hover:text-cream"
+          >
+            {t.stageColour}
+          </button>
+        </span>
+      )}
+    </span>
   );
 }

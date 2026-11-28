@@ -595,6 +595,10 @@ export interface PipelineColumn {
   id: string;
   name: string;
   stage: SongStatus | null;
+  /** The user's colour for this column. Absent = the stage's own colour,
+   * which is the ordinal dark-to-light ramp the crew reads lifecycle from.
+   * Only ever one of COLUMN_COLORS (lib/pipeline). */
+  color?: string;
 }
 
 export interface PipelineConfig {

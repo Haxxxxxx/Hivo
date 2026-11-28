@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { ArrowDown, ArrowUp } from "lucide-react";
 import { useCollapsed, usePipelineView } from "../../store/usePipelineView";
-import { sortBy, stageColor, stageLabel, type SortKey } from "../../lib/pipeline";
+import { sortBy, columnColor, stageLabel, type SortKey } from "../../lib/pipeline";
 import { formatRelative } from "../../lib/format";
 import { formatBpm } from "../../lib/songs";
 import { StatusDot } from "../ui";
@@ -53,7 +53,7 @@ export function PipelineTable() {
               onClick={() => toggleCollapsed(scope, "table", column.id)}
               className={`flex items-center gap-1.5 rounded border px-2 py-0.5 text-xs ${on ? "border-rule-strong text-cream" : "border-rule text-engrave line-through"}`}
             >
-              <StatusDot color={stageColor(column.stage)} size={6} glow={false} /> {column.name} <span className="text-engrave">{items.length}</span>
+              <StatusDot color={columnColor(column)} size={6} glow={false} /> {column.name} <span className="text-engrave">{items.length}</span>
             </button>
           );
         })}
@@ -107,7 +107,7 @@ export function PipelineTable() {
                 </td>
                 <td className="px-2 py-1.5">
                   <span className="flex items-center gap-1.5 text-xs text-body" title={t.stageOf(stageLabel(column.stage))}>
-                    <StatusDot color={stageColor(column.stage)} size={6} glow={false} /> {column.name}
+                    <StatusDot color={columnColor(column)} size={6} glow={false} /> {column.name}
                   </span>
                 </td>
                 <td className="whitespace-nowrap px-2 py-1.5 text-xs text-engrave">{item.savedMs ? formatRelative(item.savedMs) : "—"}</td>
