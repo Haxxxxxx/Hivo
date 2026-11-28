@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useAppStore } from "../../store/useAppStore";
 import { usePipelineView } from "../../store/usePipelineView";
-import { canRemoveColumn, filterSongs, groupSongs, resolvePipeline } from "../../lib/pipeline";
+import { canRemoveColumn, crewMovedAway, filterSongs, groupSongs, resolvePipeline } from "../../lib/pipeline";
 import { formatRelative } from "../../lib/format";
 import { albumsOf, formatBpm, lastSaveMs } from "../../lib/songs";
 import type { ProjectInfo, Workspace } from "../../types";
@@ -71,7 +71,12 @@ export function useMineSource(): PipelineSource {
       total: songs.length,
       shown: shown.length,
       editable: true,
-      groups: groupSongs(shown, workspace, cfg).map((g) => ({ column: g.column, items: g.songs.map(item) })),
+      groups: groupSongs(shown, workspace, cfg).map((g) => ({
+        column: g.column,
+        // crewMovedAway needs the column the card actually sits in, which the
+        // item builder doesn't see.
+        items: g.songs.map((s) => ({ ...item(s), crewMoved: crewMovedAway(workspace.songs[s.path], g.column) })),
+      })),
       canRemove: (id) => canRemoveColumn(cfg, id),
       rename,
       add,
