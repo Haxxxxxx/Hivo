@@ -78,6 +78,10 @@ export interface PipelineSource {
   /** Send a song to ANOTHER pipeline. Absent where there is only one, and
    * on the crew board, whose columns are the crew's and shared. */
   moveToBoard?: (key: string, boardId: string) => void;
+  /** Every song this pipeline's owner has, across all their pipelines, so
+   * a card dragged in from another one is recognised as a song rather than
+   * thrown away as stray dropped text. Absent on the crew board. */
+  knownSongs?: string[];
   /** "New song" on the Creation column (your pipeline only). */
   newSong?: () => void;
   /** A filter set from elsewhere (the crew board scoped to one member):

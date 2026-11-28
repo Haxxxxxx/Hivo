@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type DragEvent } from "react";
 import { useSource, type PipelineItem, type PipelineSource } from "./source";
 import { ArrowLeft, ArrowRight, ArrowRightLeft, ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from "lucide-react";
 import { usePipelineView, type PipelineViewKind } from "../../store/usePipelineView";
-import { cardMoves, columnColor, columnTint, COLUMN_COLORS, stageLabel, STAGE_ORDER, NAME_MAX } from "../../lib/pipeline";
+import { cardMoves, columnColor, columnTint, COLUMN_COLORS, dropTakesSong, stageLabel, STAGE_ORDER, NAME_MAX } from "../../lib/pipeline";
 import type { PipelineColumn, SongStatus } from "../../types";
 import { ConfirmButton, StatusDot } from "../ui";
 import { dict, plural, tr } from "../../i18n";
@@ -376,9 +376,12 @@ export function usePipelineDrop() {
         if (source.editable && id && id !== columnId) source.moveColumn(id, columnIndex);
         return;
       }
-      // Only songs of this pipeline: dragged text or links aren't songs.
+      // A song, not dropped text or a link — and one of the owner's, which
+      // after a spring-loaded tab opens means it may still be on the board
+      // it was dragged from. source.moveCard brings it across.
       const key = e.dataTransfer.getData(SONG_TYPE);
-      if (source.groups.some((g) => g.items.some((i) => i.key === key))) source.moveCard(key, columnId, target);
+      const here = source.groups.flatMap((g) => g.items.map((i) => i.key));
+      if (dropTakesSong(key, here, source.knownSongs)) source.moveCard(key, columnId, target);
     },
     end() {
       setSpot(null);

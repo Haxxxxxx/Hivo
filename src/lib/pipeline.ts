@@ -281,6 +281,24 @@ export function pipelineEmptyState(p: { total: number; libraryTotal?: number; qu
   return (p.libraryTotal ?? p.total) === 0 ? "library" : "board";
 }
 
+/** Does a drop carrying `key` belong on this pipeline?
+ *
+ * It guards against dropped text, links or files being read as a song
+ * key, so it cannot simply accept whatever arrives. It used to ask only
+ * whether the key was on THIS board, which was right while a song could
+ * never be anywhere else — and silently wrong the moment pipelines
+ * existed: holding a card over another pipeline's tab opens that board, so
+ * the card still in hand belongs to the one just left. The guard threw the
+ * drop away and the song appeared to snap back where it came from.
+ *
+ * `known` is every song the pipeline's owner has, across all of them. The
+ * crew board passes none and keeps the old rule — its songs really are
+ * only the ones on it. */
+export function dropTakesSong(key: string, onThisBoard: string[], known?: string[]): boolean {
+  if (!key) return false;
+  return (known ?? onThisBoard).includes(key);
+}
+
 // ---- Shared filtering and sorting ----
 
 /** Search across views: song name, crew title, tags, key. */

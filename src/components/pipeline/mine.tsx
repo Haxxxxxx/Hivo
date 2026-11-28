@@ -87,6 +87,7 @@ export function useMineSource(): PipelineSource {
       groups: groupSongs(shown, workspace, cfg).map((g) => ({ column: g.column, items: g.songs.map(item) })),
       boards: { active, list: boards.map((b) => ({ id: b.id, name: b.name })), setActive: setActiveBoardAction, add: addBoardAction, rename: renameBoardAction, remove: removeBoardAction },
       moveToBoard: moveSongToBoardAction,
+      knownSongs: songs.map((s) => s.path),
       canRemove: (id) => canRemoveColumn(cfg, id),
       rename,
       add,

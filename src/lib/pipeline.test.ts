@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProjectInfo, SongMeta, Workspace } from "../types";
-import { activeBoard, addBoard, addColumn, boardOfSong, canRemoveColumn, cardMoves, COLUMN_COLORS, columnColor, columnOf, columnTint, DEFAULT_BOARD_ID, defaultPipeline, filterSongs, flatRows, groupSongs, moveCard, moveCardFromBoard, moveColumn, moveSongToBoard, pipelineEmptyState, recolorColumn, removeBoard, removeColumn, renameBoard, renameColumn, resolveBoards, resolvePipeline, setActiveBoard, sortRows, stageColor } from "./pipeline";
+import { activeBoard, addBoard, addColumn, boardOfSong, canRemoveColumn, cardMoves, COLUMN_COLORS, columnColor, columnOf, columnTint, DEFAULT_BOARD_ID, defaultPipeline, dropTakesSong, filterSongs, flatRows, groupSongs, moveCard, moveCardFromBoard, moveColumn, moveSongToBoard, pipelineEmptyState, recolorColumn, removeBoard, removeColumn, renameBoard, renameColumn, resolveBoards, resolvePipeline, setActiveBoard, sortRows, stageColor } from "./pipeline";
 
 const NOW = Date.UTC(2026, 9, 14);
 const song = (name: string, daysAgo = 1, bpm: number | null = null) =>
@@ -281,6 +281,25 @@ describe("separate pipelines", () => {
     const after = moveCardFromBoard(x, [song], "/p/A.flp", prep.id);
     expect(after.songs["/p/A.flp"].pipeline).toBe("beats");
     expect(columnOf(after.songs["/p/A.flp"], resolvePipeline(after)).id).toBe(prep.id);
+  });
+
+  it("takes a drop from the pipeline the card was dragged from", () => {
+    // The reported bug: spring-loaded tab opens the other pipeline, you
+    // drop, and the song snaps back. The guard asked only whether the key
+    // was on THIS board — and after the switch it is not.
+    expect(dropTakesSong("/p/A.flp", [], ["/p/A.flp", "/p/B.flp"])).toBe(true);
+  });
+
+  it("still refuses dropped text that is not a song", () => {
+    expect(dropTakesSong("https://example.com", ["/p/A.flp"], ["/p/A.flp"])).toBe(false);
+    expect(dropTakesSong("", ["/p/A.flp"], ["/p/A.flp"])).toBe(false);
+  });
+
+  it("keeps the old rule where there is nothing else to come from", () => {
+    // The crew board passes no song list: its songs really are only the
+    // ones on it, so a key from anywhere else is not a song it can take.
+    expect(dropTakesSong("/p/A.flp", ["/p/A.flp"])).toBe(true);
+    expect(dropTakesSong("/p/Z.flp", ["/p/A.flp"])).toBe(false);
   });
 
   it("keeps the last pipeline, and rehomes songs when one goes", () => {
