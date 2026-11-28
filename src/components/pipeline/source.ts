@@ -48,6 +48,11 @@ export interface PipelineSource {
   /** Songs on the pipeline, and how many the query lets through. */
   total: number;
   shown: number;
+  /** Songs in the library at all, across every pipeline. Tells an empty
+   * BOARD (they are on another pipeline) from an empty LIBRARY (there is
+   * nothing to show anywhere), which want different screens. Absent on the
+   * crew board, where the two are the same thing. */
+  libraryTotal?: number;
   /** Columns can be renamed, added, removed, reordered here. */
   editable: boolean;
   canRemove: (columnId: string) => boolean;

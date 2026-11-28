@@ -80,6 +80,7 @@ export function useMineSource(): PipelineSource {
       query,
       total: onThisBoard.length,
       shown: shown.length,
+      libraryTotal: songs.length,
       editable: true,
       groups: groupSongs(shown, workspace, cfg).map((g) => ({ column: g.column, items: g.songs.map(item) })),
       boards: { active, list: boards.map((b) => ({ id: b.id, name: b.name })), setActive: setActiveBoardAction, add: addBoardAction, rename: renameBoardAction, remove: removeBoardAction },

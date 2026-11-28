@@ -1,7 +1,7 @@
 import { Fragment } from "react";
 import { ChevronRight } from "lucide-react";
 import { useCollapsed, usePipelineView } from "../../store/usePipelineView";
-import { columnColor } from "../../lib/pipeline";
+import { columnColor, pipelineEmptyState } from "../../lib/pipeline";
 import { StatusDot } from "../ui";
 import { AddColumn, beforeKeyFor, CardTitle, ColumnHeader, ConflictDot, DropLine, MoveMenu, SourceError, startSongDrag, T_PIPELINE, usePipelineDrop } from "./shared";
 import { useSource } from "./source";
@@ -17,9 +17,17 @@ export function PipelineBoard() {
   const toggleCollapsed = usePipelineView((s) => s.toggleCollapsed);
   const dnd = usePipelineDrop();
 
-  // Nothing on the pipeline at all: one line instead of six empty columns,
-  // but columns stay editable (AddColumn renders nothing where they aren't).
-  if (source.total === 0 && !query) {
+  // Nothing in the LIBRARY: one line instead of six empty columns, with
+  // columns still editable (AddColumn renders nothing where they aren't).
+  //
+  // An empty BOARD is a different thing and used to get this same screen,
+  // which was wrong twice over: it told someone with ten songs to go link
+  // a folder, and it hid the columns of the pipeline they had just made,
+  // so a new pipeline looked like it had come up blank. Its columns have
+  // to stay on screen — they are what you drop onto, and the proof the
+  // board got the default set.
+  const empty = pipelineEmptyState(source);
+  if (empty === "library") {
     return (
       <>
         <SourceError />
@@ -34,6 +42,9 @@ export function PipelineBoard() {
   return (
     <>
       <SourceError />
+      {empty === "board" && (
+        <p className="px-6 pt-3 text-sm text-engrave">{tr(T_PIPELINE).emptyBoard}</p>
+      )}
       <div className="flex flex-1 gap-3 overflow-x-auto p-4" onDragEnd={dnd.end}>
         {groups.map(({ column, items }, colIndex) => {
           const isCollapsed = collapsed.includes(column.id);

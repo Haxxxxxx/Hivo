@@ -262,6 +262,25 @@ export function groupSongs(songs: ProjectInfo[], ws: Workspace, cfg = resolvePip
   return cfg.columns.map((column) => ({ column, songs: orderCards(groups.get(column.id)!, cfg.order[column.id]) }));
 }
 
+/** Which "nothing here" screen a pipeline owes the user, if any.
+ *
+ * An empty BOARD is not an empty LIBRARY. A board is empty because its
+ * songs sit on another pipeline, so its columns have to stay on screen —
+ * they are the drop target, and the proof the new pipeline came up with
+ * the default set. An empty library has nothing to show anywhere, and six
+ * blank columns are just noise.
+ *
+ * Telling them apart lived in JSX, where no test could reach it, and the
+ * board got the library's screen: someone with ten songs was told to go
+ * link a folder, and their new pipeline looked blank.
+ *
+ * A query that filters everything out is neither — that is a search with
+ * no hits, and the views say so themselves. */
+export function pipelineEmptyState(p: { total: number; libraryTotal?: number; query: string }): "library" | "board" | null {
+  if (p.query.trim() || p.total > 0) return null;
+  return (p.libraryTotal ?? p.total) === 0 ? "library" : "board";
+}
+
 // ---- Shared filtering and sorting ----
 
 /** Search across views: song name, crew title, tags, key. */

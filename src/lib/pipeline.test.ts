@@ -1,35 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProjectInfo, SongMeta, Workspace } from "../types";
-import {
-  DEFAULT_BOARD_ID,
-  columnTint,
-  activeBoard,
-  addBoard,
-  COLUMN_COLORS,
-  addColumn,
-  boardOfSong,
-  moveSongToBoard,
-  removeBoard,
-  renameBoard,
-  resolveBoards,
-  setActiveBoard,
-  canRemoveColumn,
-  cardMoves,
-  columnColor,
-  recolorColumn,
-  stageColor,
-  columnOf,
-  defaultPipeline,
-  filterSongs,
-  flatRows,
-  groupSongs,
-  moveCard,
-  moveColumn,
-  removeColumn,
-  renameColumn,
-  resolvePipeline,
-  sortRows,
-} from "./pipeline";
+import { activeBoard, addBoard, addColumn, boardOfSong, canRemoveColumn, cardMoves, COLUMN_COLORS, columnColor, columnOf, columnTint, DEFAULT_BOARD_ID, defaultPipeline, filterSongs, flatRows, groupSongs, moveCard, moveColumn, moveSongToBoard, pipelineEmptyState, recolorColumn, removeBoard, removeColumn, renameBoard, renameColumn, resolveBoards, resolvePipeline, setActiveBoard, sortRows, stageColor } from "./pipeline";
 
 const NOW = Date.UTC(2026, 9, 14);
 const song = (name: string, daysAgo = 1, bpm: number | null = null) =>
@@ -374,5 +345,33 @@ describe("columnTint", () => {
     // Same guard as recolorColumn: no arbitrary hex reaches the UI.
     expect(columnTint("#ff0000", 0.18)).toBe("transparent");
     expect(columnTint(stageColor("prep"), 0.18)).toBe("transparent");
+  });
+});
+
+describe("pipelineEmptyState", () => {
+  it("sends an empty board to its own screen, not the library's", () => {
+    // The reported bug: ten songs in the library, all on the other
+    // pipeline, and this one said "link a folder" with no columns at all.
+    expect(pipelineEmptyState({ total: 0, libraryTotal: 10, query: "" })).toBe("board");
+  });
+
+  it("keeps the library screen when there is genuinely nothing anywhere", () => {
+    expect(pipelineEmptyState({ total: 0, libraryTotal: 0, query: "" })).toBe("library");
+  });
+
+  it("says nothing when the pipeline has songs", () => {
+    expect(pipelineEmptyState({ total: 3, libraryTotal: 10, query: "" })).toBe(null);
+  });
+
+  it("leaves a search with no hits to the views", () => {
+    // Not an empty pipeline — an empty result. Replacing it with
+    // "move songs here" would be a lie about why the board looks bare.
+    expect(pipelineEmptyState({ total: 4, libraryTotal: 10, query: "zzz" })).toBe(null);
+    expect(pipelineEmptyState({ total: 0, libraryTotal: 10, query: "  " })).toBe("board");
+  });
+
+  it("treats a source without a library count as the whole library", () => {
+    // The crew board: its songs ARE everything it knows about.
+    expect(pipelineEmptyState({ total: 0, query: "" })).toBe("library");
   });
 });
