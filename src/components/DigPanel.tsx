@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { ResizeHandle, useResizablePanel } from "../ui";
 import { Sparkles } from "lucide-react";
 import { digIsStale, useDigger } from "../store/useDigger";
 import { useAppStore } from "../store/useAppStore";
@@ -80,6 +81,7 @@ interface Props {
 }
 
 export function DigPanel({ yt, round }: Props) {
+  const panel = useResizablePanel("digger", 400);
   const t = tr(T);
   const d = useDigger();
   const { picked, beats, webQuery, rounds, setWebQuery, searchYoutube } = d;
@@ -103,7 +105,13 @@ export function DigPanel({ yt, round }: Props) {
   const showNoKey = !!yt && !yt.configured;
 
   return (
-    <aside className="flex min-h-0 w-[clamp(320px,38%,460px)] shrink-0 flex-col gap-3 overflow-y-auto border-l border-rule p-4" aria-label={t.title}>
+    <aside
+      ref={panel.ref as React.RefObject<HTMLElement>}
+      style={{ width: panel.width }}
+      className="relative flex min-h-0 shrink-0 flex-col gap-3 overflow-y-auto border-l border-rule p-4"
+      aria-label={t.title}
+    >
+      <ResizeHandle width={panel.width} onPointerDown={panel.startDrag} onNudge={panel.nudge} onReset={panel.reset} />
       <h2 className={label}>{t.title}</h2>
       {picked.length === 0 ? (
         <p className="text-sm text-engrave">{t.none}</p>

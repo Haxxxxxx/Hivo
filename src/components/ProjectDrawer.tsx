@@ -39,7 +39,7 @@ import { memosForSong } from "../lib/phoneInbox";
 import { canRenderInApp, dawOf, isSketch } from "../lib/daws";
 import { MAX_BANDLAB_URL, cleanBandlabUrl } from "../lib/sketch";
 import { TemplateSelect, useFactoryTemplates } from "./NewProjectModal";
-import { ConfirmButton, StatusSelect, TagEditor, btn, btnPrimary, input, sectionLabel } from "./ui";
+import { ConfirmButton, ResizeHandle, StatusSelect, TagEditor, btn, btnPrimary, input, sectionLabel, useResizablePanel } from "./ui";
 import { Fact, Section } from "../ui";
 import { dict, plural, tr } from "../i18n";
 import { errorText, errorReason } from "../lib/errors";
@@ -309,11 +309,17 @@ function settledJob(path: string): Promise<RenderJob | undefined> {
 /** The open song vanished from the last scan: its folder is unreachable, or
  * the file is gone. Its data is kept either way. */
 function NotFoundDrawer({ path, unreachable, onClose }: { path: string; unreachable: string[]; onClose: () => void }) {
+  const panel = useResizablePanel("drawer", 380);
   const t = tr(T);
   const root = unreachable.find((r) => isUnder(path, r));
   const name = path.split(/[/\\]/).filter(Boolean).pop() ?? path;
   return (
-    <aside className="flex w-[380px] shrink-0 flex-col border-l border-rule bg-panel">
+    <aside
+      ref={panel.ref as React.RefObject<HTMLElement>}
+      style={{ width: panel.width }}
+      className="relative flex shrink-0 flex-col border-l border-rule bg-panel"
+    >
+      <ResizeHandle width={panel.width} onPointerDown={panel.startDrag} onNudge={panel.nudge} onReset={panel.reset} />
       <div className="flex items-start gap-2 border-b border-rule px-5 py-4">
         <div className="min-w-0 flex-1">
           <h2 className="truncate text-base font-semibold text-cream">{name}</h2>
@@ -338,6 +344,7 @@ function NotFoundDrawer({ path, unreachable, onClose }: { path: string; unreacha
 }
 
 export function ProjectDrawer() {
+  const panel = useResizablePanel("drawer", 380);
   const detailPath = useAppStore((s) => s.detailPath);
   const project = useAppStore((s) => s.projects.find((p) => p.path === s.detailPath));
   const workspace = useAppStore((s) => s.workspace);
@@ -406,7 +413,12 @@ export function ProjectDrawer() {
   const t = tr(T);
 
   return (
-    <aside className="flex w-[380px] shrink-0 flex-col border-l border-rule bg-panel">
+    <aside
+      ref={panel.ref as React.RefObject<HTMLElement>}
+      style={{ width: panel.width }}
+      className="relative flex shrink-0 flex-col border-l border-rule bg-panel"
+    >
+      <ResizeHandle width={panel.width} onPointerDown={panel.startDrag} onNudge={panel.nudge} onReset={panel.reset} />
       <div className="flex items-start gap-2 border-b border-rule px-5 py-4">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">

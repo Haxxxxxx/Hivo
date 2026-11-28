@@ -1,4 +1,5 @@
 import { ArrowLeft, ExternalLink, MonitorPlay, Pause, Play, Plus, X } from "lucide-react";
+import { ResizeHandle, useResizablePanel } from "../ui";
 import { useAppStore } from "../store/useAppStore";
 import { useDigger } from "../store/useDigger";
 import * as api from "../lib/tauri";
@@ -82,6 +83,7 @@ const clock = (sec: number) => {
 };
 
 export function DigNotesPanel({ target, player, onClose }: { target: NotesTarget; player: LocalPlayer; onClose: () => void }) {
+  const panel = useResizablePanel("digNotes", 400);
   const t = tr(T);
   const dig = useDigger((s) => s.dig);
   const setPlaying = useDigger((s) => s.setPlaying);
@@ -122,7 +124,13 @@ export function DigNotesPanel({ target, player, onClose }: { target: NotesTarget
   const videoId = lead?.url ? youtubeId(lead.url) : null;
 
   return (
-    <aside className="flex min-h-0 w-[clamp(320px,38%,460px)] shrink-0 flex-col gap-3 overflow-hidden border-l border-rule p-4" aria-label={t.title}>
+    <aside
+      ref={panel.ref as React.RefObject<HTMLElement>}
+      style={{ width: panel.width }}
+      className="relative flex min-h-0 shrink-0 flex-col gap-3 overflow-hidden border-l border-rule p-4"
+      aria-label={t.title}
+    >
+      <ResizeHandle width={panel.width} onPointerDown={panel.startDrag} onNudge={panel.nudge} onReset={panel.reset} />
       <div className="flex items-center gap-2">
         <button type="button" onClick={onClose} className="flex items-center gap-1 text-xs text-engrave hover:text-cream">
           <ArrowLeft size={12} aria-hidden /> {t.back}
