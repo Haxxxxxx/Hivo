@@ -75,6 +75,9 @@ export interface PipelineSource {
   moveColumn: (columnId: string, toIndex: number) => void;
   /** Put a song in a column, before another (or at the end). */
   moveCard: (key: string, columnId: string, beforeKey: string | null) => void;
+  /** Send a song to ANOTHER pipeline. Absent where there is only one, and
+   * on the crew board, whose columns are the crew's and shared. */
+  moveToBoard?: (key: string, boardId: string) => void;
   /** "New song" on the Creation column (your pipeline only). */
   newSong?: () => void;
   /** A filter set from elsewhere (the crew board scoped to one member):

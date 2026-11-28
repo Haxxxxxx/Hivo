@@ -254,6 +254,18 @@ describe("separate pipelines", () => {
     expect(x.songs["/p/A.flp"].column).toBeUndefined();
   });
 
+  it("lands a moved song in the other board's column for its stage", () => {
+    // What the move menu and the drawer picker promise: it leaves one
+    // pipeline and is VISIBLE on the other, not merely retagged.
+    let x = addBoard(w({ songs: { "/p/A.flp": { status: "production", column: "production" } } }), "Beats", "beats");
+    x = moveSongToBoard(x, "/p/A.flp", "beats");
+    x = setActiveBoard(x, "beats");
+    const song = { path: "/p/A.flp", name: "A" } as unknown as ProjectInfo;
+    const holding = groupSongs([song], x).filter((g) => g.songs.length > 0);
+    expect(holding).toHaveLength(1);
+    expect(holding[0].column.stage).toBe("production");
+  });
+
   it("keeps the last pipeline, and rehomes songs when one goes", () => {
     let x = addBoard(w({ songs: { "/p/A.flp": { status: "production" } } }), "Beats", "beats");
     x = moveSongToBoard(x, "/p/A.flp", "beats");

@@ -49,6 +49,7 @@ export function useMineSource(): PipelineSource {
   const addBoardAction = useAppStore((s) => s.addPipelineBoard);
   const renameBoardAction = useAppStore((s) => s.renamePipelineBoard);
   const removeBoardAction = useAppStore((s) => s.removePipelineBoard);
+  const moveSongToBoardAction = useAppStore((s) => s.moveSongToPipelineBoard);
   const query = usePipelineView((s) => s.query.mine);
 
   return useMemo(() => {
@@ -84,6 +85,7 @@ export function useMineSource(): PipelineSource {
       editable: true,
       groups: groupSongs(shown, workspace, cfg).map((g) => ({ column: g.column, items: g.songs.map(item) })),
       boards: { active, list: boards.map((b) => ({ id: b.id, name: b.name })), setActive: setActiveBoardAction, add: addBoardAction, rename: renameBoardAction, remove: removeBoardAction },
+      moveToBoard: moveSongToBoardAction,
       canRemove: (id) => canRemoveColumn(cfg, id),
       rename,
       add,
@@ -95,5 +97,5 @@ export function useMineSource(): PipelineSource {
       moveCard: (key, columnId, beforeKey) => moveCard(onThisBoard, key, columnId, beforeKey),
       newSong: () => openNewProject({ status: "creation" }),
     } satisfies PipelineSource;
-  }, [songs, workspace, query, detailPath, openDetail, openNewProject, rename, add, remove, moveColumn, moveCard, setActiveBoardAction, addBoardAction, renameBoardAction, removeBoardAction, recolor]);
+  }, [songs, workspace, query, detailPath, openDetail, openNewProject, rename, add, remove, moveColumn, moveCard, setActiveBoardAction, addBoardAction, renameBoardAction, removeBoardAction, moveSongToBoardAction, recolor]);
 }

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { useAppStore } from "../store/useAppStore";
+import { resolveBoards } from "../lib/pipeline";
 import * as api from "../lib/tauri";
 import { STATUSES } from "../lib/songs";
 import type { SongStatus, TemplateInfo } from "../types";
@@ -23,6 +24,7 @@ const T = dict(
     setFlPath: "Set the FL Studio path in Settings to see its templates.",
     location: "Location",
     stage: "Stage",
+    pipeline: "Pipeline",
     release: "Release",
     none: "None",
     openAfter: "Open in FL Studio after creating",
@@ -52,6 +54,7 @@ const T = dict(
     setFlPath: "Indique le chemin de FL Studio dans les Réglages pour voir ses templates.",
     location: "Emplacement",
     stage: "Étape",
+    pipeline: "Pipeline",
     release: "Sortie",
     none: "Aucune",
     openAfter: "Ouvrir dans FL Studio après la création",
@@ -74,6 +77,7 @@ export function NewProjectModal() {
   const settings = useAppStore((s) => s.settings);
   const projects = useAppStore((s) => s.projects);
   const albums = useAppStore((s) => s.workspace.albums);
+  const workspace = useAppStore((s) => s.workspace);
   const demoMode = useAppStore((s) => s.demoMode);
   const createProject = useAppStore((s) => s.createProject);
   const openDetail = useAppStore((s) => s.openDetail);
@@ -85,6 +89,9 @@ export function NewProjectModal() {
   const [parentFolder, setParentFolder] = useState(settings.watchedFolders[0] ?? "");
   const [status, setStatus] = useState<SongStatus>(draft?.status ?? "creation");
   const [albumId, setAlbumId] = useState<string>(draft?.albumId ?? "");
+  // Which pipeline the song lands on. Defaults to the one on screen,
+  // which is what used to happen silently with no way to say otherwise.
+  const [pipeline, setPipeline] = useState<string>("");
   const [openAfter, setOpenAfter] = useState(true);
   const [producer, setProducer] = useState("");
   const [creditProducer, setCreditProducer] = useState(false);
@@ -107,10 +114,13 @@ export function NewProjectModal() {
     if (!draft) return;
     setStatus(draft.status);
     setAlbumId(draft.albumId ?? "");
+    setPipeline(activeBoardId);
     if (draft.name !== undefined) setName(draft.name);
     setProducer(draft.fromBeat?.producer ?? "");
     setCreditProducer(!!draft.fromBeat?.producer);
   }, [draft]);
+
+  const { active: activeBoardId, boards: boardList } = resolveBoards(workspace);
 
   const factory = useFactoryTemplates(!!draft, setTemplatePath);
 
@@ -133,6 +143,7 @@ export function NewProjectModal() {
         parentFolder,
         albumId: albumId || null,
         status,
+        pipeline: pipeline || undefined,
       });
       setName("");
       // From a beat: its note, a producer credit and its phone memos move to the song.
@@ -244,6 +255,19 @@ export function NewProjectModal() {
             </div>
           )}
         </div>
+
+        {boardList.length > 1 && (
+          <div>
+            <div className={sectionLabel}>{L.pipeline}</div>
+            <select value={pipeline} onChange={(e) => setPipeline(e.target.value)} className={`${input} mt-1.5`}>
+              {boardList.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         <div className="grid grid-cols-2 gap-3">
           <div>

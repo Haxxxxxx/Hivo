@@ -95,6 +95,7 @@ export const T_PIPELINE = dict(
     // Keyboard moves
     moveMenu: (title: string) => `Move ${title}`,
     moveTo: "Move to…",
+    toPipeline: "To pipeline",
     moveUp: "Move up",
     moveDown: "Move down",
     toColumn: "To the column",
@@ -178,6 +179,7 @@ export const T_PIPELINE = dict(
     credits: "Crédits",
     moveMenu: (title: string) => `Déplacer ${title}`,
     moveTo: "Déplacer vers…",
+    toPipeline: "Vers le pipeline",
     moveUp: "Monter",
     moveDown: "Descendre",
     toColumn: "Vers la colonne",
@@ -218,6 +220,9 @@ export function CardTitle({ item, className = "" }: { item: PipelineItem; classN
   );
 }
 
+/** Marks a board option, so it cannot collide with a cardMoves id. */
+const BOARD_OPT = "board:";
+
 /** The keyboard way to move a card (dragging is mouse only): a native menu
  * with up / down in its column and every other column, like the column
  * picker on the website's crew board. Shown on hover and on focus. */
@@ -225,7 +230,11 @@ export function MoveMenu({ item }: { item: PipelineItem }) {
   const source = useSource();
   const t = tr(T_PIPELINE);
   const moves = cardMoves(source.groups, item.key, !source.query);
-  if (moves.length === 0) return null;
+  // Other pipelines this song could go to. Moving one used to mean finding
+  // it in the Library, selecting it and using the bulk bar — not something
+  // anyone discovers, and not where you are when you decide to move it.
+  const others = source.moveToBoard && source.boards ? source.boards.list.filter((b) => b.id !== source.boards!.active) : [];
+  if (moves.length === 0 && others.length === 0) return null;
   const columns = moves.filter((m) => m.kind === "column");
   return (
     <label
@@ -238,6 +247,11 @@ export function MoveMenu({ item }: { item: PipelineItem }) {
         value=""
         aria-label={t.moveMenu(item.title)}
         onChange={(e) => {
+          const board = e.target.value.startsWith(BOARD_OPT) ? e.target.value.slice(BOARD_OPT.length) : null;
+          if (board) {
+            source.moveToBoard?.(item.key, board);
+            return;
+          }
           const move = moves.find((m) => m.id === e.target.value);
           if (move) source.moveCard(item.key, move.columnId, move.beforeKey);
         }}
@@ -253,6 +267,15 @@ export function MoveMenu({ item }: { item: PipelineItem }) {
             {columns.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.name}
+              </option>
+            ))}
+          </optgroup>
+        )}
+        {others.length > 0 && (
+          <optgroup label={t.toPipeline}>
+            {others.map((b) => (
+              <option key={b.id} value={`${BOARD_OPT}${b.id}`}>
+                {b.name}
               </option>
             ))}
           </optgroup>

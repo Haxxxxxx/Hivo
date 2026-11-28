@@ -403,6 +403,8 @@ interface AppState {
     parentFolder: string;
     albumId: string | null;
     status: SongStatus;
+    /** Which pipeline to file it on. Defaults to the one on screen. */
+    pipeline?: string;
   }) => Promise<string>;
   /** File a sketch from the phone inbox into `<parentFolder>/<name>/BandLab/`
    * (a sketch song in Creation); returns its key. */
@@ -1480,12 +1482,12 @@ export const useAppStore = create<AppState>((set, get) => {
         return { ...a, trackPaths: tracks };
       }),
 
-    createProject: async ({ name, templatePath, parentFolder, albumId, status }) => {
+    createProject: async ({ name, templatePath, parentFolder, albumId, status, pipeline }) => {
       const path = await api.createProject({ templatePath, parentFolder, name });
-      // On the pipeline you are looking at. Without this the song fell back
-      // to the first one, so making a beat while Beats was open filed it
-      // under Songs.
-      get().updateSong(path, { status, pipeline: activeBoard(get().workspace).id });
+      // The pipeline chosen in the modal, or the one you are looking at.
+      // Without either the song fell back to the first one, so making a
+      // beat while Beats was open filed it under Songs.
+      get().updateSong(path, { status, pipeline: pipeline ?? activeBoard(get().workspace).id });
       if (albumId) get().addTracks(albumId, [path]);
       // The file exists now: a failed rescan is reported, never thrown (a
       // retry would only say "already exists").

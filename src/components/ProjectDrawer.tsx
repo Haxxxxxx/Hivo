@@ -80,6 +80,7 @@ const T = dict(
     archivedNote: "Archived — hidden from the library, board and stats.",
     unarchive: "Unarchive",
     stage: "Stage",
+    pipeline: "Pipeline",
     key: "Key",
     notSet: "Not set",
     keyFromTrack: "Found in a mixer track name",
@@ -197,6 +198,7 @@ const T = dict(
     archivedNote: "Archivé — caché de la bibliothèque, du tableau et des stats.",
     unarchive: "Désarchiver",
     stage: "Étape",
+    pipeline: "Pipeline",
     key: "Tonalité",
     notSet: "Pas définie",
     keyFromTrack: "Trouvée dans un nom de piste du mixer",
@@ -539,6 +541,8 @@ export function ProjectDrawer() {
         )}
 
         {(sketch || meta.bandlabUrl) && <SketchPanel project={project} />}
+
+        <PipelineSelect path={project.path} />
 
         <div className="mt-5 grid grid-cols-2 gap-3">
           <div>
@@ -1030,6 +1034,42 @@ function ColumnSelect({ path }: { path: string }) {
         {cfg.columns.map((c) => (
           <option key={c.id} value={c.id}>
             {c.name}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+/** Which pipeline this song sits on, changed from the song itself.
+ *
+ * Moving one between pipelines meant going to the Library, ticking it and
+ * finding the bulk bar — not somewhere anyone looks, and not where you are
+ * when you decide a track belongs with the beats instead. Shown only when
+ * there is another pipeline to move it to.
+ *
+ * It sits above the stage picker on purpose: the pipeline decides WHICH
+ * columns that picker offers, so reading top to bottom matches what
+ * happens when you change it. */
+function PipelineSelect({ path }: { path: string }) {
+  const workspace = useAppStore((s) => s.workspace);
+  const move = useAppStore((s) => s.moveSongToPipelineBoard);
+  const t = tr(T);
+  const { boards } = resolveBoards(workspace);
+  if (boards.length < 2) return null;
+  const current = boardOfSong(workspace.songs[path], boards);
+  return (
+    <div className="mt-5">
+      <div className={`${sectionLabel} mb-2`}>{t.pipeline}</div>
+      <select
+        value={current}
+        aria-label={t.pipeline}
+        onChange={(e) => move(path, e.target.value)}
+        className="w-full rounded border border-rule-strong bg-chassis px-2 py-1.5 text-sm text-cream focus:border-hot focus:outline-none"
+      >
+        {boards.map((b) => (
+          <option key={b.id} value={b.id}>
+            {b.name}
           </option>
         ))}
       </select>
