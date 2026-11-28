@@ -6,6 +6,7 @@ import { generateSampleProjects, generateSampleWorkspace } from "../lib/sampleDa
 import { ALBUM_COLORS, EMPTY_WORKSPACE, migrateWorkspace, newId, newerWorkspaceVersion } from "../lib/songs";
 import { logStageChanges } from "../lib/stageLog";
 import {
+  activeBoard,
   addBoard,
   addColumn,
   moveCard,
@@ -1475,7 +1476,10 @@ export const useAppStore = create<AppState>((set, get) => {
 
     createProject: async ({ name, templatePath, parentFolder, albumId, status }) => {
       const path = await api.createProject({ templatePath, parentFolder, name });
-      get().updateSong(path, { status });
+      // On the pipeline you are looking at. Without this the song fell back
+      // to the first one, so making a beat while Beats was open filed it
+      // under Songs.
+      get().updateSong(path, { status, pipeline: activeBoard(get().workspace).id });
       if (albumId) get().addTracks(albumId, [path]);
       // The file exists now: a failed rescan is reported, never thrown (a
       // retry would only say "already exists").
@@ -1489,7 +1493,7 @@ export const useAppStore = create<AppState>((set, get) => {
       // makes the folder, or the song would come back without them.
       if (!get().workspaceWritable) throw new Error(tr(STORE_ERRORS).notLoaded);
       const filed = await api.phoneInboxFileSketch(itemId, parentFolder, name);
-      get().updateSong(filed.key, { status: "creation", ...(bandlabUrl ? { bandlabUrl } : {}) });
+      get().updateSong(filed.key, { status: "creation", pipeline: activeBoard(get().workspace).id, ...(bandlabUrl ? { bandlabUrl } : {}) });
       await get().rescan();
       return filed;
     },
@@ -1510,8 +1514,10 @@ export const useAppStore = create<AppState>((set, get) => {
       // archive flag.
       const meta = get().workspace.songs[path];
       if (meta) {
-        const { tags, status, key, notes, credits } = meta;
-        get().updateSong(created, { tags, status, key, notes, credits: credits?.map((c) => ({ ...c })) });
+        const { tags, status, key, notes, credits, pipeline } = meta;
+        // A new version belongs with the song it came from, not with
+        // whichever pipeline happens to be open.
+        get().updateSong(created, { tags, status, key, notes, pipeline, credits: credits?.map((c) => ({ ...c })) });
       }
       // The copy exists now: a failed rescan is reported, never thrown.
       await scanOrReport();

@@ -608,35 +608,69 @@ export function BoardSwitcher({ boards }: { boards?: PipelineSource["boards"] })
   // Takes `boards` as a prop, NOT useSource(): this renders in the page
   // header, which is outside PipelineSourceProvider. Reading the context
   // here threw and took the whole app down to a black screen.
+  //
+  // Names are edited INLINE, like a column's. window.prompt is not
+  // implemented in Tauri's webview — it returns null, so the + button and
+  // rename silently did nothing at all. (window.confirm does work, which is
+  // what made the gap easy to miss.)
+  const [editing, setEditing] = useState<string | null>(null);
+  const cancelled = useRef(false);
   const t = tr(T_PIPELINE);
   if (!boards || boards.list.length === 0) return null;
   const current = boards.list.find((b) => b.id === boards.active) ?? boards.list[0];
 
+  const commit = (value: string) => {
+    const name = value.trim();
+    if (!cancelled.current && name) {
+      if (editing === "+") boards.add(name);
+      else if (editing) boards.rename(editing, name);
+    }
+    cancelled.current = false;
+    setEditing(null);
+  };
+
+  const nameInput = (defaultValue: string, label: string) => (
+    <input
+      autoFocus
+      defaultValue={defaultValue}
+      maxLength={NAME_MAX}
+      aria-label={label}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+        if (e.key === "Escape") {
+          cancelled.current = true;
+          setEditing(null);
+        }
+      }}
+      onBlur={(e) => commit(e.currentTarget.value)}
+      className="w-28 rounded border border-hot bg-chassis px-1.5 py-1 text-xs text-cream focus:outline-none"
+    />
+  );
+
   return (
     <div className="flex items-center gap-1" role="group" aria-label={t.pipelines}>
-      <div className="flex rounded-md border border-rule p-0.5 text-xs" role="tablist" aria-label={t.pipelines}>
-        {boards.list.map((b) => (
-          <button
-            key={b.id}
-            role="tab"
-            aria-selected={b.id === boards.active}
-            onClick={() => boards.setActive(b.id)}
-            onDoubleClick={() => {
-              const name = window.prompt(t.renamePipeline(b.name), b.name);
-              if (name) boards.rename(b.id, name);
-            }}
-            title={t.renamePipeline(b.name)}
-            className={`rounded px-2.5 py-1 ${b.id === boards.active ? "bg-rule-strong text-cream" : "text-engrave hover:text-cream"}`}
-          >
-            {b.name}
-          </button>
-        ))}
+      <div className="flex items-center rounded-md border border-rule p-0.5 text-xs" role="tablist" aria-label={t.pipelines}>
+        {boards.list.map((b) =>
+          editing === b.id ? (
+            <span key={b.id}>{nameInput(b.name, t.renamePipeline(b.name))}</span>
+          ) : (
+            <button
+              key={b.id}
+              role="tab"
+              aria-selected={b.id === boards.active}
+              onClick={() => boards.setActive(b.id)}
+              onDoubleClick={() => setEditing(b.id)}
+              title={t.renameHint}
+              className={`rounded px-2.5 py-1 ${b.id === boards.active ? "bg-rule-strong text-cream" : "text-engrave hover:text-cream"}`}
+            >
+              {b.name}
+            </button>
+          ),
+        )}
+        {editing === "+" && <span>{nameInput("", t.newPipelineName)}</span>}
       </div>
       <button
-        onClick={() => {
-          const name = window.prompt(t.newPipelineName, "");
-          if (name) boards.add(name);
-        }}
+        onClick={() => setEditing("+")}
         aria-label={t.newPipeline}
         title={t.newPipeline}
         className="rounded p-1 text-engrave hover:text-cream"
@@ -644,14 +678,12 @@ export function BoardSwitcher({ boards }: { boards?: PipelineSource["boards"] })
         <Plus size={13} />
       </button>
       {boards.list.length > 1 && (
-        <button
-          onClick={() => boards.remove(current.id)}
-          aria-label={t.removePipeline(current.name)}
-          title={t.removePipeline(current.name)}
-          className="rounded p-1 text-engrave hover:text-red-300"
-        >
-          <Trash2 size={13} />
-        </button>
+        <ConfirmButton
+          label={<Trash2 size={13} aria-label={t.removePipeline(current.name)} />}
+          confirmLabel={t.removeConfirm}
+          onConfirm={() => boards.remove(current.id)}
+          className="rounded border border-transparent p-1 text-[10px] text-engrave hover:bg-rule hover:text-red-300"
+        />
       )}
     </div>
   );
