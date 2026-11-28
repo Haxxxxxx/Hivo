@@ -6,6 +6,7 @@ import {
   CheckSquare,
   ChevronRight,
   Cloud,
+  Copy,
   Folder,
   Download,
   FolderSearch,
@@ -42,6 +43,7 @@ import {
   missingSamples,
   songLabel,
 } from "../lib/songs";
+import { duplicateGroups } from "../lib/duplicates";
 import type { ProjectInfo, SongStatus } from "../types";
 import { ConfirmButton, StatusDot, StatusSelect, btn, btnPrimary } from "./ui";
 import { Chip, MixdownBadge, Toggle } from "../ui";
@@ -63,6 +65,7 @@ const T = dict(
     issues: (n: number) => `Issues (${n})`,
     archived: (n: number) => `Archived (${n})`,
     templates: (n: number) => `Templates (${n})`,
+    duplicates: (n: number) => `Duplicates (${n})`,
     all: "All",
     selected: (n: number) => `${n} selected`,
     setStatus: "Set status",
@@ -133,6 +136,7 @@ const T = dict(
     issues: (n: number) => `Problèmes (${n})`,
     archived: (n: number) => `Archivés (${n})`,
     templates: (n: number) => `Templates (${n})`,
+    duplicates: (n: number) => `Doublons (${n})`,
     all: "Tous",
     selected: (n: number) => `${n} sélectionné${plural(n, "", "s")}`,
     setStatus: "Changer l'étape",
@@ -237,6 +241,7 @@ export function LibraryView() {
   );
   const projects = useAppStore((s) => s.projects);
   const workspace = useAppStore((s) => s.workspace);
+  const setView = useAppStore((s) => s.setView);
   const scanning = useAppStore((s) => s.scanning);
   const search = useAppStore((s) => s.search);
   const setSearch = useAppStore((s) => s.setSearch);
@@ -388,6 +393,9 @@ export function LibraryView() {
   }
 
   const t = tr(T);
+  // Offered only when there is something to review, like the toggles above.
+  const dupCount = useMemo(() => duplicateGroups(projects).length, [projects]);
+
   return (
     <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
       <div className="flex flex-wrap items-center gap-2 border-b border-rule px-6 py-3 [&_button]:whitespace-nowrap">
@@ -428,6 +436,11 @@ export function LibraryView() {
           <Toggle active={showTemplates} onClick={() => setShowTemplates(!showTemplates)}>
             <LayoutTemplate size={14} /> {t.templates(templateCount)}
           </Toggle>
+        )}
+        {dupCount > 0 && (
+          <button onClick={() => setView("duplicates")} className={btn}>
+            <Copy size={14} /> {t.duplicates(dupCount)}
+          </button>
         )}
 
       </div>
