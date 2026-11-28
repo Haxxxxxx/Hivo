@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { distinctiveSamples, duplicateGroups, sampleKey } from "./duplicates";
+import { commonAbove, distinctiveSamples, duplicateGroups, isStockSample, sampleKey } from "./duplicates";
 import type { ProjectInfo } from "../types";
 
 const song = (name: string, samples: string[], over: Partial<ProjectInfo> = {}): ProjectInfo =>
   ({
-    path: `/p/${name}.flp`,
+    path: `/p/${name}/${name}.flp`,
+    sizeBytes: 1000 + name.length,
     name,
     modifiedAtMs: 1_000,
     tempoBpm: 140,
@@ -91,5 +92,92 @@ describe("duplicateGroups", () => {
     const groups = duplicateGroups([song("A", VOX, { plugins: p }), song("B", VOX, { plugins: p })]);
     expect(groups[0].samePlugins).toBe(true);
     expect(groups[0].sameTempo).toBe(true);
+  });
+});
+
+
+// The screen's first version got both of these wrong on a real library,
+// in opposite directions. They are the reason it was rewritten.
+describe("what FL's own content does to this", () => {
+  const STOCK = [
+    String.raw`%FLStudioFactoryData%\Data\Patches\Packs\Legacy\Drums\Dance\Basic 808 Kick.wav`,
+    "%FLStudioFactoryData%/Data/Patches/Packs/Legacy/Drums/Dance/Basic 808 Snare.wav",
+    "/Applications/FL Studio.app/Contents/Resources/FL/Data/Patches/Packs/Legacy/Drums/Dance/Basic 808 Clap.wav",
+    "%FLStudioFactoryData%/Data/Patches/Packs/Legacy/Drums/Dance/Basic 808 Hihat.wav",
+  ];
+
+  it("knows FL's stock content from the user's own", () => {
+    for (const p of STOCK) expect(isStockSample(p)).toBe(true);
+    expect(isStockSample("D:/Music/Envy/vox take 3.wav")).toBe(false);
+    // A user folder that merely says "packs" is not FL's factory tree.
+    expect(isStockSample("D:/Sample Packs/kick.wav")).toBe(false);
+  });
+
+  it("does not call five unrelated projects versions of each other", () => {
+    // Observed: five projects grouped as duplicates because each had the
+    // default 808 kit dragged in. Four shared "samples", no relationship.
+    const library = ["ProdMac", "Project_3", "test bandlab", "Project_2", "Yes"].map((n) => song(n, STOCK));
+    expect(duplicateGroups(library)).toEqual([]);
+  });
+
+  it("still groups real material shared with the stock kit alongside it", () => {
+    // Stock being ignored must not make a genuine pair invisible.
+    const vox = ["/s/vox take 3.wav", "/s/vox adlib.wav", "/s/hook dry.wav"];
+    const groups = duplicateGroups([song("A", [...STOCK, ...vox]), song("B", [...STOCK, ...vox]), song("C", STOCK)]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].members.map((m) => m.name).sort()).toEqual(["A", "B"]);
+    expect(groups[0].sharedSamples).toHaveLength(3);
+  });
+});
+
+describe("copies with nothing in them", () => {
+  it("finds the same project saved in three folders", () => {
+    // Observed the other way round: Ocean, Ocean copy and Ocean copy 2 are
+    // literal folder copies with ZERO samples, so no amount of sample
+    // overlap could ever have found them.
+    const copy = (folder: string): ProjectInfo =>
+      ({
+        path: `/p/${folder}/Ocean.flp`,
+        name: "Ocean",
+        sizeBytes: 48_219,
+        modifiedAtMs: 1_000,
+        tempoBpm: null,
+        samples: [],
+        plugins: [],
+        renders: [],
+        backups: [],
+      }) as unknown as ProjectInfo;
+
+    const groups = duplicateGroups([copy("Ocean"), copy("Ocean copy"), copy("Ocean copy 2"), song("Other", [])]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].members).toHaveLength(3);
+    expect(groups[0].sameFile).toBe(true);
+    expect(groups[0].sharedSamples).toEqual([]);
+  });
+
+  it("does not group empty projects that merely share a name", () => {
+    // A zero-byte project matches every other zero-byte project.
+    const empty = (folder: string): ProjectInfo =>
+      ({ path: `/p/${folder}/New.flp`, name: "New", sizeBytes: 0, modifiedAtMs: 1, samples: [], plugins: [], renders: [], backups: [] }) as unknown as ProjectInfo;
+    expect(duplicateGroups([empty("a"), empty("b")])).toEqual([]);
+  });
+
+  it("does not group same-sized files with different names", () => {
+    const a = { ...song("A", []), sizeBytes: 4096 } as ProjectInfo;
+    const b = { ...song("B", []), sizeBytes: 4096 } as ProjectInfo;
+    expect(duplicateGroups([a, b])).toEqual([]);
+  });
+});
+
+describe("commonAbove", () => {
+  it("scales with the library instead of being a fixed five", () => {
+    // Five songs is nearly half of a twelve-song folder and noise in a
+    // thousand-song one, which is how stock content slipped through.
+    expect(commonAbove(12)).toBe(3);
+    expect(commonAbove(1000)).toBe(250);
+    // Never below three: a song saved three times is the whole point, and
+    // in a small folder those three copies are most of the library.
+    expect(commonAbove(0)).toBe(3);
+    expect(commonAbove(4)).toBe(3);
   });
 });

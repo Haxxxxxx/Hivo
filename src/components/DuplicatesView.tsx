@@ -22,6 +22,7 @@ const T = dict(
     back: "Back to the library",
     groups: (n: number) => `${n} group${plural(n, "", "s")}`,
     shared: (n: number) => `${n} shared sample${plural(n, "", "s")}`,
+    sameFile: "Same file, saved more than once",
     sameTempo: "Same tempo",
     tempoDiffers: "Tempo differs",
     samePlugins: "Same plugins",
@@ -39,6 +40,7 @@ const T = dict(
     back: "Retour à la bibliothèque",
     groups: (n: number) => `${n} groupe${plural(n, "", "s")}`,
     shared: (n: number) => `${n} sample${plural(n, "", "s")} en commun`,
+    sameFile: "Le même fichier, enregistré plusieurs fois",
     sameTempo: "Même tempo",
     tempoDiffers: "Tempo différent",
     samePlugins: "Mêmes plugins",
@@ -81,7 +83,7 @@ export function DuplicatesView() {
               <section key={g.id} className="rounded-lg border border-rule bg-panel p-4">
                 <div className="flex flex-wrap items-center gap-2 text-xs">
                   <Copy size={13} className="text-engrave" />
-                  <span className="text-cream">{t.shared(g.sharedSamples.length)}</span>
+                  <span className="text-cream">{g.sameFile ? t.sameFile : t.shared(g.sharedSamples.length)}</span>
                   <span className={g.sameTempo ? "text-engrave" : "text-amber-300"}>
                     {g.sameTempo ? t.sameTempo : t.tempoDiffers}
                   </span>
@@ -119,12 +121,14 @@ export function DuplicatesView() {
                   ))}
                 </ul>
 
+                {g.sharedSamples.length > 0 && (
                 <details className="mt-3">
                   <summary className={`${sectionLabel} cursor-pointer`}>{t.sharedList}</summary>
                   <div className="mt-1.5 font-mono text-[11px] leading-5 text-engrave">
                     {g.sharedSamples.join("  ·  ")}
                   </div>
                 </details>
+                )}
               </section>
             ))}
           </div>

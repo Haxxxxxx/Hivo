@@ -428,6 +428,39 @@ fn may_trash_project(path: &Path, listed: impl Fn(&Path) -> bool) -> bool {
         && fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
 }
 
+/// Files that are not worth keeping a folder alive for.
+fn is_litter(name: &str) -> bool {
+    matches!(name.to_ascii_lowercase().as_str(), ".ds_store" | "thumbs.db" | "desktop.ini")
+}
+
+/// Whether `dir` holds nothing worth keeping: no files except the operating
+/// system's own litter, and no subfolder that holds anything either.
+///
+/// Used to decide whether a song's folder follows the song into the Trash.
+/// A folder with ANYTHING real left in it stays — another project, a stem,
+/// an exported mixdown, a note. Unreadable means "not empty": the one
+/// mistake that cannot be undone is deleting a folder whose contents could
+/// not be listed.
+fn folder_holds_nothing(dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else { return false };
+    for entry in entries {
+        let Ok(entry) = entry else { return false };
+        let Ok(kind) = entry.file_type() else { return false };
+        // A symlink is never followed and never counts as empty.
+        if kind.is_symlink() {
+            return false;
+        }
+        if kind.is_dir() {
+            if !folder_holds_nothing(&entry.path()) {
+                return false;
+            }
+        } else if !is_litter(&entry.file_name().to_string_lossy()) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Send songs to the Recycle Bin / Trash (recoverable), with the backups
 /// that belong to them — a backup outlives nothing once its project is
 /// gone. Renders are left alone on purpose: an exported mixdown is a
@@ -465,6 +498,21 @@ pub async fn trash_projects(app: tauri::AppHandle, paths: Vec<String>, allow_per
                 .into());
         }
     }
+    // A song lives in a folder of its own, so deleting only the .flp left
+    // "Ocean copy 2" sitting in FL's Projects list with nothing in it. The
+    // folder follows ONLY when removing the song would leave it holding
+    // nothing real — never a linked root itself, which is the user's own
+    // Projects folder and not a song.
+    let roots: Vec<PathBuf> = scope.folders().to_vec();
+    let mut folders: Vec<PathBuf> = Vec::new();
+    for p in &paths {
+        let Some(dir) = Path::new(p).parent() else { continue };
+        if roots.iter().any(|r| r == dir) || folders.iter().any(|f| f == dir) {
+            continue;
+        }
+        folders.push(dir.to_path_buf());
+    }
+
     let count = paths.len() as u32;
     tauri::async_runtime::spawn_blocking(move || {
         #[allow(unused_mut)]
@@ -474,7 +522,14 @@ pub async fn trash_projects(app: tauri::AppHandle, paths: Vec<String>, allow_per
             use trash::macos::{DeleteMethod, TrashContextExtMacos};
             ctx.set_delete_method(DeleteMethod::NsFileManager);
         }
-        ctx.delete_all(&all)
+        ctx.delete_all(&all)?;
+        // Checked AFTER the files are gone, so the question is what the
+        // folder holds now and not what it held a moment ago.
+        let empty: Vec<&PathBuf> = folders.iter().filter(|d| folder_holds_nothing(d)).collect();
+        if !empty.is_empty() {
+            ctx.delete_all(&empty)?;
+        }
+        Ok::<(), trash::Error>(())
     })
     .await
     .map_err(|e| app_err("project.trash", format!("delete failed: {e}")))?
@@ -612,6 +667,41 @@ mod tests {
         assert_eq!(fs::read(&v2).unwrap(), b"my work");
         assert!(duplicate(created, "Envy v2".into()).is_err());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The song's folder follows it into the Trash, but only when taking
+    /// the song leaves nothing real behind. Getting this wrong deletes a
+    /// folder someone still wanted, so each case is pinned.
+    #[test]
+    fn a_folder_follows_its_song_only_when_nothing_real_is_left() {
+        use std::fs;
+        let root = std::env::temp_dir().join(format!("flsm-emptydir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+
+        // Nothing at all, and nothing but the OS's own litter.
+        let bare = root.join("bare");
+        fs::create_dir_all(&bare).unwrap();
+        assert!(folder_holds_nothing(&bare));
+        fs::write(bare.join(".DS_Store"), b"x").unwrap();
+        assert!(folder_holds_nothing(&bare), "litter does not keep a folder alive");
+
+        // An empty Backup folder is still nothing: backups went with the song.
+        let nested = root.join("nested");
+        fs::create_dir_all(nested.join("Backup")).unwrap();
+        assert!(folder_holds_nothing(&nested));
+
+        // Anything real keeps it: an exported mixdown, which is deliberately
+        // never deleted, is exactly the case that must keep its folder.
+        let keep = root.join("keep");
+        fs::create_dir_all(keep.join("Renders")).unwrap();
+        fs::write(keep.join("Renders").join("Ocean.wav"), b"audio").unwrap();
+        assert!(!folder_holds_nothing(&keep));
+
+        // A folder that cannot be read counts as not empty: the one mistake
+        // here that cannot be undone is deleting what could not be listed.
+        assert!(!folder_holds_nothing(&root.join("does-not-exist")));
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// Deleting a song is the one thing here that destroys work, so the
