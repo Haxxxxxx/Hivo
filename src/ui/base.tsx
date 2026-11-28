@@ -3,16 +3,17 @@
 // Claude Design as the app's design system). Styling is System 02 ("built
 // like a rack unit"): solid warm-grey panels, engraved mono labels, LED
 // status, condensed caps on buttons, one hot orange. Tokens: src/theme.css.
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { STATUSES, UNSORTED, statusInfo } from "../lib/songs";
+import { PANEL_MAX, PANEL_MIN, clampPanelWidth, loadPanelWidth, savePanelWidth, widthFromDrag } from "../lib/panelSize";
 import type { SongStatus } from "../types";
 import { dict, tr } from "../i18n";
 import { confirmNext, CONFIRM_DISARM_MS, type ConfirmEvent, type ConfirmState } from "../lib/confirmArm";
 
 const T = dict(
-  { remove: (tag: string) => `Remove ${tag}`, addTag: "Add tag…", close: "Close" },
-  { remove: (tag: string) => `Retirer ${tag}`, addTag: "Ajouter un tag…", close: "Fermer" },
+  { remove: (tag: string) => `Remove ${tag}`, addTag: "Add tag…", close: "Close", resize: "Drag to resize, double-click to reset" },
+  { remove: (tag: string) => `Retirer ${tag}`, addTag: "Ajouter un tag…", close: "Fermer", resize: "Glisse pour redimensionner, double-clic pour réinitialiser" },
 );
 
 /** Small mono caps label, the "engraving" on every panel and field. */
@@ -500,5 +501,94 @@ export function Wordmark({ size = 28, tone = "dark" }: { size?: number; tone?: "
         <LogoMark size={size * 0.6} tone={tone} full />
       </span>
     </span>
+  );
+}
+
+/** A right-hand panel the user can drag wider or narrower.
+ *
+ * `name` is the storage key, so each panel remembers its own width. Returns
+ * the width to apply and the props for the handle; put `ref` on the panel
+ * itself, because the drag is measured from the panel's right edge. */
+export function useResizablePanel(name: string, fallback: number) {
+  const [width, setWidth] = useState(() => loadPanelWidth(name, fallback));
+  const ref = useRef<HTMLElement | null>(null);
+
+  const startDrag = useCallback(
+    (e: ReactPointerEvent) => {
+      const right = ref.current?.getBoundingClientRect().right;
+      if (right === undefined) return;
+      e.preventDefault();
+      // Listeners on the window, not the handle: the pointer routinely
+      // leaves a 4px strip mid-drag, and the panel must keep following it.
+      const move = (ev: globalThis.PointerEvent) => setWidth(widthFromDrag(right, ev.clientX, fallback));
+      const stop = (ev: globalThis.PointerEvent) => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", stop);
+        window.removeEventListener("pointercancel", stop);
+        savePanelWidth(name, widthFromDrag(right, ev.clientX, fallback));
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", stop);
+      window.addEventListener("pointercancel", stop);
+    },
+    [fallback, name],
+  );
+
+  const nudge = useCallback(
+    (by: number) =>
+      setWidth((w) => {
+        const next = clampPanelWidth(w + by, fallback);
+        savePanelWidth(name, next);
+        return next;
+      }),
+    [fallback, name],
+  );
+
+  const reset = useCallback(() => {
+    setWidth(fallback);
+    savePanelWidth(name, fallback);
+  }, [fallback, name]);
+
+  return { width, ref, startDrag, nudge, reset };
+}
+
+/** The grab strip on a panel's left edge.
+ *
+ * A `separator` with arrow-key support, not a bare div: resizing is a real
+ * control, and someone who cannot drag still needs it. Double-click puts the
+ * panel back to its default. */
+export function ResizeHandle({
+  onPointerDown,
+  onNudge,
+  onReset,
+  width,
+}: {
+  onPointerDown: (e: ReactPointerEvent) => void;
+  onNudge: (by: number) => void;
+  onReset: () => void;
+  width: number;
+}) {
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={tr(T).resize}
+      aria-valuenow={width}
+      aria-valuemin={PANEL_MIN}
+      aria-valuemax={PANEL_MAX}
+      tabIndex={0}
+      onPointerDown={onPointerDown}
+      onDoubleClick={onReset}
+      onKeyDown={(e) => {
+        // Left widens: the handle is on the panel's left edge, so the key
+        // matches the direction the edge travels.
+        if (e.key === "ArrowLeft") (e.preventDefault(), onNudge(16));
+        else if (e.key === "ArrowRight") (e.preventDefault(), onNudge(-16));
+        else if (e.key === "Home") (e.preventDefault(), onReset());
+      }}
+      className="group absolute left-0 top-0 z-10 h-full w-1.5 -translate-x-1/2 cursor-col-resize focus:outline-none"
+    >
+      <div className="h-full w-full bg-transparent transition-colors group-hover:bg-hot/40 group-focus:bg-hot/60" />
+    </div>
   );
 }
