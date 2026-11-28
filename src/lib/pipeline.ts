@@ -26,6 +26,46 @@ export function stageColor(stage: SongStatus | null): string {
   return STATUSES.find((s) => s.id === stage)?.color ?? UNSORTED.color;
 }
 
+/** The colours a column may be given.
+ *
+ * A fixed set, not a free colour field: System 02 is a dark panel and an
+ * arbitrary hex is one bad pick away from unreadable. The first entry is the
+ * hot orange the app already uses; the rest are distinct at a glance on
+ * #161614 and distinguishable for the common colour-vision deficiencies.
+ * Stage colours stay out of it, so a custom colour never impersonates a
+ * lifecycle stage. */
+export const COLUMN_COLORS = ["#E8732A", "#D64545", "#C9A227", "#3F9E54", "#36A0A8", "#8A63D2", "#C45FA0"] as const;
+
+export function isColumnColor(value: unknown): value is string {
+  return typeof value === "string" && (COLUMN_COLORS as readonly string[]).includes(value);
+}
+
+/** What a column's dot shows: the user's colour, else the stage's.
+ *
+ * The stage NAME is always rendered next to the dot, so meaning is never
+ * carried by colour alone even when a column is recoloured. */
+export function columnColor(column: { stage: SongStatus | null; color?: string }): string {
+  return isColumnColor(column.color) ? column.color : stageColor(column.stage);
+}
+
+/** Sets (or clears, with null) a column's colour. Unknown colour, unknown
+ * column, or no actual change: the workspace is returned untouched, so a
+ * stray click never rewrites workspace.json. */
+export function recolorColumn(ws: Workspace, id: string, color: string | null): Workspace {
+  if (color !== null && !isColumnColor(color)) return ws;
+  const cfg = resolvePipeline(ws);
+  const column = cfg.columns.find((c) => c.id === id);
+  if (!column || (column.color ?? null) === color) return ws;
+  return withPipeline(ws, {
+    ...cfg,
+    columns: cfg.columns.map((c) => {
+      if (c.id !== id) return c;
+      const { color: _drop, ...rest } = c;
+      return color === null ? rest : { ...rest, color };
+    }),
+  });
+}
+
 export function cleanName(name: unknown): string {
   return typeof name === "string" ? name.replace(/\s+/g, " ").trim().slice(0, NAME_MAX) : "";
 }
@@ -149,7 +189,10 @@ export function resolvePipeline(ws: Pick<Workspace, "pipeline" | "pipelines">): 
     // current one: switching language mustn't leave "Creation" in French.
     const name = cleanName(c.name);
     const isDefault = stageNames(stage).some((n) => n.toLowerCase() === name.toLowerCase());
-    columns.push({ id: c.id, name: name && !isDefault ? name : stageLabel(stage), stage });
+    // Keep a valid stored colour: this loop rebuilds every column, so a
+    // field it forgets is silently dropped on the next read.
+    const color = isColumnColor(c.color) ? { color: c.color } : {};
+    columns.push({ id: c.id, name: name && !isDefault ? name : stageLabel(stage), stage, ...color });
   }
   for (const stage of STAGE_ORDER) {
     if (columns.some((c) => c.stage === stage)) continue;

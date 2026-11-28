@@ -4,6 +4,7 @@ import {
   DEFAULT_BOARD_ID,
   activeBoard,
   addBoard,
+  COLUMN_COLORS,
   addColumn,
   boardOfSong,
   moveSongToBoard,
@@ -13,6 +14,9 @@ import {
   setActiveBoard,
   canRemoveColumn,
   cardMoves,
+  columnColor,
+  recolorColumn,
+  stageColor,
   columnOf,
   defaultPipeline,
   filterSongs,
@@ -315,5 +319,41 @@ describe("a new pipeline's columns", () => {
     x = addBoard(x, "Prods", "prods");
     x = setActiveBoard(x, "prods");
     expect(resolvePipeline(x).columns.map((c) => c.name)).not.toContain("Studio");
+  });
+});
+
+describe("column colours", () => {
+  const ws = (): Workspace => ({ songs: {}, albums: [], people: [] }) as unknown as Workspace;
+
+  it("falls back to the stage ramp until a colour is set", () => {
+    const cfg = resolvePipeline(ws());
+    const first = cfg.columns[0];
+    expect(columnColor(first)).toBe(stageColor(first.stage));
+    expect(columnColor({ ...first, color: COLUMN_COLORS[0] })).toBe(COLUMN_COLORS[0]);
+  });
+
+  it("stores and clears a colour", () => {
+    const base = ws();
+    const id = resolvePipeline(base).columns[0].id;
+    const painted = recolorColumn(base, id, COLUMN_COLORS[2]);
+    expect(resolvePipeline(painted).columns[0].color).toBe(COLUMN_COLORS[2]);
+    const cleared = recolorColumn(painted, id, null);
+    expect(resolvePipeline(cleared).columns[0].color).toBeUndefined();
+  });
+
+  it("refuses a colour that is not on the palette", () => {
+    // An arbitrary hex on a dark panel is one bad pick from unreadable, and
+    // a stage colour would let a column impersonate a lifecycle stage.
+    const base = ws();
+    const id = resolvePipeline(base).columns[0].id;
+    expect(recolorColumn(base, id, "#ff0000")).toBe(base);
+    expect(recolorColumn(base, id, stageColor("prep"))).toBe(base);
+  });
+
+  it("changes nothing when there is nothing to change", () => {
+    const base = ws();
+    const id = resolvePipeline(base).columns[0].id;
+    expect(recolorColumn(base, id, null)).toBe(base);
+    expect(recolorColumn(base, "nope", COLUMN_COLORS[0])).toBe(base);
   });
 });

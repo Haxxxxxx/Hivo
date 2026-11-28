@@ -12,6 +12,7 @@ import {
   moveCard,
   moveColumn,
   moveSongToBoard,
+  recolorColumn,
   removeBoard,
   removeColumn,
   renameBoard,
@@ -349,6 +350,8 @@ interface AppState {
   removePipelineBoard: (id: string) => void;
   setActivePipelineBoard: (id: string) => void;
   moveSongToPipelineBoard: (path: string, id: string) => void;
+  /** null clears it, back to the stage's own colour. */
+  recolorPipelineColumn: (id: string, color: string | null) => void;
   movePipelineColumn: (id: string, toIndex: number) => void;
   /** `songs` = the songs on the board (for the column's current order). */
   movePipelineCard: (songs: ProjectInfo[], path: string, columnId: string, beforePath: string | null) => void;
@@ -1316,6 +1319,7 @@ export const useAppStore = create<AppState>((set, get) => {
     removePipelineBoard: (id) => mutateWorkspace((ws) => removeBoard(ws, id)),
     setActivePipelineBoard: (id) => mutateWorkspace((ws) => setActiveBoard(ws, id)),
     moveSongToPipelineBoard: (path, id) => mutateWorkspace((ws) => moveSongToBoard(ws, path, id)),
+    recolorPipelineColumn: (id, color) => mutateWorkspace((ws) => recolorColumn(ws, id, color)),
     removePipelineColumn: (id) => mutateWorkspace((ws) => removeColumn(ws, id)),
     movePipelineColumn: (id, toIndex) => mutateWorkspace((ws) => moveColumn(ws, id, toIndex)),
     movePipelineCard: (songs, path, columnId, beforePath) => mutateWorkspace((ws) => moveCard(ws, songs, path, columnId, beforePath)),

@@ -42,6 +42,7 @@ export function useMineSource(): PipelineSource {
   const rename = useAppStore((s) => s.renamePipelineColumn);
   const add = useAppStore((s) => s.addPipelineColumn);
   const remove = useAppStore((s) => s.removePipelineColumn);
+  const recolor = useAppStore((s) => s.recolorPipelineColumn);
   const moveColumn = useAppStore((s) => s.movePipelineColumn);
   const moveCard = useAppStore((s) => s.movePipelineCard);
   const setActiveBoardAction = useAppStore((s) => s.setActivePipelineBoard);
@@ -86,11 +87,12 @@ export function useMineSource(): PipelineSource {
       rename,
       add,
       remove,
+      recolor,
       moveColumn,
       // This pipeline's full song list, so hidden (filtered) songs keep
       // their order and a move never reorders another board.
       moveCard: (key, columnId, beforeKey) => moveCard(onThisBoard, key, columnId, beforeKey),
       newSong: () => openNewProject({ status: "creation" }),
     } satisfies PipelineSource;
-  }, [songs, workspace, query, detailPath, openDetail, openNewProject, rename, add, remove, moveColumn, moveCard, setActiveBoardAction, addBoardAction, renameBoardAction, removeBoardAction]);
+  }, [songs, workspace, query, detailPath, openDetail, openNewProject, rename, add, remove, moveColumn, moveCard, setActiveBoardAction, addBoardAction, renameBoardAction, removeBoardAction, recolor]);
 }

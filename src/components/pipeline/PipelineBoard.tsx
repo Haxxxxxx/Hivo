@@ -1,7 +1,7 @@
 import { Fragment } from "react";
 import { ChevronRight } from "lucide-react";
 import { useCollapsed, usePipelineView } from "../../store/usePipelineView";
-import { stageColor } from "../../lib/pipeline";
+import { columnColor } from "../../lib/pipeline";
 import { StatusDot } from "../ui";
 import { AddColumn, beforeKeyFor, CardTitle, ColumnHeader, ConflictDot, DropLine, MoveMenu, SourceError, startSongDrag, T_PIPELINE, usePipelineDrop, useSource } from "./shared";
 import { tr } from "../../i18n";
@@ -55,7 +55,7 @@ export function PipelineBoard() {
                   className="flex flex-1 flex-col items-center gap-2 py-2.5 text-engrave hover:text-cream"
                 >
                   <ChevronRight size={13} />
-                  <StatusDot color={stageColor(column.stage)} />
+                  <StatusDot color={columnColor(column)} />
                   <span className="text-xs text-cream [writing-mode:vertical-rl]">{column.name}</span>
                   <span className="text-xs">{items.length}</span>
                 </button>
