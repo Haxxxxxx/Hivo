@@ -26,6 +26,7 @@ import { isUnder } from "../lib/relink";
 import { formatBytes, formatDateTime, trashName } from "../lib/format";
 import { audioSrc, backupsOnRiskyVolumes, openExternal, openInFlStudio, revealInFileManager } from "../lib/tauri";
 import { KEYS, albumsOf, backupsBytes, formatBpm, lastSaveMs, missingPlugins, renderFreshness } from "../lib/songs";
+import { boardOfSong, columnColor, columnOf, resolveBoards, resolvePipeline } from "../lib/pipeline";
 import type { ProjectInfo } from "../types";
 import { detectKey } from "../lib/people";
 import { SongCredits, SongPitches } from "./SongPeople";
@@ -39,7 +40,7 @@ import { memosForSong } from "../lib/phoneInbox";
 import { canRenderInApp, dawOf, isSketch } from "../lib/daws";
 import { MAX_BANDLAB_URL, cleanBandlabUrl } from "../lib/sketch";
 import { TemplateSelect, useFactoryTemplates } from "./NewProjectModal";
-import { ConfirmButton, StatusSelect, TagEditor, btn, btnPrimary, input, sectionLabel } from "./ui";
+import { ConfirmButton, StatusDot, TagEditor, btn, btnPrimary, input, sectionLabel } from "./ui";
 import { Fact, Section } from "../ui";
 import { dict, plural, tr } from "../i18n";
 import { errorText, errorReason } from "../lib/errors";
@@ -542,7 +543,7 @@ export function ProjectDrawer() {
         <div className="mt-5 grid grid-cols-2 gap-3">
           <div>
             <div className={`${sectionLabel} mb-2`}>{t.stage}</div>
-            <StatusSelect value={meta.status} onChange={(status) => updateSong(project.path, { status })} />
+            <ColumnSelect path={project.path} />
           </div>
           <div>
             <div className={`${sectionLabel} mb-2`}>{t.key}</div>
@@ -994,5 +995,44 @@ function SketchPanel({ project }: { project: ProjectInfo }) {
         </div>
       )}
     </Section>
+  );
+}
+
+/** The song's column on ITS pipeline — not the five hardcoded stages.
+ *
+ * The drawer used to render STATUSES directly, so a column renamed to
+ * "Studio" or given a colour on the pipeline never showed up here: the two
+ * screens disagreed about the same song. It reads the board the song is
+ * actually on, which is not necessarily the one on screen.
+ *
+ * Picking a column sets the stage AND pins the column, the same pair a drag
+ * on the board writes, so both routes leave the song in the same place. */
+function ColumnSelect({ path }: { path: string }) {
+  const workspace = useAppStore((s) => s.workspace);
+  const updateSong = useAppStore((s) => s.updateSong);
+  const meta = workspace.songs[path];
+  const boards = resolveBoards(workspace).boards;
+  const board = boards.find((b) => b.id === boardOfSong(meta, boards)) ?? boards[0];
+  const cfg = resolvePipeline({ pipeline: board.config });
+  const current = columnOf(meta, cfg);
+
+  return (
+    <div className="flex items-center gap-2">
+      <StatusDot color={columnColor(current)} />
+      <select
+        value={current.id}
+        onChange={(e) => {
+          const next = cfg.columns.find((c) => c.id === e.target.value);
+          if (next) updateSong(path, { status: next.stage ?? undefined, column: next.id });
+        }}
+        className="flex-1 rounded border border-rule-strong bg-chassis px-2 py-1.5 text-sm text-cream focus:border-hot focus:outline-none"
+      >
+        {cfg.columns.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.name}
+          </option>
+        ))}
+      </select>
+    </div>
   );
 }

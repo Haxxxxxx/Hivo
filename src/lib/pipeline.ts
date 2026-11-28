@@ -48,6 +48,22 @@ export function columnColor(column: { stage: SongStatus | null; color?: string }
   return isColumnColor(column.color) ? column.color : stageColor(column.stage);
 }
 
+/** A column's colour as a translucent wash, for the column itself.
+ *
+ * A dot was not enough to see at a glance, which is the whole point of
+ * colouring a column. The wash is deliberately weak: System 02 panels are
+ * near-black and a solid fill would fight the cards sitting on it, so the
+ * colour reads as a tint of the panel rather than a block of paint.
+ *
+ * Returns "transparent" for anything that isn't one of COLUMN_COLORS, so a
+ * stage-coloured (uncustomised) column keeps the plain panel it has today. */
+export function columnTint(color: string | undefined, alpha: number): string {
+  if (!isColumnColor(color)) return "transparent";
+  const n = Number.parseInt(color.slice(1), 16);
+  const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 /** Sets (or clears, with null) a column's colour. Unknown colour, unknown
  * column, or no actual change: the workspace is returned untouched, so a
  * stray click never rewrites workspace.json. */

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ProjectInfo, SongMeta, Workspace } from "../types";
 import {
   DEFAULT_BOARD_ID,
+  columnTint,
   activeBoard,
   addBoard,
   COLUMN_COLORS,
@@ -355,5 +356,23 @@ describe("column colours", () => {
     const id = resolvePipeline(base).columns[0].id;
     expect(recolorColumn(base, id, null)).toBe(base);
     expect(recolorColumn(base, "nope", COLUMN_COLORS[0])).toBe(base);
+  });
+});
+
+describe("columnTint", () => {
+  it("washes a palette colour at the given strength", () => {
+    // #E8732A -> 232, 115, 42
+    expect(columnTint(COLUMN_COLORS[0], 0.18)).toBe("rgba(232, 115, 42, 0.18)");
+  });
+
+  it("is transparent for a column with no colour of its own", () => {
+    // An uncustomised column keeps the plain panel it has today.
+    expect(columnTint(undefined, 0.18)).toBe("transparent");
+  });
+
+  it("is transparent for anything off the palette", () => {
+    // Same guard as recolorColumn: no arbitrary hex reaches the UI.
+    expect(columnTint("#ff0000", 0.18)).toBe("transparent");
+    expect(columnTint(stageColor("prep"), 0.18)).toBe("transparent");
   });
 });

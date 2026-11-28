@@ -1,7 +1,7 @@
 import { createContext, useContext, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, ArrowRightLeft, ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from "lucide-react";
 import { usePipelineView, type PipelineScope, type PipelineViewKind } from "../../store/usePipelineView";
-import { cardMoves, columnColor, COLUMN_COLORS, stageLabel, STAGE_ORDER, NAME_MAX } from "../../lib/pipeline";
+import { cardMoves, columnColor, columnTint, COLUMN_COLORS, stageLabel, STAGE_ORDER, NAME_MAX } from "../../lib/pipeline";
 import type { PipelineColumn, SongStatus } from "../../types";
 import { ConfirmButton, StatusDot } from "../ui";
 import { dict, plural, tr } from "../../i18n";
@@ -450,6 +450,7 @@ export function ColumnHeader({
 
   return (
     <div
+      style={{ backgroundColor: columnTint(column.color, 0.18) }}
       draggable={source.editable && !editing}
       onDragStart={(e) => startColumnDrag(e, column.id)}
       title={source.editable && !editing ? t.dragColumns : undefined}

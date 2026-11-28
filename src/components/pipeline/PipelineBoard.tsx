@@ -4,6 +4,7 @@ import { useCollapsed, usePipelineView } from "../../store/usePipelineView";
 import { columnColor } from "../../lib/pipeline";
 import { StatusDot } from "../ui";
 import { AddColumn, beforeKeyFor, CardTitle, ColumnHeader, ConflictDot, DropLine, MoveMenu, SourceError, startSongDrag, T_PIPELINE, usePipelineDrop, useSource } from "./shared";
+import { columnTint } from "../../lib/pipeline";
 import { tr } from "../../i18n";
 
 /** Kanban: one column per pipeline column. Drag cards between and within
@@ -43,6 +44,14 @@ export function PipelineBoard() {
               onDragOver={(e) => dnd.over(e, column.id, null)}
               onDragLeave={dnd.leave}
               onDrop={(e) => dnd.drop(e, column.id, colIndex)}
+              // The colour also edges the column, so it reads down the whole
+              // height rather than only at the top. Skipped while a card is
+              // dragged over: the orange drop state has to win.
+              style={
+                active || !column.color
+                  ? undefined
+                  : { backgroundColor: columnTint(column.color, 0.07), borderColor: columnTint(column.color, 0.45) }
+              }
               className={`flex flex-col rounded-lg border ${isCollapsed ? "w-11 shrink-0" : "min-w-[190px] flex-1 basis-0"} ${
                 active ? "border-orange-400/50 bg-orange-500/[0.05]" : "border-rule bg-panel"
               }`}
