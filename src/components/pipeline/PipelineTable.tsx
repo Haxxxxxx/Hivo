@@ -5,7 +5,8 @@ import { sortBy, columnColor, stageLabel, type SortKey } from "../../lib/pipelin
 import { formatRelative } from "../../lib/format";
 import { formatBpm } from "../../lib/songs";
 import { StatusDot } from "../ui";
-import { CardTitle, ConflictDot, SourceError, T_PIPELINE, useSource, type PipelineItem } from "./shared";
+import { CardTitle, ConflictDot, SourceError, T_PIPELINE } from "./shared";
+import { useSource, type PipelineItem } from "./source";
 import type { PipelineColumn } from "../../types";
 import { tr } from "../../i18n";
 

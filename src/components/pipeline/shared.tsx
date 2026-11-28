@@ -1,6 +1,7 @@
-import { createContext, useContext, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { useRef, useState, type DragEvent } from "react";
+import { useSource, type PipelineItem, type PipelineSource } from "./source";
 import { ArrowLeft, ArrowRight, ArrowRightLeft, ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from "lucide-react";
-import { usePipelineView, type PipelineScope, type PipelineViewKind } from "../../store/usePipelineView";
+import { usePipelineView, type PipelineViewKind } from "../../store/usePipelineView";
 import { cardMoves, columnColor, columnTint, COLUMN_COLORS, stageLabel, STAGE_ORDER, NAME_MAX } from "../../lib/pipeline";
 import type { PipelineColumn, SongStatus } from "../../types";
 import { ConfirmButton, StatusDot } from "../ui";
@@ -185,78 +186,12 @@ export const T_PIPELINE = dict(
 // (src/components/pipeline/mine.tsx) or the crew's (crew.tsx). A pipeline is
 // a `PipelineSource`: its columns with their items, and what you may do.
 // One place, so the views (and the two pipelines) can't drift apart.
-
-/** One song on a pipeline, whatever it is underneath. */
-export interface PipelineItem {
-  /** Your song's .flp path, or the crew song's id. */
-  key: string;
-  title: string;
-  /** Last save, ms (0 = unknown). */
-  savedMs: number;
-  bpm: number | null;
-  musicalKey: string;
-  tags: string[];
-  /** A crewmate moved it while your move was waiting. */
-  conflict?: boolean;
-  /** The board card's body (under the title). */
-  card: ReactNode;
-  /** The list row's last cell (mixdown badge, who). */
-  extra?: ReactNode;
-  open?: () => void;
-  selected?: boolean;
-}
-
-export interface PipelineGroup {
-  column: PipelineColumn;
-  items: PipelineItem[];
-}
-
-export interface PipelineSource {
-  scope: PipelineScope;
-  groups: PipelineGroup[];
-  query: string;
-  /** Songs on the pipeline, and how many the query lets through. */
-  total: number;
-  shown: number;
-  /** Columns can be renamed, added, removed, reordered here. */
-  editable: boolean;
-  canRemove: (columnId: string) => boolean;
-  rename: (columnId: string, name: string) => void;
-  add: (name: string, stage: SongStatus | null) => void;
-  remove: (columnId: string) => void;
-  /** Separate pipelines. Absent on the crew board, whose columns live on
-   * the server and are shared by the whole crew. */
-  boards?: {
-    active: string;
-    list: { id: string; name: string }[];
-    setActive: (id: string) => void;
-    add: (name: string) => void;
-    rename: (id: string, name: string) => void;
-    remove: (id: string) => void;
-  };
-  /** Absent where columns aren't the user's to colour (the crew board:
-   * its columns live on the server and have no colour yet). */
-  recolor?: (columnId: string, color: string | null) => void;
-  moveColumn: (columnId: string, toIndex: number) => void;
-  /** Put a song in a column, before another (or at the end). */
-  moveCard: (key: string, columnId: string, beforeKey: string | null) => void;
-  /** "New song" on the Creation column (your pipeline only). */
-  newSong?: () => void;
-  /** A filter set from elsewhere (the crew board scoped to one member):
-   * what it shows, and how to lift it. */
-  scoped?: { label: string; clear: () => void } | null;
-  /** Shown above the views (a refused move, a failed save). */
-  error?: string | null;
-  clearError?: () => void;
-}
-
-const SourceContext = createContext<PipelineSource | null>(null);
-export const PipelineSourceProvider = SourceContext.Provider;
-export function useSource(): PipelineSource {
-  const s = useContext(SourceContext);
-  if (!s) throw new Error("pipeline views need a PipelineSourceProvider");
-  return s;
-}
+//
+// The source itself — its types, the context and useSource — lives in
+// ./source, and is imported from there, not re-exported through here.
+// This file exports components, so React Fast Refresh invalidates it on
+// every edit; a context created here would be a new object each time and
+// the provider would stop matching its own children. See ./source.
 
 /** The visible focus ring of a card or row reached with the keyboard. */
 export const CARD_FOCUS = "focus-visible:outline-2 focus-visible:outline-cream";

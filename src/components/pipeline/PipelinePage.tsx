@@ -4,8 +4,8 @@ import { usePipelineView, type PipelineViewKind } from "../../store/usePipelineV
 import { PipelineBoard } from "./PipelineBoard";
 import { PipelineList } from "./PipelineList";
 import { PipelineTable } from "./PipelineTable";
-import {
-  BoardSwitcher, PipelineSourceProvider, T_PIPELINE, type PipelineSource } from "./shared";
+import { BoardSwitcher, T_PIPELINE } from "./shared";
+import { PipelineSourceProvider, type PipelineSource } from "./source";
 import { tr } from "../../i18n";
 
 // A pipeline page: title, search, Board / List / Table, over a source. Your

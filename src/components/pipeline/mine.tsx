@@ -7,7 +7,7 @@ import { albumsOf, formatBpm, lastSaveMs } from "../../lib/songs";
 import type { ProjectInfo, Workspace } from "../../types";
 import { useVisibleSongs } from "../LibraryView";
 import { MixdownBadge } from "../../ui";
-import type { PipelineItem, PipelineSource } from "./shared";
+import type { PipelineItem, PipelineSource } from "./source";
 
 // Your pipeline: your songs and your columns (workspace.json).
 

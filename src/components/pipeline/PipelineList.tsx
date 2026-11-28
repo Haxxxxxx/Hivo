@@ -2,7 +2,8 @@ import { Fragment } from "react";
 import { useCollapsed } from "../../store/usePipelineView";
 import { formatRelative } from "../../lib/format";
 import { formatBpm } from "../../lib/songs";
-import { AddColumn, beforeKeyFor, CardTitle, ColumnHeader, ConflictDot, DropLine, MoveMenu, SourceError, startSongDrag, T_PIPELINE, usePipelineDrop, useSource } from "./shared";
+import { AddColumn, beforeKeyFor, CardTitle, ColumnHeader, ConflictDot, DropLine, MoveMenu, SourceError, startSongDrag, T_PIPELINE, usePipelineDrop } from "./shared";
+import { useSource } from "./source";
 import { tr } from "../../i18n";
 
 const ROW = "grid grid-cols-[minmax(0,1fr)_7rem_4.5rem_5rem_minmax(0,10rem)_7rem] items-center gap-3";

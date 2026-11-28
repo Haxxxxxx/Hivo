@@ -8,7 +8,8 @@ import { crewCreditsText, crewMixdown, nameOf, pathsByShareId } from "../../lib/
 import { songsOfMember } from "../../lib/crewStats";
 import { formatRelative } from "../../lib/format";
 import type { CrewSongRow, PipelineConfig } from "../../types";
-import { T_PIPELINE, type PipelineItem, type PipelineSource } from "./shared";
+import { T_PIPELINE } from "./shared";
+import { type PipelineItem, type PipelineSource } from "./source";
 import { tr } from "../../i18n";
 import { errorText } from "../../lib/errors";
 

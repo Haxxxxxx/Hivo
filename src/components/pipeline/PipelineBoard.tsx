@@ -3,7 +3,8 @@ import { ChevronRight } from "lucide-react";
 import { useCollapsed, usePipelineView } from "../../store/usePipelineView";
 import { columnColor } from "../../lib/pipeline";
 import { StatusDot } from "../ui";
-import { AddColumn, beforeKeyFor, CardTitle, ColumnHeader, ConflictDot, DropLine, MoveMenu, SourceError, startSongDrag, T_PIPELINE, usePipelineDrop, useSource } from "./shared";
+import { AddColumn, beforeKeyFor, CardTitle, ColumnHeader, ConflictDot, DropLine, MoveMenu, SourceError, startSongDrag, T_PIPELINE, usePipelineDrop } from "./shared";
+import { useSource } from "./source";
 import { columnTint } from "../../lib/pipeline";
 import { tr } from "../../i18n";
 
