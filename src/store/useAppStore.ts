@@ -14,6 +14,7 @@ import {
   moveColumn,
   moveSongToBoard,
   recolorColumn,
+  recolorSong,
   removeBoard,
   removeColumn,
   renameBoard,
@@ -357,6 +358,8 @@ interface AppState {
   recolorPipelineColumn: (id: string, color: string | null) => void;
   movePipelineColumn: (id: string, toIndex: number) => void;
   /** `songs` = the songs on the board (for the column's current order). */
+  /** A song's own card colour (null clears it). */
+  recolorSong: (path: string, color: string | null) => void;
   movePipelineCard: (songs: ProjectInfo[], path: string, columnId: string, beforePath: string | null) => void;
   /** Same, for a song arriving from another pipeline (spring-loaded tabs). */
   movePipelineCardFromBoard: (songs: ProjectInfo[], path: string, columnId: string, beforePath: string | null) => void;
@@ -1329,6 +1332,7 @@ export const useAppStore = create<AppState>((set, get) => {
     recolorPipelineColumn: (id, color) => mutateWorkspace((ws) => recolorColumn(ws, id, color)),
     removePipelineColumn: (id) => mutateWorkspace((ws) => removeColumn(ws, id)),
     movePipelineColumn: (id, toIndex) => mutateWorkspace((ws) => moveColumn(ws, id, toIndex)),
+    recolorSong: (path, color) => mutateWorkspace((ws) => recolorSong(ws, path, color)),
     movePipelineCard: (songs, path, columnId, beforePath) => mutateWorkspace((ws) => moveCard(ws, songs, path, columnId, beforePath)),
     movePipelineCardFromBoard: (songs, path, columnId, beforePath) =>
       mutateWorkspace((ws) => moveCardFromBoard(ws, songs, path, columnId, beforePath)),

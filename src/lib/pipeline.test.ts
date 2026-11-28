@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProjectInfo, SongMeta, Workspace } from "../types";
-import { activeBoard, addBoard, addColumn, boardOfSong, canRemoveColumn, cardMoves, COLUMN_COLORS, columnColor, columnOf, columnTint, DEFAULT_BOARD_ID, defaultPipeline, dropTakesSong, filterSongs, flatRows, groupSongs, moveCard, moveCardFromBoard, moveColumn, moveSongToBoard, pipelineEmptyState, recolorColumn, removeBoard, removeColumn, renameBoard, renameColumn, resolveBoards, resolvePipeline, setActiveBoard, sortRows, stageColor } from "./pipeline";
+import { activeBoard, addBoard, addColumn, boardOfSong, canRemoveColumn, cardMoves, COLUMN_COLORS, columnColor, columnOf, columnTint, DEFAULT_BOARD_ID, defaultPipeline, dropTakesSong, filterSongs, flatRows, groupSongs, moveCard, moveCardFromBoard, moveColumn, moveSongToBoard, pipelineEmptyState, recolorColumn, recolorSong, removeBoard, removeColumn, renameBoard, renameColumn, resolveBoards, resolvePipeline, setActiveBoard, sortRows, stageColor } from "./pipeline";
 
 const NOW = Date.UTC(2026, 9, 14);
 const song = (name: string, daysAgo = 1, bpm: number | null = null) =>
@@ -281,6 +281,33 @@ describe("separate pipelines", () => {
     const after = moveCardFromBoard(x, [song], "/p/A.flp", prep.id);
     expect(after.songs["/p/A.flp"].pipeline).toBe("beats");
     expect(columnOf(after.songs["/p/A.flp"], resolvePipeline(after)).id).toBe(prep.id);
+  });
+
+  it("gives a card its own colour, from the same palette as the columns", () => {
+    const x = recolorSong(w({ songs: { "/p/A.flp": { status: "creation" } } }), "/p/A.flp", COLUMN_COLORS[2]);
+    expect(x.songs["/p/A.flp"].color).toBe(COLUMN_COLORS[2]);
+    // Cleared, not set to a blank: an absent colour is the uncoloured card.
+    expect(recolorSong(x, "/p/A.flp", null).songs["/p/A.flp"].color).toBeUndefined();
+  });
+
+  it("leaves the workspace untouched on a colour that changes nothing", () => {
+    // Same identity back, so a stray click never rewrites workspace.json.
+    const base = w({ songs: { "/p/A.flp": { status: "creation" } } });
+    expect(recolorSong(base, "/p/A.flp", null)).toBe(base);
+    expect(recolorSong(base, "/p/missing.flp", COLUMN_COLORS[0])).toBe(base);
+    expect(recolorSong(base, "/p/A.flp", "#ff0000")).toBe(base);
+    const once = recolorSong(base, "/p/A.flp", COLUMN_COLORS[1]);
+    expect(recolorSong(once, "/p/A.flp", COLUMN_COLORS[1])).toBe(once);
+  });
+
+  it("keeps a card's colour and its column apart", () => {
+    // A column says where the song is; the colour is the user's own note.
+    // Moving it between pipelines must not wash that off.
+    let x = addBoard(w({ songs: { "/p/A.flp": { status: "creation" } } }), "Beats", "beats");
+    x = recolorSong(x, "/p/A.flp", COLUMN_COLORS[3]);
+    x = moveSongToBoard(x, "/p/A.flp", "beats");
+    expect(x.songs["/p/A.flp"].color).toBe(COLUMN_COLORS[3]);
+    expect(x.songs["/p/A.flp"].pipeline).toBe("beats");
   });
 
   it("takes a drop from the pipeline the card was dragged from", () => {

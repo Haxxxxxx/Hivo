@@ -2,7 +2,8 @@ import { Fragment } from "react";
 import { useCollapsed } from "../../store/usePipelineView";
 import { formatRelative } from "../../lib/format";
 import { formatBpm } from "../../lib/songs";
-import { AddColumn, beforeKeyFor, CardTitle, ColumnHeader, ConflictDot, DropLine, MoveMenu, SourceError, startSongDrag, T_PIPELINE, usePipelineDrop } from "./shared";
+import { AddColumn, beforeKeyFor, CardColor, CardTitle, ColumnHeader, ConflictDot, DropLine, MoveMenu, SourceError, startSongDrag, T_PIPELINE, usePipelineDrop } from "./shared";
+import { columnTint } from "../../lib/pipeline";
 import { useSource } from "./source";
 import { tr } from "../../i18n";
 
@@ -55,6 +56,13 @@ export function PipelineList() {
                         onDragStart={(e) => startSongDrag(e, item.key)}
                         onDragOver={(e) => dnd.over(e, column.id, query ? null : beforeKeyFor(e, items, i))}
                         onClick={item.open}
+                        // A row is thin, so the colour reads as a left edge
+                        // and a faint wash rather than the board's panel.
+                        style={
+                          item.color && !item.selected
+                            ? { backgroundColor: columnTint(item.color, 0.1), boxShadow: `inset 3px 0 0 ${item.color}` }
+                            : undefined
+                        }
                         className={`${ROW} group/card cursor-grab rounded px-3 py-1.5 text-sm active:cursor-grabbing ${
                           item.selected ? "bg-raised ring-1 ring-orange-400/40" : "hover:bg-raised"
                         }`}
@@ -62,6 +70,7 @@ export function PipelineList() {
                         <span className="flex min-w-0 items-center gap-1.5">
                           <CardTitle item={item} />
                           <ConflictDot on={item.conflict} />
+                          <CardColor item={item} />
                           <MoveMenu item={item} />
                         </span>
                         <span className="text-xs text-engrave">

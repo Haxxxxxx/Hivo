@@ -28,6 +28,8 @@ export interface PipelineItem {
   tags: string[];
   /** A crewmate moved it while your move was waiting. */
   conflict?: boolean;
+  /** The card's own colour, if the user gave it one. */
+  color?: string;
   /** The board card's body (under the title). */
   card: ReactNode;
   /** The list row's last cell (mixdown badge, who). */
@@ -72,6 +74,9 @@ export interface PipelineSource {
   /** Absent where columns aren't the user's to colour (the crew board:
    * its columns live on the server and have no colour yet). */
   recolor?: (columnId: string, color: string | null) => void;
+  /** Colour one card. Absent on the crew board, where a song is shared and
+   * a colour chosen here would be one person's note on someone else's. */
+  recolorCard?: (key: string, color: string | null) => void;
   moveColumn: (columnId: string, toIndex: number) => void;
   /** Put a song in a column, before another (or at the end). */
   moveCard: (key: string, columnId: string, beforeKey: string | null) => void;

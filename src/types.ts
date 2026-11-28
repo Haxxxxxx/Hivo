@@ -227,6 +227,10 @@ export interface SongMeta {
   /** The title the crew sees; empty = cleaned-up project file name. */
   shareTitle?: string;
   tags?: string[];
+  /** The card's own colour, one of COLUMN_COLORS. Independent of its
+   * column: a column groups by stage, a card's colour is whatever the
+   * user means by it (a client, a mood, an album). */
+  color?: string;
   notes?: string;
   /** Musical key, e.g. "Am", "F#". FL doesn't store one. */
   key?: string;

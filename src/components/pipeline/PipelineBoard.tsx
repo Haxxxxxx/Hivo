@@ -3,7 +3,7 @@ import { ChevronRight } from "lucide-react";
 import { useCollapsed, usePipelineView } from "../../store/usePipelineView";
 import { columnColor, pipelineEmptyState } from "../../lib/pipeline";
 import { StatusDot } from "../ui";
-import { AddColumn, beforeKeyFor, CardTitle, ColumnHeader, ConflictDot, DropLine, MoveMenu, SourceError, startSongDrag, T_PIPELINE, usePipelineDrop } from "./shared";
+import { AddColumn, beforeKeyFor, CardColor, CardTitle, ColumnHeader, ConflictDot, DropLine, MoveMenu, SourceError, startSongDrag, T_PIPELINE, usePipelineDrop } from "./shared";
 import { useSource } from "./source";
 import { columnTint } from "../../lib/pipeline";
 import { tr } from "../../i18n";
@@ -83,7 +83,10 @@ export function PipelineBoard() {
               ) : (
                 <>
                   <ColumnHeader column={column} count={items.length} view="board" collapsed={false} className="px-2.5 pb-2 pt-2.5" />
-                  <div className="flex flex-1 flex-col gap-1.5 overflow-y-auto px-2 pb-2">
+                  {/* overflow-x pinned: a column scrolls its cards up and
+                      down, never sideways. Left to itself CSS turns the
+                      other axis to auto alongside overflow-y. */}
+                  <div className="flex flex-1 flex-col gap-1.5 overflow-y-auto overflow-x-hidden px-2 pb-2">
                     {items.map((item, i) => (
                       <Fragment key={item.key}>
                         {dnd.spot?.columnId === column.id && dnd.spot.beforeKey === item.key && <DropLine />}
@@ -94,6 +97,19 @@ export function PipelineBoard() {
                             draggable
                             onDragStart={(e) => startSongDrag(e, item.key)}
                             onClick={item.open}
+                            // Its own colour washes the card and edges it on
+                            // the left, the way a column's does. Skipped while
+                            // selected: that state has to stay legible.
+                            style={
+                              item.color && !item.selected
+                                ? {
+                                    backgroundColor: columnTint(item.color, 0.12),
+                                    borderColor: columnTint(item.color, 0.5),
+                                    borderLeftWidth: 3,
+                                    borderLeftColor: item.color,
+                                  }
+                                : undefined
+                            }
                             className={`group/card cursor-grab rounded-md border px-3 py-2 active:cursor-grabbing ${
                               item.selected ? "border-orange-400/40 bg-raised" : "border-rule bg-raised hover:border-rule-strong"
                             }`}
@@ -102,6 +118,7 @@ export function PipelineBoard() {
                               <CardTitle item={item} className="text-sm" />
                               <ConflictDot on={item.conflict} />
                               <span className="ml-auto" />
+                              <CardColor item={item} />
                               <MoveMenu item={item} />
                             </div>
                             {item.card}

@@ -16,9 +16,13 @@ function Card({ song, workspace }: { song: ProjectInfo; workspace: Workspace }) 
   const tags = workspace.songs[song.path]?.tags ?? [];
   return (
     <>
-      <div className="mt-1 flex items-center gap-2 text-[11px] text-engrave">
-        <span>{formatRelative(lastSaveMs(song))}</span>
-        {song.tempoBpm && <span>· {formatBpm(song.tempoBpm)} BPM</span>}
+      {/* Wraps rather than forcing the card wider than its column. A
+          non-shrinking row here pushed past the card, and because the
+          column scrolls vertically CSS promotes the other axis to auto
+          too — so every column grew its own horizontal scrollbar. */}
+      <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[11px] text-engrave">
+        <span className="truncate">{formatRelative(lastSaveMs(song))}</span>
+        {song.tempoBpm && <span className="truncate">· {formatBpm(song.tempoBpm)} BPM</span>}
       </div>
       {(albums.length > 0 || tags.length > 0 || song.renders.length > 0) && (
         <div className="mt-1.5 flex items-center gap-1.5">
@@ -43,6 +47,7 @@ export function useMineSource(): PipelineSource {
   const add = useAppStore((s) => s.addPipelineColumn);
   const remove = useAppStore((s) => s.removePipelineColumn);
   const recolor = useAppStore((s) => s.recolorPipelineColumn);
+  const recolorCard = useAppStore((s) => s.recolorSong);
   const moveColumn = useAppStore((s) => s.movePipelineColumn);
   const moveCard = useAppStore((s) => s.movePipelineCard);
   const moveCardFromBoard = useAppStore((s) => s.movePipelineCardFromBoard);
@@ -70,6 +75,7 @@ export function useMineSource(): PipelineSource {
         musicalKey: meta?.key ?? "",
         tags: meta?.tags ?? [],
         conflict: !!meta?.stageConflict,
+        color: meta?.color,
         card: <Card song={song} workspace={workspace} />,
         extra: song.renders.length > 0 ? <MixdownBadge project={song} compact /> : null,
         open: () => openDetail(detailPath === song.path ? null : song.path),
@@ -88,6 +94,7 @@ export function useMineSource(): PipelineSource {
       boards: { active, list: boards.map((b) => ({ id: b.id, name: b.name })), setActive: setActiveBoardAction, add: addBoardAction, rename: renameBoardAction, remove: removeBoardAction },
       moveToBoard: moveSongToBoardAction,
       knownSongs: songs.map((s) => s.path),
+      recolorCard,
       canRemove: (id) => canRemoveColumn(cfg, id),
       rename,
       add,
@@ -107,5 +114,5 @@ export function useMineSource(): PipelineSource {
       },
       newSong: () => openNewProject({ status: "creation" }),
     } satisfies PipelineSource;
-  }, [songs, workspace, query, detailPath, openDetail, openNewProject, rename, add, remove, moveColumn, moveCard, setActiveBoardAction, addBoardAction, renameBoardAction, removeBoardAction, moveSongToBoardAction, moveCardFromBoard, recolor]);
+  }, [songs, workspace, query, detailPath, openDetail, openNewProject, rename, add, remove, moveColumn, moveCard, setActiveBoardAction, addBoardAction, renameBoardAction, removeBoardAction, moveSongToBoardAction, moveCardFromBoard, recolor, recolorCard]);
 }

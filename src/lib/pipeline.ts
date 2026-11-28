@@ -281,6 +281,20 @@ export function pipelineEmptyState(p: { total: number; libraryTotal?: number; qu
   return (p.libraryTotal ?? p.total) === 0 ? "library" : "board";
 }
 
+/** Sets (or clears, with null) a song's own colour.
+ *
+ * Same palette as the columns, on purpose: two colour vocabularies on one
+ * board would be read as meaning two different things. Unknown colour,
+ * unknown song, or no actual change leaves the workspace untouched, so a
+ * stray click never rewrites workspace.json. */
+export function recolorSong(ws: Workspace, path: string, color: string | null): Workspace {
+  if (color !== null && !isColumnColor(color)) return ws;
+  const meta = ws.songs[path];
+  if (!meta || (meta.color ?? null) === color) return ws;
+  const { color: _drop, ...rest } = meta;
+  return { ...ws, songs: { ...ws.songs, [path]: color === null ? rest : { ...rest, color } } };
+}
+
 /** Does a drop carrying `key` belong on this pipeline?
  *
  * It guards against dropped text, links or files being read as a song

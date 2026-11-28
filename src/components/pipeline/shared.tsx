@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type DragEvent } from "react";
 import { useSource, type PipelineItem, type PipelineSource } from "./source";
-import { ArrowLeft, ArrowRight, ArrowRightLeft, ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, ArrowRightLeft, ChevronDown, ChevronRight, Palette, Pencil, Plus, Trash2, X } from "lucide-react";
 import { usePipelineView, type PipelineViewKind } from "../../store/usePipelineView";
 import { cardMoves, columnColor, columnTint, COLUMN_COLORS, dropTakesSong, stageLabel, STAGE_ORDER, NAME_MAX } from "../../lib/pipeline";
 import type { PipelineColumn, SongStatus } from "../../types";
@@ -96,6 +96,8 @@ export const T_PIPELINE = dict(
     moveMenu: (title: string) => `Move ${title}`,
     moveTo: "Move to…",
     toPipeline: "To pipeline",
+    colorOfCard: (name: string) => `Colour of ${name}`,
+    noColour: "No colour",
     dropOnPipeline: (name: string) => `Hold a song here to open ${name}, or drop it to send it straight there`,
     moveUp: "Move up",
     moveDown: "Move down",
@@ -181,6 +183,8 @@ export const T_PIPELINE = dict(
     moveMenu: (title: string) => `Déplacer ${title}`,
     moveTo: "Déplacer vers…",
     toPipeline: "Vers le pipeline",
+    colorOfCard: (name: string) => `Couleur de ${name}`,
+    noColour: "Sans couleur",
     dropOnPipeline: (name: string) => `Garde un son ici pour ouvrir ${name}, ou dépose-le pour l'y envoyer directement`,
     moveUp: "Monter",
     moveDown: "Descendre",
@@ -219,6 +223,71 @@ export function CardTitle({ item, className = "" }: { item: PipelineItem; classN
     >
       {item.title}
     </button>
+  );
+}
+
+/** One card's colour: a dot that opens the same palette the columns use.
+ *
+ * A column says WHERE a song is; a card's colour is whatever its owner
+ * means by it — a client, a mood, a record. It is never the only thing
+ * carrying that meaning, since the title sits right beside it, and it is
+ * drawn as a wash rather than a fill so a coloured card still reads as a
+ * card on a near-black panel.
+ *
+ * Nothing shows until a colour is picked: an empty slot on every card
+ * would be noise on a board whose whole job is to be scanned. */
+export function CardColor({ item }: { item: PipelineItem }) {
+  const source = useSource();
+  const [open, setOpen] = useState(false);
+  const t = tr(T_PIPELINE);
+  const recolor = source.recolorCard;
+  if (!recolor) return null;
+
+  return (
+    <span className="relative flex shrink-0 items-center" onClick={(e) => e.stopPropagation()}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-label={t.colorOfCard(item.title)}
+        aria-expanded={open}
+        className={`flex items-center rounded p-0.5 hover:bg-rule ${
+          item.color ? "" : "opacity-40 group-hover/card:opacity-100 group-focus-within/card:opacity-100"
+        }`}
+      >
+        {item.color ? (
+          <StatusDot color={item.color} />
+        ) : (
+          <Palette size={12} aria-hidden className="text-engrave" />
+        )}
+      </button>
+      {open && (
+        <span
+          className="absolute right-0 top-5 z-20 flex flex-wrap items-center gap-1 rounded border border-rule-strong bg-raised p-1.5 shadow-lg"
+          onMouseLeave={() => setOpen(false)}
+        >
+          {COLUMN_COLORS.map((c) => (
+            <button
+              key={c}
+              onClick={() => {
+                recolor(item.key, c);
+                setOpen(false);
+              }}
+              aria-label={c}
+              style={{ background: c }}
+              className={`h-4 w-4 rounded-full ${item.color === c ? "ring-2 ring-cream" : ""}`}
+            />
+          ))}
+          <button
+            onClick={() => {
+              recolor(item.key, null);
+              setOpen(false);
+            }}
+            className="rounded border border-dashed border-rule-strong px-1.5 py-0.5 text-[10px] text-engrave hover:text-cream"
+          >
+            {t.noColour}
+          </button>
+        </span>
+      )}
+    </span>
   );
 }
 
