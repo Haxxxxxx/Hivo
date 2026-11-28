@@ -294,3 +294,26 @@ describe("separate pipelines", () => {
     expect(x.pipeline?.columns.find((c) => c.stage === "production")!.name).toBe("Studio");
   });
 });
+
+describe("a new pipeline's columns", () => {
+  it("starts with the default column per stage", () => {
+    let x = addBoard(ws(), "Prods", "prods");
+    x = setActiveBoard(x, "prods");
+    const cfg = resolvePipeline(x);
+    expect(cfg.columns.map((c) => c.stage)).toEqual(defaultPipeline().columns.map((c) => c.stage));
+    expect(cfg.columns.map((c) => c.name)).toEqual(defaultPipeline().columns.map((c) => c.name));
+  });
+
+  it("switches to the pipeline it just created", () => {
+    // Being left on the old board reads as nothing having happened.
+    const x = addBoard(ws(), "Prods", "prods");
+    expect(activeBoard(x).id).toBe("prods");
+  });
+
+  it("does not inherit another pipeline's renamed columns", () => {
+    let x = renameColumn(ws(), "production", "Studio");
+    x = addBoard(x, "Prods", "prods");
+    x = setActiveBoard(x, "prods");
+    expect(resolvePipeline(x).columns.map((c) => c.name)).not.toContain("Studio");
+  });
+});

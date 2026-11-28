@@ -86,9 +86,13 @@ export function setActiveBoard(ws: Workspace, id: string): Workspace {
 
 export function addBoard(ws: Workspace, name: string, id = newId()): Workspace {
   const clean = cleanName(name);
-  const { active, boards } = resolveBoards(ws);
+  const { boards } = resolveBoards(ws);
   if (!clean || boards.some((b) => b.id === id)) return ws;
-  return { ...ws, pipelines: { active, boards: [...boards, { id, name: clean, config: defaultPipeline() }] } };
+  const config = defaultPipeline();
+  // Switches to it. Creating a pipeline and being left on the old one reads
+  // as nothing having happened — and the new board looks like it has the
+  // wrong columns, because you are still looking at the previous one.
+  return { ...ws, pipeline: config, pipelines: { active: id, boards: [...boards, { id, name: clean, config }] } };
 }
 
 export function renameBoard(ws: Workspace, id: string, name: string): Workspace {
