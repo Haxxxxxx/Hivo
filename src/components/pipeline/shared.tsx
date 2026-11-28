@@ -69,6 +69,8 @@ export const T_PIPELINE = dict(
     // Bits
     conflict: "A crewmate moved this song on the crew board too: open it to choose",
     conflictLabel: "Stage conflict",
+    crewMoved: (stage: string) => `The crew moved this to ${stage}. It stays where you filed it until you move it.`,
+    crewMovedLabel: (stage: string) => `Crew stage: ${stage}`,
     // Crew cards
     you: "You",
     crewmate: "Crewmate",
@@ -145,6 +147,8 @@ export const T_PIPELINE = dict(
     cancel: "Annuler",
     conflict: "Quelqu'un du crew a aussi déplacé ce son sur le tableau du crew : ouvre-le pour choisir",
     conflictLabel: "Conflit d'étape",
+    crewMoved: (stage: string) => `Le crew l'a déplacé vers ${stage}. Il reste où tu l'as rangé tant que tu ne le déplaces pas.`,
+    crewMovedLabel: (stage: string) => `Étape du crew\u202f: ${stage}`,
     you: "Toi",
     crewmate: "Membre du crew",
     savedAgo: (when: string) => `enregistré ${when}`,
@@ -182,6 +186,9 @@ export interface PipelineItem {
   tags: string[];
   /** A crewmate moved it while your move was waiting. */
   conflict?: boolean;
+  /** The crew moved this song to another stage and you haven't followed:
+   * the stage they put it in. The card stays where you filed it. */
+  crewMoved?: SongStatus | null;
   /** The board card's body (under the title). */
   card: ReactNode;
   /** The list row's last cell (mixdown badge, who). */
@@ -579,6 +586,25 @@ export function AddColumn({ compact = false }: { compact?: boolean }) {
 }
 
 // ---- Bits ----
+
+/** "The crew put this in another stage". Not a conflict: nothing is waiting
+ * to be resolved, your board simply shows your own filing while the crew's
+ * stage differs. The stage NAME is in the label, so the mark is never the
+ * only thing carrying it. */
+export function CrewMovedMark({ stage }: { stage?: SongStatus | null }) {
+  if (!stage) return null;
+  const t = tr(T_PIPELINE);
+  const label = stageLabel(stage);
+  return (
+    <span
+      title={t.crewMoved(label)}
+      aria-label={t.crewMovedLabel(label)}
+      className="shrink-0 rounded border border-rule-strong px-1 text-[10px] leading-4 text-engrave"
+    >
+      {label}
+    </span>
+  );
+}
 
 export function ConflictDot({ on }: { on?: boolean }) {
   if (!on) return null;

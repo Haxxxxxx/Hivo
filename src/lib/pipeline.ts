@@ -77,8 +77,27 @@ export function resolvePipeline(ws: Pick<Workspace, "pipeline">): PipelineConfig
  * crewmate), else the first column of its stage. */
 export function columnOf(meta: SongMeta | undefined, cfg: PipelineConfig): PipelineColumn {
   const stage = meta?.status ?? null;
-  const pinned = meta?.column ? cfg.columns.find((c) => c.id === meta.column && c.stage === stage) : undefined;
+  // A crewmate moving a shared song on the crew board changes its STAGE. It
+  // used to also move the card on your own pipeline, because the pin was
+  // dropped as soon as its column's stage stopped matching — so someone
+  // else's move silently refiled your board.
+  //
+  // The pin now survives that. The song stays where you put it and the card
+  // is marked instead (crewMoved on the board, CrewMoveNote in the drawer),
+  // so the crew's stage and your filing can disagree visibly until you
+  // choose. Your own move clears stageMovedBy (see moveCard), so moving the
+  // card yourself re-pins it the normal way.
+  const fromCrew = !!meta?.stageMovedBy;
+  const pinned = meta?.column ? cfg.columns.find((c) => c.id === meta.column && (fromCrew || c.stage === stage)) : undefined;
   return pinned ?? cfg.columns.find((c) => c.stage === stage)!;
+}
+
+/** The song sits in a column of a different stage because the crew moved it
+ * there and you haven't followed: what to tell the user, or null. */
+export function crewMovedAway(meta: SongMeta | undefined, column: PipelineColumn): SongStatus | null {
+  if (!meta?.stageMovedBy) return null;
+  const stage = meta.status ?? null;
+  return column.stage === stage ? null : ((stage ?? null) as SongStatus | null);
 }
 
 /** Hand-sorted songs first (in that order), then the rest, most recently saved first. */

@@ -3,7 +3,7 @@ import { ChevronRight } from "lucide-react";
 import { useCollapsed, usePipelineView } from "../../store/usePipelineView";
 import { stageColor } from "../../lib/pipeline";
 import { StatusDot } from "../ui";
-import { AddColumn, beforeKeyFor, CardTitle, ColumnHeader, ConflictDot, DropLine, MoveMenu, SourceError, startSongDrag, T_PIPELINE, usePipelineDrop, useSource } from "./shared";
+import { AddColumn, beforeKeyFor, CardTitle, ColumnHeader, CrewMovedMark, ConflictDot, DropLine, MoveMenu, SourceError, startSongDrag, T_PIPELINE, usePipelineDrop, useSource } from "./shared";
 import { tr } from "../../i18n";
 
 /** Kanban: one column per pipeline column. Drag cards between and within
@@ -80,6 +80,7 @@ export function PipelineBoard() {
                             <div className="flex items-center gap-1.5">
                               <CardTitle item={item} className="text-sm" />
                               <ConflictDot on={item.conflict} />
+                              <CrewMovedMark stage={item.crewMoved} />
                               <span className="ml-auto" />
                               <MoveMenu item={item} />
                             </div>

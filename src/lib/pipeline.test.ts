@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { ProjectInfo, Workspace } from "../types";
+import type { ProjectInfo, SongMeta, SongStatus, Workspace } from "../types";
 import {
   addColumn,
+  columnOf,
+  crewMovedAway,
   canRemoveColumn,
   cardMoves,
-  columnOf,
   defaultPipeline,
   filterSongs,
   flatRows,
@@ -210,5 +211,37 @@ describe("cardMoves", () => {
 
   it("knows nothing about a card that isn't on the board", () => {
     expect(cardMoves(groups, "nope")).toEqual([]);
+  });
+});
+
+describe("a crewmate's move does not refile your board", () => {
+  const cfg = () => resolvePipeline(ws());
+  const colFor = (stage: SongStatus | null) => cfg().columns.find((c) => c.stage === stage)!;
+
+  it("keeps your column when the crew changed the stage", () => {
+    const mine = colFor("production");
+    // You filed it under a Production column; a crewmate moved it to Release.
+    const meta = { status: "release", column: mine.id, stageMovedBy: "someone-else", shared: true } as SongMeta;
+    expect(columnOf(meta, cfg()).id).toBe(mine.id);
+  });
+
+  it("says which stage the crew moved it to", () => {
+    const mine = colFor("production");
+    const meta = { status: "release", column: mine.id, stageMovedBy: "someone-else" } as SongMeta;
+    expect(crewMovedAway(meta, mine)).toBe("release");
+  });
+
+  it("says nothing once your column matches again", () => {
+    const col = colFor("release");
+    const meta = { status: "release", column: col.id, stageMovedBy: "someone-else" } as SongMeta;
+    expect(crewMovedAway(meta, col)).toBeNull();
+  });
+
+  it("still follows the stage when the move was yours", () => {
+    // moveCard clears stageMovedBy, so your own move must refile normally.
+    const mine = colFor("production");
+    const meta = { status: "release", column: mine.id } as SongMeta;
+    expect(columnOf(meta, cfg()).stage).toBe("release");
+    expect(crewMovedAway(meta, mine)).toBeNull();
   });
 });
