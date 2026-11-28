@@ -1,4 +1,5 @@
-import type { PipelineColumn, PipelineConfig, ProjectInfo, SongMeta, SongStatus, Workspace } from "../types";
+import type { PipelineBoard, PipelineColumn, PipelineConfig, ProjectInfo, SongMeta, SongStatus, Workspace } from "../types";
+import { dict, tr } from "../i18n";
 import { STATUSES, UNSORTED, lastSaveMs, newId, stageNames } from "./songs";
 
 // The pipeline: ONE model behind the board, the list and the table.
@@ -34,13 +35,105 @@ export function defaultPipeline(): PipelineConfig {
   return { columns: STAGE_ORDER.map((stage) => ({ id: stage ?? "unsorted", name: stageLabel(stage), stage })), order: {} };
 }
 
+const T_BOARD = dict({ firstBoard: "Songs" }, { firstBoard: "Sons" });
+
+/** The id a workspace from before pipelines existed is migrated onto. */
+export const DEFAULT_BOARD_ID = "default";
+
+function defaultBoardName(): string {
+  return tr(T_BOARD).firstBoard;
+}
+
+/** Every pipeline, repaired, with a pre-boards workspace migrated in.
+ *
+ * Never empty and `active` always names a real board: a workspace that lost
+ * its boards must still show the songs, not a blank screen. */
+export function resolveBoards(ws: Pick<Workspace, "pipeline" | "pipelines">): { active: string; boards: PipelineBoard[] } {
+  const stored = ws.pipelines;
+  const boards: PipelineBoard[] = [];
+  const seen = new Set<string>();
+  for (const b of Array.isArray(stored?.boards) ? stored.boards : []) {
+    if (!b || typeof b.id !== "string" || !b.id || seen.has(b.id)) continue;
+    seen.add(b.id);
+    boards.push({ id: b.id, name: cleanName(b.name) || defaultBoardName(), config: b.config ?? defaultPipeline() });
+  }
+  if (boards.length === 0) {
+    // Pre-boards workspace: its single pipeline becomes the first board, so
+    // nothing the user arranged is lost.
+    boards.push({ id: DEFAULT_BOARD_ID, name: defaultBoardName(), config: ws.pipeline ?? defaultPipeline() });
+  }
+  const active = boards.some((b) => b.id === stored?.active) ? stored!.active : boards[0].id;
+  return { active, boards };
+}
+
+export function activeBoard(ws: Pick<Workspace, "pipeline" | "pipelines">): PipelineBoard {
+  const { active, boards } = resolveBoards(ws);
+  return boards.find((b) => b.id === active) ?? boards[0];
+}
+
+/** The board a song belongs to: its own, or the first one for every song
+ * that predates pipelines. */
+export function boardOfSong(meta: SongMeta | undefined, boards: PipelineBoard[]): string {
+  const id = meta?.pipeline;
+  return id && boards.some((b) => b.id === id) ? id : boards[0].id;
+}
+
+export function setActiveBoard(ws: Workspace, id: string): Workspace {
+  const { active, boards } = resolveBoards(ws);
+  if (id === active || !boards.some((b) => b.id === id)) return ws;
+  return { ...ws, pipeline: boards.find((b) => b.id === id)!.config, pipelines: { active: id, boards } };
+}
+
+export function addBoard(ws: Workspace, name: string, id = newId()): Workspace {
+  const clean = cleanName(name);
+  const { active, boards } = resolveBoards(ws);
+  if (!clean || boards.some((b) => b.id === id)) return ws;
+  return { ...ws, pipelines: { active, boards: [...boards, { id, name: clean, config: defaultPipeline() }] } };
+}
+
+export function renameBoard(ws: Workspace, id: string, name: string): Workspace {
+  const clean = cleanName(name);
+  const { active, boards } = resolveBoards(ws);
+  if (!clean || !boards.some((b) => b.id === id)) return ws;
+  return { ...ws, pipelines: { active, boards: boards.map((b) => (b.id === id ? { ...b, name: clean } : b)) } };
+}
+
+/** Removes a pipeline. Its songs move to the first remaining one rather than
+ * disappearing, and the last pipeline can never be removed. */
+export function removeBoard(ws: Workspace, id: string): Workspace {
+  const { active, boards } = resolveBoards(ws);
+  if (boards.length < 2 || !boards.some((b) => b.id === id)) return ws;
+  const left = boards.filter((b) => b.id !== id);
+  const home = left[0].id;
+  const songs: Record<string, SongMeta> = {};
+  for (const [path, meta] of Object.entries(ws.songs)) {
+    songs[path] = meta?.pipeline === id ? { ...meta, pipeline: home } : meta;
+  }
+  const nextActive = active === id ? home : active;
+  return { ...ws, songs, pipeline: left.find((b) => b.id === nextActive)!.config, pipelines: { active: nextActive, boards: left } };
+}
+
+/** Puts a song on another pipeline. Its column pin is dropped: column ids
+ * belong to the board it left, so keeping it would pin the card to a column
+ * that doesn't exist here. */
+export function moveSongToBoard(ws: Workspace, path: string, id: string): Workspace {
+  const { boards } = resolveBoards(ws);
+  const meta = ws.songs[path];
+  if (!meta || !boards.some((b) => b.id === id) || boardOfSong(meta, boards) === id) return ws;
+  const { column: _drop, ...rest } = meta;
+  return { ...ws, songs: { ...ws.songs, [path]: { ...rest, pipeline: id } } };
+}
+
 const stageIndex = (stage: SongStatus | null) => STAGE_ORDER.indexOf(stage);
 
 /** The workspace's pipeline, repaired: bad or duplicate columns dropped,
  * names cleaned, and any stage left without a column gets its default one
  * back (in lifecycle position), so no song can ever fall off the board. */
-export function resolvePipeline(ws: Pick<Workspace, "pipeline">): PipelineConfig {
-  const stored = ws.pipeline;
+export function resolvePipeline(ws: Pick<Workspace, "pipeline" | "pipelines">): PipelineConfig {
+  // The ACTIVE board's columns. Every column mutator goes through here and
+  // withPipeline(), so they all act on the pipeline the user is looking at
+  // without knowing boards exist.
+  const stored = activeBoard(ws).config;
   if (!stored || !Array.isArray(stored.columns)) return defaultPipeline();
   const seen = new Set<string>();
   const columns: PipelineColumn[] = [];
@@ -184,7 +277,13 @@ export function sortRows(rows: PipelineRow[], key: SortKey, dir: 1 | -1, ws: Wor
 
 // ---- Edits (pure: workspace in, workspace out) ----
 
-const withPipeline = (ws: Workspace, cfg: PipelineConfig): Workspace => ({ ...ws, pipeline: cfg });
+const withPipeline = (ws: Workspace, cfg: PipelineConfig): Workspace => {
+  const { active, boards } = resolveBoards(ws);
+  const next = boards.map((b) => (b.id === active ? { ...b, config: cfg } : b));
+  // `pipeline` is kept mirroring the active board so an older build still
+  // opens this workspace with a real board rather than an empty one.
+  return { ...ws, pipeline: cfg, pipelines: { active, boards: next } };
+};
 
 export function renameColumn(ws: Workspace, id: string, name: string): Workspace {
   const clean = cleanName(name);

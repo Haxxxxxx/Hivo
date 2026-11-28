@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useAppStore } from "../../store/useAppStore";
 import { usePipelineView } from "../../store/usePipelineView";
-import { canRemoveColumn, filterSongs, groupSongs, resolvePipeline } from "../../lib/pipeline";
+import { boardOfSong, canRemoveColumn, filterSongs, groupSongs, resolveBoards, resolvePipeline } from "../../lib/pipeline";
 import { formatRelative } from "../../lib/format";
 import { albumsOf, formatBpm, lastSaveMs } from "../../lib/songs";
 import type { ProjectInfo, Workspace } from "../../types";
@@ -44,10 +44,19 @@ export function useMineSource(): PipelineSource {
   const remove = useAppStore((s) => s.removePipelineColumn);
   const moveColumn = useAppStore((s) => s.movePipelineColumn);
   const moveCard = useAppStore((s) => s.movePipelineCard);
+  const setActiveBoardAction = useAppStore((s) => s.setActivePipelineBoard);
+  const addBoardAction = useAppStore((s) => s.addPipelineBoard);
+  const renameBoardAction = useAppStore((s) => s.renamePipelineBoard);
+  const removeBoardAction = useAppStore((s) => s.removePipelineBoard);
   const query = usePipelineView((s) => s.query.mine);
 
   return useMemo(() => {
     const cfg = resolvePipeline(workspace);
+    // Each pipeline shows only its own songs. Anything from before
+    // pipelines existed has no board and belongs to the first one, so it
+    // stays visible instead of disappearing on upgrade.
+    const { active, boards } = resolveBoards(workspace);
+    const onThisBoard = songs.filter((s) => boardOfSong(workspace.songs[s.path], boards) === active);
     const item = (song: ProjectInfo): PipelineItem => {
       const meta = workspace.songs[song.path];
       return {
@@ -64,22 +73,24 @@ export function useMineSource(): PipelineSource {
         selected: detailPath === song.path,
       };
     };
-    const shown = filterSongs(songs, workspace, query);
+    const shown = filterSongs(onThisBoard, workspace, query);
     return {
       scope: "mine",
       query,
-      total: songs.length,
+      total: onThisBoard.length,
       shown: shown.length,
       editable: true,
       groups: groupSongs(shown, workspace, cfg).map((g) => ({ column: g.column, items: g.songs.map(item) })),
+      boards: { active, list: boards.map((b) => ({ id: b.id, name: b.name })), setActive: setActiveBoardAction, add: addBoardAction, rename: renameBoardAction, remove: removeBoardAction },
       canRemove: (id) => canRemoveColumn(cfg, id),
       rename,
       add,
       remove,
       moveColumn,
-      // The board's full song list, so hidden (filtered) songs keep their order.
-      moveCard: (key, columnId, beforeKey) => moveCard(songs, key, columnId, beforeKey),
+      // This pipeline's full song list, so hidden (filtered) songs keep
+      // their order and a move never reorders another board.
+      moveCard: (key, columnId, beforeKey) => moveCard(onThisBoard, key, columnId, beforeKey),
       newSong: () => openNewProject({ status: "creation" }),
     } satisfies PipelineSource;
-  }, [songs, workspace, query, detailPath, openDetail, openNewProject, rename, add, remove, moveColumn, moveCard]);
+  }, [songs, workspace, query, detailPath, openDetail, openNewProject, rename, add, remove, moveColumn, moveCard, setActiveBoardAction, addBoardAction, renameBoardAction, removeBoardAction]);
 }

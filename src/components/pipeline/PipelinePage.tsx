@@ -4,7 +4,8 @@ import { usePipelineView, type PipelineViewKind } from "../../store/usePipelineV
 import { PipelineBoard } from "./PipelineBoard";
 import { PipelineList } from "./PipelineList";
 import { PipelineTable } from "./PipelineTable";
-import { PipelineSourceProvider, T_PIPELINE, type PipelineSource } from "./shared";
+import {
+  BoardSwitcher, PipelineSourceProvider, T_PIPELINE, type PipelineSource } from "./shared";
 import { tr } from "../../i18n";
 
 // A pipeline page: title, search, Board / List / Table, over a source. Your
@@ -44,6 +45,7 @@ export function PipelinePage({ title, sub, source, empty }: { title: string; sub
             </button>
           )}
         </label>
+        <BoardSwitcher />
         <div className="flex rounded-md border border-rule p-0.5 text-xs" role="tablist" aria-label={t.viewLabel}>
           {VIEWS.map(({ id, icon: Icon }) => (
             <button

@@ -5,7 +5,18 @@ import * as updater from "../lib/updater";
 import { generateSampleProjects, generateSampleWorkspace } from "../lib/sampleData";
 import { ALBUM_COLORS, EMPTY_WORKSPACE, migrateWorkspace, newId, newerWorkspaceVersion } from "../lib/songs";
 import { logStageChanges } from "../lib/stageLog";
-import { addColumn, moveCard, moveColumn, removeColumn, renameColumn } from "../lib/pipeline";
+import {
+  addBoard,
+  addColumn,
+  moveCard,
+  moveColumn,
+  moveSongToBoard,
+  removeBoard,
+  removeColumn,
+  renameBoard,
+  renameColumn,
+  setActiveBoard,
+} from "../lib/pipeline";
 import type { DashboardLayout } from "../lib/dashboardLayout";
 import { applyRelinks, emptyScanMemory, isUnder, nextSettledOrphans, relinksAfterScan, rootRelinks, type Relink, type ScanMemory } from "../lib/relink";
 import { setNote } from "../lib/notes";
@@ -331,6 +342,12 @@ interface AppState {
   renamePipelineColumn: (id: string, name: string) => void;
   addPipelineColumn: (name: string, stage: SongStatus | null) => void;
   removePipelineColumn: (id: string) => void;
+  /** Separate pipelines (beats, songs…). */
+  addPipelineBoard: (name: string) => void;
+  renamePipelineBoard: (id: string, name: string) => void;
+  removePipelineBoard: (id: string) => void;
+  setActivePipelineBoard: (id: string) => void;
+  moveSongToPipelineBoard: (path: string, id: string) => void;
   movePipelineColumn: (id: string, toIndex: number) => void;
   /** `songs` = the songs on the board (for the column's current order). */
   movePipelineCard: (songs: ProjectInfo[], path: string, columnId: string, beforePath: string | null) => void;
@@ -1293,6 +1310,11 @@ export const useAppStore = create<AppState>((set, get) => {
 
     renamePipelineColumn: (id, name) => mutateWorkspace((ws) => renameColumn(ws, id, name)),
     addPipelineColumn: (name, stage) => mutateWorkspace((ws) => addColumn(ws, name, stage)),
+    addPipelineBoard: (name) => mutateWorkspace((ws) => addBoard(ws, name)),
+    renamePipelineBoard: (id, name) => mutateWorkspace((ws) => renameBoard(ws, id, name)),
+    removePipelineBoard: (id) => mutateWorkspace((ws) => removeBoard(ws, id)),
+    setActivePipelineBoard: (id) => mutateWorkspace((ws) => setActiveBoard(ws, id)),
+    moveSongToPipelineBoard: (path, id) => mutateWorkspace((ws) => moveSongToBoard(ws, path, id)),
     removePipelineColumn: (id) => mutateWorkspace((ws) => removeColumn(ws, id)),
     movePipelineColumn: (id, toIndex) => mutateWorkspace((ws) => moveColumn(ws, id, toIndex)),
     movePipelineCard: (songs, path, columnId, beforePath) => mutateWorkspace((ws) => moveCard(ws, songs, path, columnId, beforePath)),

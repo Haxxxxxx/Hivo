@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
-import type { ProjectInfo, Workspace } from "../types";
+import type { ProjectInfo, SongMeta, Workspace } from "../types";
 import {
+  DEFAULT_BOARD_ID,
+  activeBoard,
+  addBoard,
   addColumn,
+  boardOfSong,
+  moveSongToBoard,
+  removeBoard,
+  renameBoard,
+  resolveBoards,
+  setActiveBoard,
   canRemoveColumn,
   cardMoves,
   columnOf,
@@ -210,5 +219,78 @@ describe("cardMoves", () => {
 
   it("knows nothing about a card that isn't on the board", () => {
     expect(cardMoves(groups, "nope")).toEqual([]);
+  });
+});
+
+describe("separate pipelines", () => {
+  const w = (over: Partial<Workspace> = {}): Workspace => ({ ...ws(), ...over }) as Workspace;
+
+  it("migrates a workspace from before pipelines existed", () => {
+    // The single pipeline the user already arranged becomes board one —
+    // losing their columns on upgrade would be unforgivable.
+    const legacy = renameColumn(ws(), "production", "Studio");
+    const { active, boards } = resolveBoards(legacy);
+    expect(boards).toHaveLength(1);
+    expect(boards[0].id).toBe(DEFAULT_BOARD_ID);
+    expect(active).toBe(DEFAULT_BOARD_ID);
+    expect(boards[0].config.columns.find((c) => c.stage === "production")!.name).toBe("Studio");
+  });
+
+  it("never returns an empty set, or an active id that isn't there", () => {
+    const broken = w({ pipelines: { active: "ghost", boards: [] } });
+    const { active, boards } = resolveBoards(broken);
+    expect(boards.length).toBeGreaterThan(0);
+    expect(boards.some((b) => b.id === active)).toBe(true);
+  });
+
+  it("adds, renames and switches", () => {
+    let x = addBoard(ws(), "Beats", "beats");
+    expect(resolveBoards(x).boards.map((b) => b.name)).toContain("Beats");
+    x = renameBoard(x, "beats", "Instrus");
+    expect(resolveBoards(x).boards.find((b) => b.id === "beats")!.name).toBe("Instrus");
+    x = setActiveBoard(x, "beats");
+    expect(activeBoard(x).id).toBe("beats");
+  });
+
+  it("edits columns on the ACTIVE pipeline only", () => {
+    // The whole seam: every column mutator goes through resolvePipeline and
+    // withPipeline, so it must land on the board being looked at.
+    let x = addBoard(ws(), "Beats", "beats");
+    x = setActiveBoard(x, "beats");
+    x = renameColumn(x, "production", "Drums");
+    const boards = resolveBoards(x).boards;
+    expect(boards.find((b) => b.id === "beats")!.config.columns.find((c) => c.stage === "production")!.name).toBe("Drums");
+    expect(boards.find((b) => b.id === DEFAULT_BOARD_ID)!.config.columns.find((c) => c.stage === "production")!.name).not.toBe("Drums");
+  });
+
+  it("puts songs from before pipelines on the first board", () => {
+    const boards = resolveBoards(ws()).boards;
+    expect(boardOfSong(undefined, boards)).toBe(boards[0].id);
+    expect(boardOfSong({ pipeline: "ghost" } as SongMeta, boards)).toBe(boards[0].id);
+  });
+
+  it("moves a song to another pipeline and drops its column pin", () => {
+    // Column ids belong to the board it left; keeping the pin would point
+    // at a column that doesn't exist on the new board.
+    let x = addBoard(w({ songs: { "/p/A.flp": { status: "production", column: "production" } } }), "Beats", "beats");
+    x = moveSongToBoard(x, "/p/A.flp", "beats");
+    expect(x.songs["/p/A.flp"].pipeline).toBe("beats");
+    expect(x.songs["/p/A.flp"].column).toBeUndefined();
+  });
+
+  it("keeps the last pipeline, and rehomes songs when one goes", () => {
+    let x = addBoard(w({ songs: { "/p/A.flp": { status: "production" } } }), "Beats", "beats");
+    x = moveSongToBoard(x, "/p/A.flp", "beats");
+    x = removeBoard(x, "beats");
+    // The song came back rather than vanishing with its board.
+    expect(resolveBoards(x).boards).toHaveLength(1);
+    expect(x.songs["/p/A.flp"].pipeline).toBe(DEFAULT_BOARD_ID);
+    // And the one remaining board cannot be removed.
+    expect(removeBoard(x, DEFAULT_BOARD_ID)).toBe(x);
+  });
+
+  it("still writes the legacy field, so an older build opens fine", () => {
+    const x = renameColumn(addBoard(ws(), "Beats", "beats"), "production", "Studio");
+    expect(x.pipeline?.columns.find((c) => c.stage === "production")!.name).toBe("Studio");
   });
 });

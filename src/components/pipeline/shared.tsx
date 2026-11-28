@@ -54,6 +54,11 @@ export const T_PIPELINE = dict(
     moveRight: "Move right",
     moveLater: (name: string) => `Move ${name} later`,
     rename: "Rename",
+    pipelines: "Pipelines",
+    newPipeline: "New pipeline",
+    newPipelineName: "Name of the new pipeline",
+    renamePipeline: (name: string) => `Rename ${name}`,
+    removePipeline: (name: string) => `Delete ${name} (its songs move to the first pipeline)`,
     renameColumn: (name: string) => `Rename ${name}`,
     removeHint: (stage: string) => `Remove (songs move to the other ${stage} column)`,
     keepOne: "Every stage keeps one column. Rename it, or collapse it.",
@@ -132,6 +137,11 @@ export const T_PIPELINE = dict(
     moveRight: "Déplacer à droite",
     moveLater: (name: string) => `Reculer ${name}`,
     rename: "Renommer",
+    pipelines: "Pipelines",
+    newPipeline: "Nouveau pipeline",
+    newPipelineName: "Nom du nouveau pipeline",
+    renamePipeline: (name: string) => `Renommer ${name}`,
+    removePipeline: (name: string) => `Supprimer ${name} (ses sons passent au premier pipeline)`,
     renameColumn: (name: string) => `Renommer ${name}`,
     removeHint: (stage: string) => `Supprimer (les sons passent dans l'autre colonne ${stage})`,
     keepOne: "Chaque étape garde au moins une colonne. Renomme-la ou replie-la.",
@@ -208,6 +218,16 @@ export interface PipelineSource {
   rename: (columnId: string, name: string) => void;
   add: (name: string, stage: SongStatus | null) => void;
   remove: (columnId: string) => void;
+  /** Separate pipelines. Absent on the crew board, whose columns live on
+   * the server and are shared by the whole crew. */
+  boards?: {
+    active: string;
+    list: { id: string; name: string }[];
+    setActive: (id: string) => void;
+    add: (name: string) => void;
+    rename: (id: string, name: string) => void;
+    remove: (id: string) => void;
+  };
   moveColumn: (columnId: string, toIndex: number) => void;
   /** Put a song in a column, before another (or at the end). */
   moveCard: (key: string, columnId: string, beforeKey: string | null) => void;
@@ -579,6 +599,62 @@ export function AddColumn({ compact = false }: { compact?: boolean }) {
 }
 
 // ---- Bits ----
+
+/** Pick the pipeline, and manage the list.
+ *
+ * Only where `boards` is provided — the crew board has one shared set of
+ * columns on the server, so it has no pipelines to switch between. */
+export function BoardSwitcher() {
+  const source = useSource();
+  const boards = source.boards;
+  const t = tr(T_PIPELINE);
+  if (!boards || boards.list.length === 0) return null;
+  const current = boards.list.find((b) => b.id === boards.active) ?? boards.list[0];
+
+  return (
+    <div className="flex items-center gap-1" role="group" aria-label={t.pipelines}>
+      <div className="flex rounded-md border border-rule p-0.5 text-xs" role="tablist" aria-label={t.pipelines}>
+        {boards.list.map((b) => (
+          <button
+            key={b.id}
+            role="tab"
+            aria-selected={b.id === boards.active}
+            onClick={() => boards.setActive(b.id)}
+            onDoubleClick={() => {
+              const name = window.prompt(t.renamePipeline(b.name), b.name);
+              if (name) boards.rename(b.id, name);
+            }}
+            title={t.renamePipeline(b.name)}
+            className={`rounded px-2.5 py-1 ${b.id === boards.active ? "bg-rule-strong text-cream" : "text-engrave hover:text-cream"}`}
+          >
+            {b.name}
+          </button>
+        ))}
+      </div>
+      <button
+        onClick={() => {
+          const name = window.prompt(t.newPipelineName, "");
+          if (name) boards.add(name);
+        }}
+        aria-label={t.newPipeline}
+        title={t.newPipeline}
+        className="rounded p-1 text-engrave hover:text-cream"
+      >
+        <Plus size={13} />
+      </button>
+      {boards.list.length > 1 && (
+        <button
+          onClick={() => boards.remove(current.id)}
+          aria-label={t.removePipeline(current.name)}
+          title={t.removePipeline(current.name)}
+          className="rounded p-1 text-engrave hover:text-red-300"
+        >
+          <Trash2 size={13} />
+        </button>
+      )}
+    </div>
+  );
+}
 
 export function ConflictDot({ on }: { on?: boolean }) {
   if (!on) return null;

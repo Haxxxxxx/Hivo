@@ -193,6 +193,9 @@ export interface StageConflict {
 }
 
 export interface SongMeta {
+  /** Which pipeline the song is on. Missing = the first one, so every
+   * song from before pipelines existed stays visible. */
+  pipeline?: string;
   status?: SongStatus;
   /** The stage before the lifecycle migration (idea/wip/mixing/mastering/done). */
   legacyStatus?: string;
@@ -550,8 +553,13 @@ export interface Workspace {
   songs: Record<string, SongMeta>;
   albums: Album[];
   people: Person[];
-  /** The user's pipeline columns. Missing = one column per stage. */
+  /** LEGACY: the single pipeline. Still written, mirroring the active
+   * board, so an older build opens this workspace with a sensible board
+   * instead of an empty one. Read as the seed when `pipelines` is absent. */
   pipeline?: PipelineConfig;
+  /** The user's pipelines — a beatmaker keeps beats and songs apart. Missing
+   * = migrated from `pipeline` on read, as a single board. */
+  pipelines?: { active: string; boards: PipelineBoard[] };
   /** Shared releases deleted here: their crew rows are deleted on the next sync. */
   deletedReleaseShares?: { id: string; crewId?: string; userId?: string }[];
   /** How the "Me" dashboard is arranged. Missing = the default
@@ -595,6 +603,13 @@ export interface PipelineColumn {
   id: string;
   name: string;
   stage: SongStatus | null;
+}
+
+/** One of the user's pipelines: its own columns, its own card order. */
+export interface PipelineBoard {
+  id: string;
+  name: string;
+  config: PipelineConfig;
 }
 
 export interface PipelineConfig {
