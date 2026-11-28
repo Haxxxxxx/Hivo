@@ -492,9 +492,18 @@ impl Resolver {
     fn locate(&mut self, raw: &str, project: &Path) -> (String, SampleStatus, Option<PathBuf>) {
         // Shown as stored (what FL displays); looked up with native separators.
         let path = self.expand(raw, project);
-        if is_remote_or_device(&path) {
-            return (path, SampleStatus::Missing, None);
-        }
+        // A stored path on a share is never PROBED: on Windows that hands
+        // the user's credentials to whatever host the project names.
+        //
+        // It used to end the search outright, which was the wrong call. A
+        // project written on a studio NAS records every sample under
+        // `\\nas\...`, so someone who has since copied those samples to
+        // this machine, or pointed Hivo at the folder holding them, saw the
+        // whole track reported missing anyway. The lookups below are all
+        // local — this computer's FL folders, the song's own folder, the
+        // sample libraries — so run them. Only the remote path itself is
+        // off limits.
+        let remote = is_remote_or_device(&path);
         let folder = project.parent().unwrap_or(project).to_path_buf();
         // A relative path is relative to the project's folder, not to
         // wherever the app happens to run from.
@@ -502,7 +511,7 @@ impl Resolver {
             p if is_project_relative(&p) => folder.join(p).to_string_lossy().to_string(),
             p => p,
         };
-        if self.exists(&on_disk) {
+        if !remote && self.exists(&on_disk) {
             return (path, SampleStatus::Ok, Some(PathBuf::from(on_disk)));
         }
         // Saved on another computer: the same file under this one's FL folders.
@@ -595,6 +604,34 @@ mod tests {
 
     fn plug(name: &str) -> RawPlugin {
         RawPlugin { name: name.into(), vendor: None, path: Some("Z:\\gone\\Whatever_x64.dll".into()) }
+    }
+
+    /// A project written on a studio NAS records every sample under
+    /// `\\\\nas\\...`. Copying those samples to this machine used to change
+    /// nothing: the share path ended the search before the local lookups ran.
+    #[test]
+    fn a_nas_sample_is_still_found_once_it_is_on_this_machine() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("flsm-nas-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("vox take 3.wav"), b"").unwrap();
+        let project = dir.join("Song.flp");
+
+        let mut r = Resolver::new(None);
+        let out = r.samples(&[r"\\nas\share\stems\Vox Take 3.wav".into()], &project);
+        assert_eq!(out[0].status, crate::models::SampleStatus::Relocated);
+        // Shown as the project stores it, whatever was found.
+        assert!(out[0].path.contains("nas"));
+
+        let out = r.samples(&[r"\\nas\share\stems\Never Had It.wav".into()], &project);
+        assert_eq!(
+            out[0].status,
+            crate::models::SampleStatus::Missing,
+            "nothing local to find, and the share is not probed"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// The user's complaint: a plugin that IS on the PC and known to FL was
