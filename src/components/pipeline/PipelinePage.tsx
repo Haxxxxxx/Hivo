@@ -45,7 +45,7 @@ export function PipelinePage({ title, sub, source, empty }: { title: string; sub
             </button>
           )}
         </label>
-        <BoardSwitcher boards={source.boards} />
+        <BoardSwitcher boards={source.boards} moveToBoard={source.moveToBoard} />
         <div className="flex rounded-md border border-rule p-0.5 text-xs" role="tablist" aria-label={t.viewLabel}>
           {VIEWS.map(({ id, icon: Icon }) => (
             <button

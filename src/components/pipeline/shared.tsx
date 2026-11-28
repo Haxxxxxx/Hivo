@@ -96,6 +96,7 @@ export const T_PIPELINE = dict(
     moveMenu: (title: string) => `Move ${title}`,
     moveTo: "Move to…",
     toPipeline: "To pipeline",
+    dropOnPipeline: (name: string) => `Drop a song here to move it to ${name}`,
     moveUp: "Move up",
     moveDown: "Move down",
     toColumn: "To the column",
@@ -180,6 +181,7 @@ export const T_PIPELINE = dict(
     moveMenu: (title: string) => `Déplacer ${title}`,
     moveTo: "Déplacer vers…",
     toPipeline: "Vers le pipeline",
+    dropOnPipeline: (name: string) => `Dépose un son ici pour l'envoyer vers ${name}`,
     moveUp: "Monter",
     moveDown: "Descendre",
     toColumn: "Vers la colonne",
@@ -240,7 +242,10 @@ export function MoveMenu({ item }: { item: PipelineItem }) {
     <label
       title={t.moveTo}
       onClick={(e) => e.stopPropagation()}
-      className="relative flex shrink-0 cursor-pointer items-center rounded p-0.5 text-engrave opacity-0 hover:bg-rule hover:text-cream focus-within:opacity-100 focus-within:outline-2 focus-within:outline-cream group-hover/card:opacity-100 group-focus-within/card:opacity-100"
+      // Faintly visible at rest, not hidden outright. Invisible until hover is
+      // how nobody found it: the only way to move a song between pipelines was
+      // a Library bulk bar you had to already know about.
+      className="relative flex shrink-0 cursor-pointer items-center rounded p-0.5 text-engrave opacity-40 hover:bg-rule hover:text-cream focus-within:opacity-100 focus-within:outline-2 focus-within:outline-cream group-hover/card:opacity-100 group-focus-within/card:opacity-100"
     >
       <ArrowRightLeft size={12} aria-hidden />
       <select
@@ -574,7 +579,7 @@ export function AddColumn({ compact = false }: { compact?: boolean }) {
  *
  * Only where `boards` is provided — the crew board has one shared set of
  * columns on the server, so it has no pipelines to switch between. */
-export function BoardSwitcher({ boards }: { boards?: PipelineSource["boards"] }) {
+export function BoardSwitcher({ boards, moveToBoard }: { boards?: PipelineSource["boards"]; moveToBoard?: PipelineSource["moveToBoard"] }) {
   // Takes `boards` as a prop, NOT useSource(): this renders in the page
   // header, which is outside PipelineSourceProvider. Reading the context
   // here threw and took the whole app down to a black screen.
@@ -584,6 +589,10 @@ export function BoardSwitcher({ boards }: { boards?: PipelineSource["boards"] })
   // rename silently did nothing at all. (window.confirm does work, which is
   // what made the gap easy to miss.)
   const [editing, setEditing] = useState<string | null>(null);
+  // The tab a card is being held over. Only one board is on screen at a
+  // time, so there is nowhere else to drop a song for another pipeline —
+  // its tab is the only thing standing in for it.
+  const [dropOn, setDropOn] = useState<string | null>(null);
   const cancelled = useRef(false);
   const t = tr(T_PIPELINE);
   if (!boards || boards.list.length === 0) return null;
@@ -630,8 +639,29 @@ export function BoardSwitcher({ boards }: { boards?: PipelineSource["boards"] })
               aria-selected={b.id === boards.active}
               onClick={() => boards.setActive(b.id)}
               onDoubleClick={() => setEditing(b.id)}
-              title={t.renameHint}
-              className={`rounded px-2.5 py-1 ${b.id === boards.active ? "bg-rule-strong text-cream" : "text-engrave hover:text-cream"}`}
+              onDragOver={(e) => {
+                // Its own tab is not a move, and a dragged column belongs
+                // to this board alone — neither is a drop.
+                if (!moveToBoard || b.id === boards.active || dragKind(e) !== "song") return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                setDropOn(b.id);
+              }}
+              onDragLeave={() => setDropOn((on) => (on === b.id ? null : on))}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDropOn(null);
+                const key = e.dataTransfer.getData(SONG_TYPE);
+                if (moveToBoard && key && b.id !== boards.active) moveToBoard(key, b.id);
+              }}
+              title={moveToBoard && b.id !== boards.active ? t.dropOnPipeline(b.name) : t.renameHint}
+              className={`rounded px-2.5 py-1 ${
+                dropOn === b.id
+                  ? "bg-hot/20 text-cream outline-2 outline-dashed outline-hot"
+                  : b.id === boards.active
+                    ? "bg-rule-strong text-cream"
+                    : "text-engrave hover:text-cream"
+              }`}
             >
               {b.name}
             </button>
