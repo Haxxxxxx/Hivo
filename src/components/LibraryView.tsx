@@ -8,6 +8,7 @@ import {
   Cloud,
   Copy,
   Folder,
+  FolderOpen,
   Download,
   FolderSearch,
   LayoutTemplate,
@@ -68,6 +69,7 @@ const T = dict(
     archived: (n: number) => `Archived (${n})`,
     templates: (n: number) => `Templates (${n})`,
     duplicates: (n: number) => `Duplicates (${n})`,
+    leftovers: "Leftovers",
     all: "All",
     selected: (n: number) => `${n} selected`,
     setStatus: "Set status",
@@ -145,6 +147,7 @@ const T = dict(
     archived: (n: number) => `Archivés (${n})`,
     templates: (n: number) => `Templates (${n})`,
     duplicates: (n: number) => `Doublons (${n})`,
+    leftovers: "Restes",
     all: "Tous",
     selected: (n: number) => `${n} sélectionné${plural(n, "", "s")}`,
     setStatus: "Changer l'étape",
@@ -462,6 +465,12 @@ export function LibraryView() {
             <Copy size={14} /> {t.duplicates(dupCount)}
           </button>
         )}
+        {/* Always offered, unlike the others: a leftover folder is invisible
+            to the library by definition — its song is gone — so there is no
+            count to gate it on without looking at the disk. */}
+        <button onClick={() => setView("leftovers")} className={btn}>
+          <FolderOpen size={14} /> {t.leftovers}
+        </button>
 
       </div>
 

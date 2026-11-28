@@ -271,6 +271,13 @@ export async function trashSongFolders(folders: string[]): Promise<number> {
   return invoke("trash_song_folders", { folders });
 }
 
+/** Folders in a linked root whose song is gone: no project file left, but
+ * still holding recordings or mixdowns. The prompt after a delete speaks
+ * once; this finds what it left whenever you look. */
+export async function orphanFolders(): Promise<KeptFolder[]> {
+  return invoke("orphan_folders");
+}
+
 /** The paths on a removable or network drive, where deleting is permanent. */
 export async function pathsOnRiskyVolumes(paths: string[]): Promise<string[]> {
   return invoke("paths_on_risky_volumes", { paths });

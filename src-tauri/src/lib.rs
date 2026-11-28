@@ -108,6 +108,7 @@ pub fn run() {
             actions::trash_backups,
             actions::trash_projects,
             actions::trash_song_folders,
+            actions::orphan_folders,
             sketch::continue_sketch,
             session::open_session_window,
             actions::backups_on_risky_volumes,

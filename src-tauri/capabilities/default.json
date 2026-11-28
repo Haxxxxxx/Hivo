@@ -71,6 +71,7 @@
     "allow-trash-backups",
     "allow-trash-projects",
     "allow-trash-song-folders",
+    "allow-orphan-folders",
     "allow-continue-sketch",
     "allow-open-session-window",
     "allow-backups-on-risky-volumes",

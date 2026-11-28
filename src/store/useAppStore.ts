@@ -74,6 +74,8 @@ export type View =
   | "library"
   // Songs saved several times over the same material (DuplicatesView).
   | "duplicates"
+  // Folders whose song is gone (LeftoversView).
+  | "leftovers"
   | "pipeline"
   | "albums"
   | "people"
@@ -361,6 +363,8 @@ interface AppState {
   /** Sends songs to the Trash with their backups, forgets their
    * workspace entries, and rescans. Returns how many went. */
   deleteProjects: (paths: string[], allowPermanent?: boolean) => Promise<api.DeleteOutcome>;
+  /** Folders whose song is gone, still holding recordings or mixdowns. */
+  listOrphanFolders: () => Promise<api.KeptFolder[]>;
   /** Clean up song folders a delete left standing, with their contents. */
   deleteSongFolders: (folders: string[]) => Promise<number>;
   /** A song's own card colour (null clears it). */
@@ -1350,6 +1354,7 @@ export const useAppStore = create<AppState>((set, get) => {
       await scanOrReport();
       return outcome;
     },
+    listOrphanFolders: () => api.orphanFolders(),
     deleteSongFolders: async (folders) => {
       if (get().demoMode) throw new Error(tr(STORE_ERRORS).sample);
       const n = await api.trashSongFolders(folders);

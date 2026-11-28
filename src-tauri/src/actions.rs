@@ -584,6 +584,71 @@ pub async fn trash_projects(app: tauri::AppHandle, paths: Vec<String>, allow_per
     Ok(DeleteOutcome { deleted: count, kept })
 }
 
+/// FL's own folders inside a Projects root. They are not songs and are
+/// never leftovers, whatever they happen to contain.
+const FL_OWN_FOLDERS: &[&str] = &["backup", "templates", "presets", "rendered", "audio", "samples"];
+
+/// Folders left behind by a song that is gone.
+///
+/// The prompt after a delete only speaks once, and only to whoever is
+/// looking. A folder orphaned before that existed — or by a delete where
+/// the prompt was dismissed — had no way back: Hivo stopped seeing it as
+/// a song the moment its project file went, so nothing in the app could
+/// offer to clean it up. This finds them again.
+///
+/// A leftover is a folder directly inside a linked root that holds no
+/// project file anywhere beneath it, holds at least one real file, and is
+/// not one of FL's own folders.
+#[tauri::command]
+pub fn orphan_folders(app: tauri::AppHandle) -> Result<Vec<KeptFolder>, String> {
+    let scope = crate::scope::Scope::load(&app)?;
+    let mut out = Vec::new();
+    for root in scope.folders() {
+        let Ok(entries) = fs::read_dir(root) else { continue };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else { continue };
+            if !kind.is_dir() || kind.is_symlink() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            if FL_OWN_FOLDERS.contains(&name.as_str()) {
+                continue;
+            }
+            let dir = entry.path();
+            if holds_a_project(&dir) {
+                continue;
+            }
+            let (mut examples, mut files) = (Vec::new(), 0);
+            real_files(&dir, &mut examples, &mut files);
+            if files > 0 {
+                out.push(KeptFolder { path: dir.to_string_lossy().to_string(), files, examples });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
+}
+
+/// Whether any project file sits anywhere beneath `dir`.
+fn holds_a_project(dir: &Path) -> bool {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&d) else { continue };
+        for e in entries.flatten() {
+            let Ok(k) = e.file_type() else { continue };
+            if k.is_symlink() {
+                continue;
+            }
+            if k.is_dir() {
+                stack.push(e.path());
+            } else if Daw::of_project(&e.path()).is_some() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Send a song folder left behind by a delete to the Recycle Bin, with
 /// whatever is still in it.
 ///
@@ -603,22 +668,7 @@ pub async fn trash_song_folders(app: tauri::AppHandle, folders: Vec<String>) -> 
             .file_name()
             .map(|n| n.to_string_lossy())
             .is_some_and(|n| !n.chars().any(|c| c == '"' || c == '\\' || c.is_control()));
-        let holds_project = {
-            let mut found = false;
-            let mut stack = vec![dir.to_path_buf()];
-            while let Some(d) = stack.pop() {
-                let Ok(entries) = fs::read_dir(&d) else { continue };
-                for e in entries.flatten() {
-                    let Ok(k) = e.file_type() else { continue };
-                    if k.is_dir() {
-                        stack.push(e.path());
-                    } else if Daw::of_project(&e.path()).is_some() {
-                        found = true;
-                    }
-                }
-            }
-            found
-        };
+        let holds_project = holds_a_project(dir);
         if !inside
             || !name_ok
             || dir.components().any(|c| matches!(c, std::path::Component::ParentDir))
@@ -808,6 +858,44 @@ mod tests {
         assert!(landed.exists(), "it is in the Trash and can be put back");
         let _ = fs::remove_file(&landed);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A leftover is a folder whose SONG is gone. FL's own folders are
+    /// not songs and must never be offered for deletion, whatever they
+    /// happen to hold — Projects/Backup is full of .flp files and
+    /// Projects/Templates is the user's templates.
+    #[test]
+    fn a_folder_still_holding_a_project_is_not_a_leftover() {
+        use std::fs;
+        let root = std::env::temp_dir().join(format!("flsm-orphans-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+
+        // A song: its project file is right there.
+        let song = root.join("Ocean");
+        fs::create_dir_all(&song).unwrap();
+        fs::write(song.join("Ocean.flp"), b"x").unwrap();
+        assert!(holds_a_project(&song));
+
+        // The same folder after its song was deleted, still holding the
+        // takes recorded into it. This is the one to offer.
+        let left = root.join("Ocean copy");
+        fs::create_dir_all(left.join("Audio")).unwrap();
+        fs::write(left.join("Ocean.mp3"), b"mix").unwrap();
+        fs::write(left.join("Audio").join("take 1.wav"), b"a").unwrap();
+        assert!(!holds_a_project(&left));
+
+        // A project nested deeper still counts: not a leftover.
+        let nested = root.join("Nested");
+        fs::create_dir_all(nested.join("inner")).unwrap();
+        fs::write(nested.join("inner").join("Deep.flp"), b"x").unwrap();
+        assert!(holds_a_project(&nested));
+
+        // FL's own folders are excluded by name, before anything is read.
+        for name in ["Backup", "backup", "Templates", "Presets"] {
+            assert!(FL_OWN_FOLDERS.contains(&name.to_lowercase().as_str()), "{name}");
+        }
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// What a delete leaves behind is reported, not taken. The counting
